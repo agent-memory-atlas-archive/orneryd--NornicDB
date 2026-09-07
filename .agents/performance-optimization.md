@@ -2,7 +2,7 @@
 
 **Purpose**: How to optimize NornicDB for maximum performance  
 **Audience**: AI coding agents  
-**Goal**: 3-52x faster than Neo4j (maintain or improve)
+**Goal**: Maintain or improve reproducible, workload-scoped benchmark baselines
 
 ---
 
@@ -16,24 +16,26 @@
 4. **No Regressions** - Don't sacrifice other metrics
 5. **Document** - Explain why optimization works
 
-### Performance Targets
+### Published Reference Baselines
 
-**Current benchmarks (M3 Max, 64GB):**
+**Current Northwind comparison (M3 Max, 64 GB; 48,000 products and 48,000 orders):**
 
-| Operation                    | NornicDB      | Neo4j       | Target   |
-| ---------------------------- | ------------- | ----------- | -------- |
-| Message content lookup       | 6,389 ops/sec | 518 ops/sec | ≥6,000   |
-| Recent messages (friends)    | 2,769 ops/sec | 108 ops/sec | ≥2,500   |
-| Avg friends per city         | 4,713 ops/sec | 91 ops/sec  | ≥4,500   |
-| Tag co-occurrence            | 2,076 ops/sec | 65 ops/sec  | ≥2,000   |
-| Index lookup                 | 7,623 ops/sec | 2,143 ops/sec | ≥7,000 |
-| Count nodes                  | 5,253 ops/sec | 798 ops/sec | ≥5,000   |
-| Write: node                  | 5,578 ops/sec | 1,690 ops/sec | ≥5,000 |
-| Write: edge                  | 6,626 ops/sec | 1,611 ops/sec | ≥6,000 |
+| Metric                     |    NornicDB |      Neo4j |             Difference |
+| -------------------------- | ----------: | ---------: | ---------------------: |
+| Overall mean query latency |     0.23 ms |   98.64 ms | -99.8% (432.38x ratio) |
+| Overall throughput         | 17.70 ops/s | 7.76 ops/s |        +128.1% (2.28x) |
+| Benchmark wall-clock       |     14.00 s |    31.63 s |                 -55.7% |
+| Energy during benchmark    |    118.00 J |   264.87 J |                 -55.5% |
+
+The full report includes per-query results, seed verification, result fingerprints,
+power, memory pressure, and storage: [Northwind benchmark](../docs/performance/1.1.0-northwind-results/comparison.md).
+
+For search or ranking changes, also preserve the configuration-specific
+[BEIR SciFact retrieval metrics](../docs/performance/retrieval-recall-benchmark.md#recorded-scifact-results).
 
 **Memory targets:**
-- Cold start: <1s (vs 10-30s for Neo4j)
-- Memory footprint: 100-500 MB (vs 1-4 GB for Neo4j)
+
+- No >10% increase under the same measured workload without justification
 - No memory leaks
 - Efficient garbage collection
 
@@ -51,12 +53,12 @@ func BenchmarkQueryExecution(b *testing.B) {
     store := setupBenchmarkData()
     exec := NewStorageExecutor(store)
     ctx := context.Background()
-    
+
     query := "MATCH (n:Person) WHERE n.age > 25 RETURN n LIMIT 100"
-    
+
     b.ResetTimer()
     b.ReportAllocs()
-    
+
     for i := 0; i < b.N; i++ {
         _, err := exec.Execute(ctx, query, nil)
         if err != nil {
@@ -67,11 +69,13 @@ func BenchmarkQueryExecution(b *testing.B) {
 ```
 
 **Run baseline:**
+
 ```bash
 go test -bench=BenchmarkQueryExecution -benchmem -count=5 > before.txt
 ```
 
 **Example output:**
+
 ```
 BenchmarkQueryExecution-8    4252    282456 ns/op    2456 B/op    45 allocs/op
 ```
@@ -79,6 +83,7 @@ BenchmarkQueryExecution-8    4252    282456 ns/op    2456 B/op    45 allocs/op
 ### Step 2: Profile
 
 **CPU profiling:**
+
 ```bash
 go test -bench=BenchmarkQueryExecution -cpuprofile=cpu.prof
 go tool pprof cpu.prof
@@ -90,6 +95,7 @@ go tool pprof cpu.prof
 ```
 
 **Memory profiling:**
+
 ```bash
 go test -bench=BenchmarkQueryExecution -memprofile=mem.prof
 go tool pprof mem.prof
@@ -100,6 +106,7 @@ go tool pprof mem.prof
 ```
 
 **Trace analysis:**
+
 ```bash
 go test -bench=BenchmarkQueryExecution -trace=trace.out
 go tool trace trace.out
@@ -117,6 +124,7 @@ go tool trace trace.out
 6. **Reflection** - Runtime type inspection
 
 **Example profile output:**
+
 ```
 Total: 2.5s
 1.2s (48%) - json.Marshal
@@ -152,13 +160,13 @@ func (e *Executor) formatResult(rows [][]interface{}) (*Result, error) {
     result := &Result{
         Data: make([][]byte, 0, len(rows)),
     }
-    
+
     // Use sync.Pool for buffers
     buf := bufferPool.Get().(*bytes.Buffer)
     defer bufferPool.Put(buf)
-    
+
     encoder := json.NewEncoder(buf)
-    
+
     for _, row := range rows {
         buf.Reset()
         if err := encoder.Encode(row); err != nil {
@@ -166,7 +174,7 @@ func (e *Executor) formatResult(rows [][]interface{}) (*Result, error) {
         }
         result.Data = append(result.Data, buf.Bytes())
     }
-    
+
     return result, nil
 }
 ```
@@ -174,16 +182,19 @@ func (e *Executor) formatResult(rows [][]interface{}) (*Result, error) {
 ### Step 5: Benchmark After
 
 **Run benchmark again:**
+
 ```bash
 go test -bench=BenchmarkQueryExecution -benchmem -count=5 > after.txt
 ```
 
 **Compare results:**
+
 ```bash
 benchcmp before.txt after.txt
 ```
 
 **Example output:**
+
 ```
 benchmark                    old ns/op     new ns/op     delta
 BenchmarkQueryExecution-8    282456        156234        -44.68%
@@ -267,7 +278,7 @@ func formatData(data []byte) string {
 func formatData(data []byte) string {
     buf := bufferPool.Get().(*bytes.Buffer)
     defer bufferPool.Put(buf)
-    
+
     buf.Reset()
     buf.Write(data)
     return buf.String()
@@ -288,16 +299,16 @@ func processInBatches(items []Item) {
 // AFTER: Reuse slice (if safe)
 func processInBatches(items []Item) {
     batch := make([]Item, 0, 100)  // ← Allocate once
-    
+
     for _, item := range items {
         batch = append(batch, item)
-        
+
         if len(batch) == 100 {
             processBatch(batch)
             batch = batch[:0]  // ← Reset, don't reallocate
         }
     }
-    
+
     if len(batch) > 0 {
         processBatch(batch)
     }
@@ -314,7 +325,7 @@ func processInBatches(items []Item) {
 // BEFORE: O(n²) - nested loops
 func findDuplicates(nodes []*Node) []*Node {
     var duplicates []*Node
-    
+
     for i := 0; i < len(nodes); i++ {
         for j := i + 1; j < len(nodes); j++ {
             if nodes[i].ID == nodes[j].ID {
@@ -322,7 +333,7 @@ func findDuplicates(nodes []*Node) []*Node {
             }
         }
     }
-    
+
     return duplicates
 }
 
@@ -330,7 +341,7 @@ func findDuplicates(nodes []*Node) []*Node {
 func findDuplicates(nodes []*Node) []*Node {
     seen := make(map[NodeID]bool, len(nodes))
     var duplicates []*Node
-    
+
     for _, node := range nodes {
         if seen[node.ID] {
             duplicates = append(duplicates, node)
@@ -338,12 +349,13 @@ func findDuplicates(nodes []*Node) []*Node {
             seen[node.ID] = true
         }
     }
-    
+
     return duplicates
 }
 ```
 
 **Benchmark:**
+
 ```
 Before (O(n²)): 1,000 nodes = 500ms
 After (O(n)):   1,000 nodes = 5ms
@@ -360,7 +372,7 @@ Improvement: 100x faster!
 // BEFORE: Linear scan O(n)
 func (e *MemoryEngine) FindNodesByLabel(label string) []*Node {
     var results []*Node
-    
+
     for _, node := range e.nodes {
         for _, l := range node.Labels {
             if l == label {
@@ -369,7 +381,7 @@ func (e *MemoryEngine) FindNodesByLabel(label string) []*Node {
             }
         }
     }
-    
+
     return results
 }
 
@@ -381,31 +393,32 @@ type MemoryEngine struct {
 
 func (e *MemoryEngine) FindNodesByLabel(label string) []*Node {
     nodeIDs := e.labelIndex[label]  // ← O(1) lookup
-    
+
     results := make([]*Node, 0, len(nodeIDs))
     for _, id := range nodeIDs {
         if node, ok := e.nodes[id]; ok {
             results = append(results, node)
         }
     }
-    
+
     return results
 }
 
 func (e *MemoryEngine) CreateNode(node *Node) error {
     // Store node
     e.nodes[node.ID] = node
-    
+
     // Update indexes
     for _, label := range node.Labels {
         e.labelIndex[label] = append(e.labelIndex[label], node.ID)
     }
-    
+
     return nil
 }
 ```
 
 **Benchmark:**
+
 ```
 Before (no index): 10,000 nodes = 50ms
 After (with index): 10,000 nodes = 0.5ms
@@ -441,7 +454,7 @@ func (e *BadgerEngine) CreateNodesBatch(nodes []*Node) error {
             if err != nil {
                 return err
             }
-            
+
             key := []byte("node:" + string(node.ID))
             if err := txn.Set(key, data); err != nil {
                 return err
@@ -453,6 +466,7 @@ func (e *BadgerEngine) CreateNodesBatch(nodes []*Node) error {
 ```
 
 **Benchmark:**
+
 ```
 Before (individual): 1,000 nodes = 500ms
 After (batch):       1,000 nodes = 50ms
@@ -475,7 +489,7 @@ type Cache struct {
 func (c *Cache) Get(key string) (interface{}, bool) {
     c.mu.Lock()         // ← Blocks readers
     defer c.mu.Unlock()
-    
+
     val, ok := c.data[key]
     return val, ok
 }
@@ -489,7 +503,7 @@ type Cache struct {
 func (c *Cache) Get(key string) (interface{}, bool) {
     c.mu.RLock()        // ← Multiple readers OK
     defer c.mu.RUnlock()
-    
+
     val, ok := c.data[key]
     return val, ok
 }
@@ -497,7 +511,7 @@ func (c *Cache) Get(key string) (interface{}, bool) {
 func (c *Cache) Set(key string, val interface{}) {
     c.mu.Lock()         // ← Exclusive write
     defer c.mu.Unlock()
-    
+
     c.data[key] = val
 }
 ```
@@ -529,16 +543,17 @@ func (c *Cache) getShard(key string) *cacheShard {
 
 func (c *Cache) Get(key string) (interface{}, bool) {
     shard := c.getShard(key)
-    
+
     shard.mu.RLock()
     defer shard.mu.RUnlock()
-    
+
     val, ok := shard.data[key]
     return val, ok
 }
 ```
 
 **Benchmark (100 concurrent goroutines):**
+
 ```
 Before (single lock): 1,000 ops/sec
 After (16 shards):    12,000 ops/sec
@@ -594,6 +609,7 @@ func (c *Cache) Get(key string) (*Node, error) {
 ```
 
 **Benchmark:**
+
 ```
 Before (JSON):     10,000 ops = 500ms
 After (msgpack):   10,000 ops = 200ms
@@ -610,40 +626,41 @@ After (no serial): 10,000 ops = 10ms
 // BEFORE: Sequential processing
 func processNodes(nodes []*Node) []Result {
     results := make([]Result, len(nodes))
-    
+
     for i, node := range nodes {
         results[i] = expensiveOperation(node)
     }
-    
+
     return results
 }
 
 // AFTER: Parallel processing
 func processNodes(nodes []*Node) []Result {
     results := make([]Result, len(nodes))
-    
+
     var wg sync.WaitGroup
     sem := make(chan struct{}, runtime.NumCPU())  // Limit concurrency
-    
+
     for i, node := range nodes {
         wg.Add(1)
-        
+
         go func(idx int, n *Node) {
             defer wg.Done()
-            
+
             sem <- struct{}{}        // Acquire
             defer func() { <-sem }() // Release
-            
+
             results[idx] = expensiveOperation(n)
         }(i, node)
     }
-    
+
     wg.Wait()
     return results
 }
 ```
 
 **Benchmark (8 cores):**
+
 ```
 Before (sequential): 1,000 nodes = 800ms
 After (parallel):    1,000 nodes = 120ms
@@ -672,21 +689,22 @@ func (e *Executor) generateEmbedding(text string) ([]float32, error) {
     if cached, ok := e.embeddingCache.Load(text); ok {
         return cached.([]float32), nil
     }
-    
+
     // Generate
     embedding, err := expensiveMLModel.Generate(text)
     if err != nil {
         return nil, err
     }
-    
+
     // Cache
     e.embeddingCache.Store(text, embedding)
-    
+
     return embedding, nil
 }
 ```
 
 **Benchmark:**
+
 ```
 Before (no cache): 100 calls = 10,000ms (100ms each)
 After (with cache): 100 calls = 100ms (1ms each, 99 cache hits)
@@ -778,7 +796,7 @@ func (c *Cache) Set(key string, node *Node) {
     if len(c.data) >= c.maxSize {
         c.evictOldest()  // ← Remove old entries
     }
-    
+
     c.data[key] = &cacheEntry{
         node:      node,
         timestamp: time.Now(),
@@ -800,19 +818,19 @@ func BenchmarkQueryExecution(b *testing.B) {
         edgeCount: 50000,
         avgDegree: 5,
     )
-    
+
     exec := NewStorageExecutor(store)
     ctx := context.Background()
-    
+
     // Use realistic queries
     queries := []string{
         "MATCH (n:Person) WHERE n.age > 25 RETURN n LIMIT 100",
         "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b",
         "MATCH (n:Person) RETURN count(n)",
     }
-    
+
     b.ResetTimer()
-    
+
     for i := 0; i < b.N; i++ {
         query := queries[i%len(queries)]
         _, err := exec.Execute(ctx, query, nil)

@@ -9,7 +9,7 @@ NornicDB is a **graph database** - think of it like a smart spreadsheet that und
 - 🔗 Connecting and exploring related information
 - 🤖 AI-powered data analysis
 - 📊 Building knowledge graphs
-- 🚀 Fast data queries (3-52x faster than alternatives)
+- 🚀 Fast data queries ([current Northwind comparison: 99.8% lower overall mean query latency than Neo4j](../docs/performance/1.1.0-northwind-results/comparison.md))
 
 ## Installation (3 Easy Steps)
 
@@ -47,6 +47,7 @@ A welcome wizard will appear automatically:
 ### Finding the App
 
 Look in your menu bar (top-right of your screen) for the database icon:
+
 - 🟢 Green = Running and healthy
 - 🔴 Red = Stopped
 - ⚪️ Gray = Unknown status
@@ -81,6 +82,7 @@ Quit
 3. Your browser opens to http://localhost:7687
 
 Here you can:
+
 - Create and explore graphs
 - Run queries
 - Visualize data
@@ -89,16 +91,19 @@ Here you can:
 #### Starting/Stopping the Database
 
 **To Stop:**
+
 1. Click menu bar icon
 2. Select **Stop Server**
 3. Icon turns red
 
 **To Start:**
-1. Click menu bar icon  
+
+1. Click menu bar icon
 2. Select **Start Server**
 3. Icon turns green after a few seconds
 
 **To Restart:**
+
 1. Click menu bar icon
 2. Select **Restart Server**
 
@@ -109,16 +114,19 @@ Here you can:
 3. A window opens with three tabs:
 
 **Features Tab** - Turn AI features on/off:
+
 - **Embeddings** - Smart search based on meaning
 - **K-Means** - Automatic grouping of similar data
 - **Auto-TLP** - Predict future connections
 - **Heimdall** - AI assistant for monitoring
 
 **Server Tab** - Change network settings:
+
 - **Port Number** - Which port to use (default: 7687)
 - **Host Address** - Where to listen (default: localhost)
 
 **Startup Tab** - Control when NornicDB starts:
+
 - **Start at Login** - Turn on/off auto-start
 
 4. Click **Save & Restart** when done
@@ -139,6 +147,7 @@ If something isn't working:
 **A:** Yes! After installation, NornicDB starts automatically when you log in to your Mac.
 
 To change this:
+
 1. Menu bar icon → **Settings...**
 2. Go to **Startup** tab
 3. Toggle **Start at Login**
@@ -147,12 +156,13 @@ To change this:
 ### Q: How do I know if it's running?
 
 **A:** Look at the menu bar icon color:
+
 - 🟢 Green = Running
 - 🔴 Red = Stopped
 
 ### Q: Can I use it without the AI features?
 
-**A:** Yes! 
+**A:** Yes!
 
 1. Menu bar icon → **Settings...**
 2. Go to **Features** tab
@@ -164,6 +174,7 @@ This saves memory and makes NornicDB faster.
 ### Q: Where is my data stored?
 
 **A:** Your graph database is stored at:
+
 ```
 /usr/local/var/nornicdb/data
 ```
@@ -173,12 +184,14 @@ This data persists even if you restart your Mac or update NornicDB.
 ### Q: How do I back up my data?
 
 **Option 1: Quick Backup**
+
 1. Click menu bar icon → **Stop Server**
 2. Copy folder: `/usr/local/var/nornicdb/data`
 3. Paste somewhere safe (external drive, cloud storage)
 4. Click menu bar icon → **Start Server**
 
 **Option 2: Export as JSON**
+
 1. Open Web UI
 2. Use Export feature
 3. Save JSON file
@@ -188,6 +201,7 @@ This data persists even if you restart your Mac or update NornicDB.
 **A:** By default, no. NornicDB only accepts connections from your Mac.
 
 To allow network access:
+
 1. Menu bar icon → **Settings...**
 2. Go to **Server** tab
 3. Change **Host Address** to `0.0.0.0`
@@ -200,6 +214,7 @@ To allow network access:
 **A:** Typically 100-500 MB depending on your data size and enabled features.
 
 To reduce memory:
+
 - Turn off AI features you don't need
 - Use Basic or Standard preset instead of Advanced
 
@@ -212,6 +227,7 @@ To reduce memory:
 ### Problem: Menu bar icon doesn't appear
 
 **Solution:**
+
 1. Open **Applications** folder
 2. Find **NornicDB** app
 3. Double-click it to launch
@@ -219,11 +235,13 @@ To reduce memory:
 ### Problem: Icon is red (server stopped)
 
 **Solution:**
+
 1. Click the red icon
 2. Select **Start Server**
 3. Wait 10 seconds for it to turn green
 
 If it stays red:
+
 1. Click icon → **Show Logs**
 2. Open `stderr.log` to see error messages
 
@@ -235,6 +253,7 @@ Server isn't running yet. Wait 30 seconds after starting, then try again.
 ### Problem: Forgot my port number
 
 **Solution:**
+
 1. Click menu bar icon → **Settings...**
 2. Go to **Server** tab
 3. Check **Port Number** field
@@ -244,6 +263,7 @@ Default is **7687**.
 ### Problem: Want to reset everything
 
 **Solution:**
+
 1. Click menu bar icon → **Stop Server**
 2. Go to Applications
 3. Right-click **NornicDB** → Move to Trash
@@ -266,12 +286,14 @@ Don't want NornicDB anymore? No problem!
 1. Click menu bar icon → **Quit**
 2. Open **Terminal** app
 3. Copy and paste this command:
+
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.nornicdb.server.plist
 rm ~/Library/LaunchAgents/com.nornicdb.server.plist
 sudo rm /usr/local/bin/nornicdb
 rm -rf ~/Applications/NornicDB.app
 ```
+
 4. Enter your password when asked
 
 Your data stays safe at `/usr/local/var/nornicdb/data` unless you manually delete it.
@@ -307,19 +329,18 @@ Now that NornicDB is installed:
 
 ## Cheat Sheet
 
-| Action | How To |
-|--------|--------|
-| Open database | Menu bar → Open Web UI |
-| Start server | Menu bar → Start Server |
-| Stop server | Menu bar → Stop Server |
-| Change settings | Menu bar → Settings (⌘,) |
-| View logs | Menu bar → Show Logs |
-| Check status | Look at menu bar icon color |
-| Get help | Menu bar → About → Visit Website |
+| Action          | How To                           |
+| --------------- | -------------------------------- |
+| Open database   | Menu bar → Open Web UI           |
+| Start server    | Menu bar → Start Server          |
+| Stop server     | Menu bar → Stop Server           |
+| Change settings | Menu bar → Settings (⌘,)         |
+| View logs       | Menu bar → Show Logs             |
+| Check status    | Look at menu bar icon color      |
+| Get help        | Menu bar → About → Visit Website |
 
 ---
 
 **Enjoy using NornicDB!** 🚀
 
 If you found this helpful, please star us on [GitHub](https://github.com/orneryd/nornicdb)!
-

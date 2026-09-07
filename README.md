@@ -100,16 +100,26 @@ See [transaction implementation details](docs/user-guides/transactions.md), [his
 
 ## Performance Snapshot
 
-**LDBC Social Network Benchmark** (M3 Max, 64GB):
+**Northwind benchmark** (M3 Max, 64 GB; 48,000 products and 48,000 orders; 10 measured iterations after 2 warmups):
 
-| Query Type                    | NornicDB      | Neo4j       | Speedup |
-| ----------------------------- | ------------- | ----------- | ------- |
-| **Message content lookup**    | 6,389 ops/sec | 518 ops/sec | **12x** |
-| **Recent messages (friends)** | 2,769 ops/sec | 108 ops/sec | **25x** |
-| **Avg friends per city**      | 4,713 ops/sec | 91 ops/sec  | **52x** |
-| **Tag co-occurrence**         | 2,076 ops/sec | 65 ops/sec  | **32x** |
+| Metric                     |    NornicDB |      Neo4j |                 Difference |
+| -------------------------- | ----------: | ---------: | -------------------------: |
+| Overall mean query latency |     0.23 ms |   98.64 ms | **-99.8% (432.38x ratio)** |
+| Overall throughput         | 17.70 ops/s | 7.76 ops/s |        **+128.1% (2.28x)** |
+| Benchmark wall-clock       |     14.00 s |    31.63 s |   **-55.7% (2.26x ratio)** |
+| Energy during benchmark    |    118.00 J |   264.87 J |   **-55.5% (2.24x ratio)** |
 
-> See [full benchmark results](docs/performance/benchmarks-vs-neo4j.md) for complete methodology and additional workloads.
+All seed counts and per-query result fingerprints matched between NornicDB and Neo4j. See the [full Northwind benchmark report](docs/performance/1.1.0-northwind-results/comparison.md) for per-query latency, correctness, power, memory, and storage results.
+
+### BEIR Retrieval Quality
+
+The reproducible BEIR SciFact evaluation uses the official 300-query test qrels. With exact hybrid RRF retrieval and the native BGE-M3 reranker, NornicDB recorded:
+
+|   Recall@10 |  Recall@100 |     nDCG@10 |      MRR@10 |     MAP@100 |
+| ----------: | ----------: | ----------: | ----------: | ----------: |
+| **0.82510** | **0.93563** | **0.72292** | **0.69447** | **0.69215** |
+
+These scores are configuration-specific rather than an official leaderboard placement. See the [BEIR retrieval benchmark](docs/performance/retrieval-recall-benchmark.md#recorded-scifact-results) for the protocol, baselines, confidence intervals, and published-reference context.
 
 ### Hybrid Retrieval Benchmarks
 
@@ -205,7 +215,8 @@ with driver.session() as session:
 
 ## Why Switch from Neo4j?
 
-- **12x-52x faster** on published LDBC workloads (same hardware comparisons).
+- **99.8% lower overall mean query latency** on the current 48k-product / 48k-order Northwind comparison (432.38x ratio), with matching result fingerprints.
+- **Measured retrieval quality** on the official 300-query BEIR SciFact test set, including 0.72292 nDCG@10 with native BGE-M3 reranking.
 - **Native graph + vector** in one engine (no separate vector sidecar required).
 - **GPU acceleration paths** (Metal/CUDA/Vulkan) for semantic + graph workloads.
 - **Drop-in compatibility** via Bolt + Cypher for existing applications.

@@ -495,7 +495,7 @@ UNINSTALL:
 
 Thank you for using NornicDB!
 
-NornicDB is faster than Neo4j, easier to use, and AI-powered.
+NornicDB is Neo4j-compatible, easy to use, and AI-powered.
 
 For more information, visit: https://nornicdb.com
 

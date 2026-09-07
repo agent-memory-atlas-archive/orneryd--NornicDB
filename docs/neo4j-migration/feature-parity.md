@@ -246,14 +246,18 @@ Features NornicDB has that Neo4j doesn't:
 | **Cardinality Constraints** | Limits outgoing or incoming edge count per node for a given relationship type                  |
 | **Endpoint Policies**       | Restricts which (source, target) label pairs may be connected by a relationship type           |
 
-### Performance Advantages
+### Measured Performance and Resource Comparison
 
-| Metric           | Neo4j        | NornicDB  | Advantage      |
-| ---------------- | ------------ | --------- | -------------- |
-| Memory footprint | 1-4GB        | 100-500MB | 4-10x smaller  |
-| Cold start time  | 10-30s       | <1s       | 10-30x faster  |
-| Binary size      | ~200MB       | ~50MB     | 4x smaller     |
-| Dependencies     | JVM required | None      | Self-contained |
+The current same-hardware Northwind benchmark records the following results for its 48,000-product / 48,000-order workload:
+
+| Metric                         |      Neo4j |    NornicDB |             Difference |
+| ------------------------------ | ---------: | ----------: | ---------------------: |
+| Overall mean query latency     |   98.64 ms |     0.23 ms | -99.8% (432.38x ratio) |
+| Overall throughput             | 7.76 ops/s | 17.70 ops/s |        +128.1% (2.28x) |
+| Peak system memory used        |   33.4 GiB |    32.5 GiB |                  -2.7% |
+| Total benchmark data directory |    204 MiB |     134 MiB |                 -34.3% |
+
+See the [full Northwind comparison](../performance/1.1.0-northwind-results/comparison.md) for workload, hardware, correctness fingerprints, power, and storage details. Treat these as workload-specific measurements rather than universal deployment requirements.
 
 ---
 

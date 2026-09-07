@@ -1,12 +1,14 @@
-# NornicDB Test Results
+# Historical NornicDB Test Results
 
 Last Updated: November 2025 | Version 0.1.0
+
+> **Historical test archive:** These measurements describe the v0.1.0 test environment and are retained for provenance. They are not the current performance headline. See the [current Northwind comparison](1.1.0-northwind-results/comparison.md) for direct Neo4j measurements and the [BEIR SciFact report](retrieval-recall-benchmark.md#recorded-scifact-results) for current retrieval-quality evidence.
 
 ---
 
 ## Executive Summary
 
-NornicDB has been successfully tested as a drop-in replacement for Neo4j. All core functionality works correctly with significant performance and resource advantages.
+In this v0.1.0 test run, NornicDB passed the recorded Neo4j-compatibility checks and showed the performance and resource measurements below.
 
 ### Key Findings
 
@@ -302,7 +304,7 @@ CREATE (a:Agent:Node {name: "Claudette"})-[:USES]->(t:Tool:Node {name: "NornicDB
 
 ## 10. Conclusion
 
-NornicDB is **production-ready** as a Neo4j replacement with the following advantages:
+This historical v0.1.0 run recorded the following results:
 
 1. **70x less memory** usage
 2. **27x smaller** Docker image

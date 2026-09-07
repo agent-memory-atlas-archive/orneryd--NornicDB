@@ -3143,7 +3143,7 @@ struct FirstRunWizard: View {
                     .font(.headline)
 
                 VStack(alignment: .leading, spacing: 15) {
-                    InfoRow(icon: "bolt.fill", title: "Neo4j Compatible", description: "Drop-in replacement for Neo4j with 3-52x better performance")
+                    InfoRow(icon: "bolt.fill", title: "Neo4j Compatible", description: "Northwind benchmark: 99.8% lower mean query latency")
                     InfoRow(icon: "cpu.fill", title: "Native Performance", description: "Optimized for Apple Silicon with Metal acceleration")
                     InfoRow(icon: "brain.head.profile", title: "AI-Powered", description: "Built-in embeddings, clustering, and predictions")
                     InfoRow(icon: "shield.fill", title: "Privacy First", description: "Runs entirely on your Mac - your data never leaves")

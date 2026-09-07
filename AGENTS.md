@@ -11,7 +11,7 @@
 NornicDB is an **enterprise-grade, high-performance graph database** that prioritizes:
 
 1. **Neo4j Compatibility** - Drop-in replacement with zero code changes
-2. **Performance** - 3-52x faster than Neo4j across benchmarks
+2. **Performance** - Reproducible, workload-scoped gains validated against current benchmark reports
 3. **Correctness** - 90%+ test coverage, regression prevention mandatory
 4. **Maintainability** - Clean architecture, separation of concerns, DRY principles
 5. **Documentation** - Every public API fully documented with real-world examples
@@ -30,6 +30,7 @@ Every change must demonstrate **measurable improvements** without significant re
 - **Compatibility**: All Neo4j compatibility tests must pass.
 
 **Example:**
+
 ```go
 // ❌ BAD: No proof of improvement
 func optimizeQuery() { /* new algorithm */ }
@@ -53,6 +54,7 @@ func optimizeQuery() { /* new algorithm with proof */ }
 5. **Add regression tests** - Prevent future occurrences
 
 **Example from codebase:**
+
 ```go
 // File: pkg/cypher/aggregation_bugs_test.go
 // BUG #1: WHERE ... IS NOT NULL combined with WITH aggregation returns empty results
@@ -60,7 +62,7 @@ func optimizeQuery() { /* new algorithm with proof */ }
 func TestBug_WhereIsNotNullWithAggregation(t *testing.T) {
     // 1. Setup test data that triggers bug
     setupAggregationTestData(t, store)
-    
+
     // 2. Execute query that fails in production
     result, err := exec.Execute(ctx, `
         MATCH (f:File)
@@ -68,7 +70,7 @@ func TestBug_WhereIsNotNullWithAggregation(t *testing.T) {
         WITH f.extension as ext, COUNT(f) as count
         RETURN ext, count
     `, nil)
-    
+
     // 3. Assert expected behavior (this WILL fail before fix)
     require.NoError(t, err)
     assert.Equal(t, int64(2), extCounts[".ts"])
@@ -90,6 +92,7 @@ When a file approaches 2500 lines:
 4. **Update imports** - Maintain clean dependency graph
 
 **Example refactoring:**
+
 ```go
 // Before: executor.go (3752 lines) ❌
 // - Query parsing
@@ -139,6 +142,7 @@ devEngine := &SearchEngine{
 ```
 
 **Real example from codebase:**
+
 ```go
 // pkg/storage/types.go - Storage interface for DI
 type Engine interface {
@@ -165,6 +169,7 @@ See [.agents/functional-patterns.md](.agents/functional-patterns.md) for advance
 4. **1-3 Real-world examples** - Show actual usage
 
 **Example from codebase:**
+
 ```go
 // Package cypher provides Neo4j-compatible Cypher query execution for NornicDB.
 //
@@ -214,6 +219,7 @@ go tool cover -html=coverage.out
 **What to test:**
 
 ✅ **Always test:**
+
 - Happy path (normal usage)
 - Error conditions (invalid input, not found, etc.)
 - Edge cases (empty, nil, boundary values)
@@ -221,6 +227,7 @@ go tool cover -html=coverage.out
 - Regression cases (all bugs get tests)
 
 ❌ **Don't waste time testing:**
+
 - Third-party library internals
 - Generated code (unless custom logic added)
 - Trivial getters/setters (unless they have logic)
@@ -264,6 +271,7 @@ func GetUser(id string) (*User, error) {
 ```
 
 **Real example from codebase:**
+
 ```go
 // pkg/cypher/helpers.go - Shared helper functions
 func toInt64(v interface{}) (int64, error) { /* ... */ }
@@ -297,6 +305,7 @@ func toBool(v interface{}) (bool, error) { /* ... */ }
 - **Infrastructure**: Caching, connection pooling, metrics
 
 **Example contract:**
+
 ```go
 // Storage layer exposes clean interface
 type Engine interface {
@@ -329,6 +338,7 @@ See [.agents/architecture-patterns.md](.agents/architecture-patterns.md) for det
 - **Testing**: Follow Go testing best practices (testify, table-driven tests)
 
 **Example - Table-driven tests:**
+
 ```go
 func TestNodeValidation(t *testing.T) {
     tests := []struct {
@@ -352,7 +362,7 @@ func TestNodeValidation(t *testing.T) {
             wantErr: false,  // Labels are optional
         },
     }
-    
+
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             err := ValidateNode(tt.node)
@@ -371,6 +381,7 @@ func TestNodeValidation(t *testing.T) {
 **Prioritize compatibility without sacrificing performance:**
 
 ✅ **Support:**
+
 - Neo4j Bolt protocol (industry standard)
 - Cypher query language (open standard)
 - JSON import/export (universal format)
@@ -378,11 +389,13 @@ func TestNodeValidation(t *testing.T) {
 - Multiple embedding providers (Ollama, OpenAI, local GGUF)
 
 ❌ **Avoid:**
+
 - Vendor lock-in (proprietary formats)
 - Single-provider dependencies (must support alternatives)
 - Non-standard query syntax (unless significant benefit)
 
 **Example - Multi-provider embeddings:**
+
 ```go
 // Support multiple embedding providers
 type EmbeddingProvider interface {
@@ -508,6 +521,7 @@ go build -o nornicdb ./cmd/nornicdb
 ```
 
 **Types:**
+
 - `feat`: New feature
 - `fix`: Bug fix
 - `perf`: Performance improvement
@@ -517,6 +531,7 @@ go build -o nornicdb ./cmd/nornicdb
 - `chore`: Maintenance tasks
 
 **Example:**
+
 ```
 fix(cypher): resolve WHERE IS NOT NULL with aggregation bug
 
@@ -573,19 +588,19 @@ func TestFeatureName(t *testing.T) {
     store := storage.NewMemoryEngine()
     exec := NewStorageExecutor(store)
     ctx := context.Background()
-    
+
     t.Run("happy path", func(t *testing.T) {
         // Test normal usage
     })
-    
+
     t.Run("error: invalid input", func(t *testing.T) {
         // Test error handling
     })
-    
+
     t.Run("edge case: empty result", func(t *testing.T) {
         // Test edge cases
     })
-    
+
     t.Run("concurrent access", func(t *testing.T) {
         // Test concurrency
     })
@@ -609,13 +624,14 @@ See [.agents/testing-patterns.md](.agents/testing-patterns.md) for comprehensive
 5. **Justification** - Why this optimization matters
 
 **Example:**
+
 ```go
 // BenchmarkQueryExecution measures query execution performance
 func BenchmarkQueryExecution(b *testing.B) {
     store := setupBenchmarkData()
     exec := NewStorageExecutor(store)
     ctx := context.Background()
-    
+
     b.ResetTimer()
     for i := 0; i < b.N; i++ {
         _, err := exec.Execute(ctx, "MATCH (n:Person) RETURN n LIMIT 100", nil)
@@ -655,10 +671,10 @@ func TestBug_DescriptiveName(t *testing.T) {
     // Setup conditions that trigger bug
     store := storage.NewMemoryEngine()
     setupBugConditions(t, store)
-    
+
     // Execute operation that fails
     result, err := performBuggyOperation()
-    
+
     // Assert expected behavior (this WILL fail before fix)
     assert.NoError(t, err)
     assert.Equal(t, expectedValue, result)
@@ -820,9 +836,9 @@ Before submitting any code:
 
 ### Performance Metrics
 
-- **Query Execution**: 3-52x faster than Neo4j (maintain or improve)
-- **Memory Footprint**: 100-500 MB vs 1-4 GB for Neo4j
-- **Cold Start**: <1s vs 10-30s for Neo4j
+- **Query Execution**: Maintain or improve the current [Northwind benchmark](docs/performance/1.1.0-northwind-results/comparison.md) baseline; report workload, hardware, latency, throughput, and correctness together
+- **Retrieval Quality**: Preserve the recorded [BEIR SciFact metrics](docs/performance/retrieval-recall-benchmark.md#recorded-scifact-results) when changing search or ranking behavior
+- **Memory and startup**: Measure under a named workload and configuration; do not rely on unverified cross-system headline ranges
 
 ---
 

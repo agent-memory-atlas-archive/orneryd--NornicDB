@@ -442,7 +442,7 @@ Health/liveness probes must NOT target `/nornicdb/search` for any `warming=lazy`
 - **[WAL Compaction](wal-compaction.md)** - Automatic disk space management
 - **[Docker Deployment](../getting-started/docker-deployment.md)** - Complete Docker guide
 - **[Raspberry Pi](../packaging/raspberry-pi.md)** - Edge deployment guide
-- **[Performance Benchmarks](../performance/benchmarks-vs-neo4j.md)** - Performance comparison
+- **[Current Northwind Benchmark](../performance/1.1.0-northwind-results/comparison.md)** - Neo4j performance and resource comparison
 
 ---
 
