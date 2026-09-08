@@ -167,6 +167,18 @@ func (s *Server) withBifrostRBAC(r *http.Request) *http.Request {
 	ctx = auth.WithRequestResolvedAccessResolver(ctx, func(dbName string) auth.ResolvedAccess {
 		return s.getResolvedAccess(claims, dbName)
 	})
+	ctx = auth.WithRequestEntitlementResolver(ctx, func(dbName string, permission auth.Permission) bool {
+		switch permission {
+		case auth.PermRead:
+			return s.getResolvedAccess(claims, dbName).Read
+		case auth.PermWrite:
+			return s.getResolvedAccess(claims, dbName).Write
+		case auth.PermSchema, auth.PermAdmin:
+			return hasPermission(s, claims.Roles, permission)
+		default:
+			return false
+		}
+	})
 	selections := make(map[string]string)
 	defaultDatabase := ""
 	if s.dbManager != nil {

@@ -432,13 +432,16 @@ func (e *StorageExecutor) executeMatchWithCallSubquery(ctx context.Context, cyph
 		if useErr != nil {
 			return nil, localizedError(localization.CypherSubqueriesUseClauseFailed(useErr), useErr)
 		}
+		if authErr := authorizeDatabaseSelection(ctx, useDB); authErr != nil {
+			return nil, authErr
+		}
 		scopedExec, resolvedDB, scopeErr := e.scopedExecutorForUse(useDB, GetAuthTokenFromContext(ctx))
 		if scopeErr != nil {
 			return nil, localizedError(localization.CypherSubqueriesUseDatabaseFailed(useDB, scopeErr), scopeErr)
 		}
 		subqueryExecutor = scopedExec
 		subqueryBody = useRemaining
-		ctx = context.WithValue(ctx, ctxKeyUseDatabase, resolvedDB)
+		ctx = withExecutionDatabase(ctx, resolvedDB)
 	}
 	// Check if subquery starts with "WITH <variable>" - this imports outer context
 	upperBody := strings.ToUpper(strings.TrimSpace(subqueryBody))
@@ -1360,13 +1363,16 @@ func (e *StorageExecutor) executeCallSubquery(ctx context.Context, cypher string
 		if useErr != nil {
 			return nil, localizedError(localization.CypherSubqueriesUseClauseFailed(useErr), useErr)
 		}
+		if authErr := authorizeDatabaseSelection(ctx, useDB); authErr != nil {
+			return nil, authErr
+		}
 		scopedExec, resolvedDB, scopeErr := e.scopedExecutorForUse(useDB, GetAuthTokenFromContext(ctx))
 		if scopeErr != nil {
 			return nil, localizedError(localization.CypherSubqueriesUseDatabaseFailed(useDB, scopeErr), scopeErr)
 		}
 		subqueryExecutor = scopedExec
 		subqueryBody = useRemaining
-		ctx = context.WithValue(ctx, ctxKeyUseDatabase, resolvedDB)
+		ctx = withExecutionDatabase(ctx, resolvedDB)
 	}
 
 	// Execute the inner subquery
@@ -1958,12 +1964,15 @@ func (e *StorageExecutor) executeChainedCallSubquery(ctx context.Context, seedRe
 
 	targetExec := e
 	if hasUse {
+		if err := authorizeDatabaseSelection(ctx, useDB); err != nil {
+			return nil, err
+		}
 		scopedExec, resolvedDB, err := e.scopedExecutorForUse(useDB, GetAuthTokenFromContext(ctx))
 		if err != nil {
 			return nil, err
 		}
 		targetExec = scopedExec
-		ctx = context.WithValue(ctx, ctxKeyUseDatabase, resolvedDB)
+		ctx = withExecutionDatabase(ctx, resolvedDB)
 		subqueryBody = bodyWithoutUse
 	}
 

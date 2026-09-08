@@ -191,7 +191,10 @@ func (e *StorageExecutor) executeShellCommand(ctx context.Context, command strin
 			return nil, ctx, localizedError(localization.CypherCommandRoutingShellUseDatabaseRequired(), nil)
 		}
 		dbName := strings.Fields(args)[0]
-		ctx = context.WithValue(ctx, ctxKeyUseDatabase, dbName)
+		if err := authorizeDatabaseSelection(ctx, dbName); err != nil {
+			return nil, ctx, err
+		}
+		ctx = withExecutionDatabase(ctx, dbName)
 		return &ExecuteResult{
 			Columns: []string{"database"},
 			Rows:    [][]interface{}{{"switched"}},

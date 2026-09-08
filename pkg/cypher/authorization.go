@@ -20,10 +20,13 @@ type PermissionRequirements struct {
 func QueryPermissionRequirements(query string) PermissionRequirements {
 	keywords := queryKeywords(query)
 	requirements := PermissionRequirements{
-		Read: true,
-		Write: keywords["CREATE"] || keywords["DELETE"] || keywords["SET"] ||
-			keywords["MERGE"] || keywords["REMOVE"],
-		Schema: keywords["INDEX"] || keywords["CONSTRAINT"],
+		Read:   true,
+		Schema: isSchemaPermissionQuery(query),
+		Admin:  isAdminPermissionQuery(query),
+	}
+	if !requirements.Schema && !requirements.Admin {
+		requirements.Write = keywords["CREATE"] || keywords["DELETE"] || keywords["SET"] ||
+			keywords["MERGE"] || keywords["REMOVE"]
 	}
 
 	if procedure, found := RegisteredProcedureForCall(query); found {
@@ -37,6 +40,82 @@ func QueryPermissionRequirements(query string) PermissionRequirements {
 		}
 	}
 	return requirements
+}
+
+func isSchemaPermissionQuery(query string) bool {
+	commandOffset := firstExecutableCypherOffset(query)
+	for _, command := range [][2]string{
+		{"CREATE", "INDEX"},
+		{"CREATE", "RANGE INDEX"},
+		{"CREATE", "FULLTEXT INDEX"},
+		{"CREATE", "VECTOR INDEX"},
+		{"DROP", "INDEX"},
+		{"CREATE", "CONSTRAINT"},
+		{"DROP", "CONSTRAINT"},
+	} {
+		if findMultiWordKeywordIndex(query, command[0], command[1]) == commandOffset {
+			return true
+		}
+	}
+	return false
+}
+
+func isAdminPermissionQuery(query string) bool {
+	commandOffset := firstExecutableCypherOffset(query)
+	for _, command := range [][2]string{
+		{"CREATE", "DATABASE"},
+		{"DROP", "DATABASE"},
+		{"ALTER", "DATABASE"},
+		{"CREATE", "COMPOSITE DATABASE"},
+		{"DROP", "COMPOSITE DATABASE"},
+		{"ALTER", "COMPOSITE DATABASE"},
+		{"CREATE", "ALIAS"},
+		{"DROP", "ALIAS"},
+		{"CREATE", "DECAY PROFILE"},
+		{"ALTER", "DECAY PROFILE"},
+		{"DROP", "DECAY PROFILE"},
+		{"CREATE", "PROMOTION PROFILE"},
+		{"ALTER", "PROMOTION PROFILE"},
+		{"DROP", "PROMOTION PROFILE"},
+		{"CREATE", "PROMOTION POLICY"},
+		{"ALTER", "PROMOTION POLICY"},
+		{"DROP", "PROMOTION POLICY"},
+	} {
+		if findMultiWordKeywordIndex(query, command[0], command[1]) == commandOffset {
+			return true
+		}
+	}
+	return isCreateProcedureCommand(query) || isDropProcedureCommand(query)
+}
+
+func firstExecutableCypherOffset(query string) int {
+	index := 0
+	if strings.HasPrefix(query, "\xef\xbb\xbf") {
+		index = 3
+	}
+	for {
+		for index < len(query) && isASCIISpace(query[index]) {
+			index++
+		}
+		switch {
+		case index+1 < len(query) && query[index] == '/' && query[index+1] == '/':
+			index += 2
+			for index < len(query) && query[index] != '\n' {
+				index++
+			}
+		case index+1 < len(query) && query[index] == '/' && query[index+1] == '*':
+			index += 2
+			for index+1 < len(query) && (query[index] != '*' || query[index+1] != '/') {
+				index++
+			}
+			if index+1 >= len(query) {
+				return len(query)
+			}
+			index += 2
+		default:
+			return index
+		}
+	}
 }
 
 func queryKeywords(query string) map[string]bool {
@@ -92,9 +171,27 @@ func queryKeywords(query string) map[string]bool {
 		for index < len(query) && isCypherIdentifierPart(query[index]) {
 			index++
 		}
+		if isQualifiedOrMapKey(query, start, index) {
+			continue
+		}
 		keywords[strings.ToUpper(query[start:index])] = true
 	}
 	return keywords
+}
+
+func isQualifiedOrMapKey(query string, start, end int) bool {
+	left := start - 1
+	for left >= 0 && isASCIISpace(query[left]) {
+		left--
+	}
+	if left >= 0 && (query[left] == '.' || query[left] == ':' || query[left] == '$') {
+		return true
+	}
+	right := end
+	for right < len(query) && isASCIISpace(query[right]) {
+		right++
+	}
+	return right < len(query) && query[right] == ':'
 }
 
 func isCypherIdentifierStart(value byte) bool {
@@ -110,6 +207,17 @@ type PermissionChecker func(permission string) bool
 
 type permissionCheckerKey struct{}
 
+// DatabasePermissionResolver answers whether the caller holds an entitlement
+// for the database where a statement is executing.
+type DatabasePermissionResolver func(database, permission string) bool
+
+type databaseAuthorization struct {
+	database string
+	resolver DatabasePermissionResolver
+}
+
+type databaseAuthorizationKey struct{}
+
 // WithPermissionChecker attaches a caller's effective entitlements to an
 // execution context. Nested dynamic statements inherit the same checker.
 func WithPermissionChecker(ctx context.Context, checker PermissionChecker) context.Context {
@@ -117,6 +225,35 @@ func WithPermissionChecker(ctx context.Context, checker PermissionChecker) conte
 		return ctx
 	}
 	return context.WithValue(ctx, permissionCheckerKey{}, checker)
+}
+
+// WithDatabasePermissionResolver attaches database-scoped entitlements to an
+// execution context. USE routing updates the selected database automatically.
+func WithDatabasePermissionResolver(ctx context.Context, database string, resolver DatabasePermissionResolver) context.Context {
+	if resolver == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, databaseAuthorizationKey{}, databaseAuthorization{
+		database: database,
+		resolver: resolver,
+	})
+}
+
+func withExecutionDatabase(ctx context.Context, database string) context.Context {
+	ctx = context.WithValue(ctx, ctxKeyUseDatabase, database)
+	authorization, ok := ctx.Value(databaseAuthorizationKey{}).(databaseAuthorization)
+	if !ok {
+		return ctx
+	}
+	authorization.database = database
+	return context.WithValue(ctx, databaseAuthorizationKey{}, authorization)
+}
+
+func authorizeDatabaseSelection(ctx context.Context, database string) error {
+	if _, ok := ctx.Value(databaseAuthorizationKey{}).(databaseAuthorization); !ok {
+		return nil
+	}
+	return AuthorizeQuery(withExecutionDatabase(ctx, database), "RETURN 1")
 }
 
 // PermissionDeniedError identifies the entitlement needed for a query.
@@ -138,12 +275,19 @@ func (e *PermissionDeniedError) Error() string {
 }
 
 // AuthorizeQuery enforces requirements when an entitlement checker is present.
-// It is used at nested execution boundaries, where Bolt cannot inspect a
-// statement supplied dynamically by a procedure argument.
+// Top-level and nested execution boundaries both call it so dynamically
+// supplied procedure statements cannot bypass transport authorization.
 func AuthorizeQuery(ctx context.Context, query string) error {
 	checker, _ := ctx.Value(permissionCheckerKey{}).(PermissionChecker)
-	if checker == nil {
+	databaseAuth, hasDatabaseAuth := ctx.Value(databaseAuthorizationKey{}).(databaseAuthorization)
+	if checker == nil && !hasDatabaseAuth {
 		return nil
+	}
+	hasPermission := checker
+	if hasDatabaseAuth {
+		hasPermission = func(permission string) bool {
+			return databaseAuth.resolver(databaseAuth.database, permission)
+		}
 	}
 	requirements := QueryPermissionRequirements(query)
 	for _, permission := range []struct {
@@ -155,7 +299,7 @@ func AuthorizeQuery(ctx context.Context, query string) error {
 		{name: "write", required: requirements.Write},
 		{name: "read", required: requirements.Read},
 	} {
-		if permission.required && !checker(permission.name) {
+		if permission.required && !hasPermission(permission.name) {
 			return &PermissionDeniedError{Permission: permission.name}
 		}
 	}

@@ -25,23 +25,29 @@ func (e *StorageExecutor) executeInternal(ctx context.Context, cypher string, pa
 	if cypher == "" {
 		return nil, localizedError(localization.CypherCoreEmptyQuery(), nil)
 	}
-	if err := AuthorizeQuery(ctx, cypher); err != nil {
-		return nil, err
-	}
 
 	if useDB, remaining, hasUse, err := parseLeadingUseClause(cypher); hasUse || err != nil {
 		if err != nil {
+			return nil, err
+		}
+		if err := authorizeDatabaseSelection(ctx, useDB); err != nil {
 			return nil, err
 		}
 		scopedExec, resolvedDB, err := e.scopedExecutorForUse(useDB, GetAuthTokenFromContext(ctx))
 		if err != nil {
 			return nil, err
 		}
-		ctx = context.WithValue(ctx, ctxKeyUseDatabase, resolvedDB)
+		ctx = withExecutionDatabase(ctx, resolvedDB)
 		if strings.TrimSpace(remaining) == "" {
+			if err := AuthorizeQuery(ctx, "RETURN 1"); err != nil {
+				return nil, err
+			}
 			return &ExecuteResult{Columns: []string{"database"}, Rows: [][]interface{}{{resolvedDB}}}, nil
 		}
 		return scopedExec.executeInternal(ctx, remaining, params)
+	}
+	if err := AuthorizeQuery(ctx, cypher); err != nil {
+		return nil, err
 	}
 
 	// Basic syntax validation to preserve existing error behavior.

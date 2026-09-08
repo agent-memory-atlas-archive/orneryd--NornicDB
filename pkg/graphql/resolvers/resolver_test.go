@@ -74,7 +74,7 @@ func createNodeViaCypher(t *testing.T, resolver *Resolver, labels []string, prop
 	propsStr += "}"
 
 	query := fmt.Sprintf("CREATE (n%s %s) RETURN n", labelsStr, propsStr)
-	result, err := resolver.executeCypher(ctx, query, params, "", false)
+	result, err := resolver.executeCypher(ctx, query, params, "")
 	require.NoError(t, err)
 	require.Len(t, result.Rows, 1)
 
@@ -1438,19 +1438,53 @@ func TestResolverAccessControlAdditionalCoverage(t *testing.T) {
 		deniedCtx := auth.WithRequestResolvedAccessResolver(ctx, func(string) auth.ResolvedAccess {
 			return auth.ResolvedAccess{Read: true, Write: false}
 		})
-		_, err := resolver.executeCypher(deniedCtx, "CREATE (n:Denied)", nil, "", true)
+		_, err := resolver.executeCypher(deniedCtx, "CREATE (n:Denied)", nil, "")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "write on database")
+		assert.Contains(t, err.Error(), "write permission")
+	})
+
+	t.Run("query cypher rejects writes for read-only access", func(t *testing.T) {
+		_, err := resolver.executeCypher(ctx, "CREATE (:Protected)", nil, "")
+		require.NoError(t, err)
+
+		readOnlyCtx := auth.WithRequestResolvedAccessResolver(ctx, func(string) auth.ResolvedAccess {
+			return auth.ResolvedAccess{Read: true, Write: false}
+		})
+		query := &queryResolver{resolver}
+		_, err = query.queryCypher(readOnlyCtx, models.CypherInput{
+			Statement: "MATCH (n:Protected) DETACH DELETE n",
+		})
+		require.Error(t, err)
+
+		result, err := resolver.executeCypher(ctx, "MATCH (n:Protected) RETURN count(n)", nil, "")
+		require.NoError(t, err)
+		require.Equal(t, int64(1), result.Rows[0][0])
 	})
 
 	t.Run("execute cypher allows write when resolver grants access", func(t *testing.T) {
 		allowedCtx := auth.WithRequestResolvedAccessResolver(ctx, func(string) auth.ResolvedAccess {
 			return auth.ResolvedAccess{Read: true, Write: true}
 		})
-		result, err := resolver.executeCypher(allowedCtx, "CREATE (n:Allowed {name: 'ok'}) RETURN n", nil, "", true)
+		result, err := resolver.executeCypher(allowedCtx, "CREATE (n:Allowed {name: 'ok'}) RETURN n", nil, "")
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotEmpty(t, result.Rows)
+	})
+
+	t.Run("database aliases use canonical permissions", func(t *testing.T) {
+		require.NoError(t, dbManager.CreateDatabase("restricted"))
+		require.NoError(t, dbManager.CreateAlias("restricted-alias", "restricted"))
+		aliasCtx := auth.WithRequestDatabaseScope(ctx, auth.NewRequestDatabaseScope("nornic", map[string]string{
+			"nornic":           "nornic",
+			"restricted":       "restricted",
+			"restricted-alias": "restricted",
+		}))
+		aliasCtx = auth.WithRequestResolvedAccessResolver(aliasCtx, func(database string) auth.ResolvedAccess {
+			return auth.ResolvedAccess{Read: true, Write: database != "restricted"}
+		})
+		_, err := resolver.executeCypher(aliasCtx, "CREATE (:DeniedAlias)", nil, "restricted-alias")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "write permission")
 	})
 }
 

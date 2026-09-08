@@ -145,28 +145,18 @@ func NewResolver(db *nornicdb.DB, dbManager *multidb.DatabaseManager) *Resolver 
 // If database is empty, uses the configured default database (typically "nornic").
 // Enforces per-database RBAC: if request context has DatabaseAccessMode, checks CanAccessDatabase(effectiveDb).
 func (r *Resolver) getCypherExecutor(ctx context.Context, database string) (*cypher.StorageExecutor, error) {
-	effectiveDb := database
-	if effectiveDb == "" {
-		effectiveDb = r.dbManager.DefaultDatabaseName()
+	effectiveDb, err := r.resolveCypherDatabase(ctx, database)
+	if err != nil {
+		return nil, err
 	}
 	mode := auth.RequestDatabaseAccessModeFromContext(ctx)
 	if mode != nil && !mode.CanAccessDatabase(effectiveDb) {
 		return nil, fmt.Errorf("access to database '%s' is not allowed", effectiveDb)
 	}
 
-	var storage storage.Engine
-	var err error
-	if database != "" {
-		storage, err = r.dbManager.GetStorage(database)
-		if err != nil {
-			return nil, fmt.Errorf("database '%s' not found: %w", database, err)
-		}
-	} else {
-		defaultDBName := r.dbManager.DefaultDatabaseName()
-		storage, err = r.dbManager.GetStorage(defaultDBName)
-		if err != nil {
-			return nil, fmt.Errorf("default database '%s' not found: %w", defaultDBName, err)
-		}
+	storage, err := r.dbManager.GetStorage(effectiveDb)
+	if err != nil {
+		return nil, fmt.Errorf("database '%s' not found: %w", effectiveDb, err)
 	}
 
 	executor := cypher.NewStorageExecutor(storage)
@@ -196,24 +186,64 @@ func (r *Resolver) getCypherExecutor(ctx context.Context, database string) (*cyp
 	return executor, nil
 }
 
+func (r *Resolver) resolveCypherDatabase(ctx context.Context, database string) (string, error) {
+	if scope := auth.RequestDatabaseScopeFromContext(ctx); scope != nil {
+		resolved, allowed := scope.Resolve(database)
+		if !allowed {
+			return "", fmt.Errorf("access to database '%s' is not allowed", database)
+		}
+		return resolved, nil
+	}
+	if database == "" {
+		return r.dbManager.DefaultDatabaseName(), nil
+	}
+	resolved, err := r.dbManager.ResolveDatabase(database)
+	if err != nil {
+		return "", fmt.Errorf("database '%s' not found: %w", database, err)
+	}
+	return resolved, nil
+}
+
 // executeCypher executes a Cypher query using the specified database's namespaced storage.
 // If database is empty, uses the default database.
-// When isMutation is true, enforces per-database write permission via ResolvedAccess(database).Write.
-func (r *Resolver) executeCypher(ctx context.Context, query string, params map[string]interface{}, database string, isMutation bool) (*nornicdb.CypherResult, error) {
-	effectiveDb := database
-	if effectiveDb == "" {
-		effectiveDb = r.dbManager.DefaultDatabaseName()
+// Authorization is derived from the Cypher statement and enforced by the executor.
+func (r *Resolver) executeCypher(ctx context.Context, query string, params map[string]interface{}, database string) (*nornicdb.CypherResult, error) {
+	effectiveDb, err := r.resolveCypherDatabase(ctx, database)
+	if err != nil {
+		return nil, err
 	}
-	if isMutation {
-		resolver := auth.RequestResolvedAccessResolverFromContext(ctx)
-		if resolver != nil {
-			ra := resolver(effectiveDb)
-			if !ra.Write {
-				return nil, fmt.Errorf("write on database '%s' is not allowed", effectiveDb)
+	if entitlementResolver := auth.RequestEntitlementResolverFromContext(ctx); entitlementResolver != nil {
+		ctx = cypher.WithDatabasePermissionResolver(ctx, effectiveDb, func(database, permission string) bool {
+			if scope := auth.RequestDatabaseScopeFromContext(ctx); scope != nil {
+				resolved, allowed := scope.Resolve(database)
+				if !allowed {
+					return false
+				}
+				database = resolved
 			}
-		}
+			return entitlementResolver(database, auth.Permission(permission))
+		})
+	} else if accessResolver := auth.RequestResolvedAccessResolverFromContext(ctx); accessResolver != nil {
+		ctx = cypher.WithDatabasePermissionResolver(ctx, effectiveDb, func(database, permission string) bool {
+			if scope := auth.RequestDatabaseScopeFromContext(ctx); scope != nil {
+				resolved, allowed := scope.Resolve(database)
+				if !allowed {
+					return false
+				}
+				database = resolved
+			}
+			access := accessResolver(database)
+			switch auth.Permission(permission) {
+			case auth.PermRead:
+				return access.Read
+			case auth.PermWrite:
+				return access.Write
+			default:
+				return false
+			}
+		})
 	}
-	executor, err := r.getCypherExecutor(ctx, database)
+	executor, err := r.getCypherExecutor(ctx, effectiveDb)
 	if err != nil {
 		return nil, err
 	}

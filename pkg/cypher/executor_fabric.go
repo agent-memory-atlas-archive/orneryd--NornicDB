@@ -126,6 +126,9 @@ func (e *StorageExecutor) executeViaPreparedFabricWithTx(ctx context.Context, cy
 		authToken:  authToken,
 		autoCommit: autoCommit,
 	}, func(dbName string) (storage.Engine, error) {
+		if err := authorizeDatabaseSelection(ctx, dbName); err != nil {
+			return nil, err
+		}
 		if e.dbManager != nil {
 			engineIface, err := e.dbManager.GetStorageForUse(dbName, authToken)
 			if err == nil {
@@ -526,6 +529,7 @@ func (c *cypherFabricExecutor) ExecuteQueryWithRecord(ctx context.Context, dbNam
 		}
 	}
 
+	ctx = withExecutionDatabase(ctx, dbName)
 	result, err := exec.executeInternal(ctx, query, params)
 	if err != nil {
 		return nil, nil, err

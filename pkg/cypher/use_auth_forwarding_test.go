@@ -2,6 +2,7 @@ package cypher
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,42 @@ func TestUseClause_ForwardsAuthTokenToDatabaseManager(t *testing.T) {
 	_, err := exec.Execute(ctx, "USE cmp RETURN 1 AS ok", nil)
 	require.NoError(t, err)
 	require.Equal(t, "Bearer forwarded-token", mgr.lastAuthToken)
+}
+
+func TestUseClause_AuthorizesAgainstTargetDatabase(t *testing.T) {
+	base := newTestMemoryEngine(t)
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(base, "nornic"))
+	target := storage.NewNamespacedEngine(base, "cmp")
+	exec.SetDatabaseManager(&useAuthDBManager{engine: target})
+
+	ctx := WithDatabasePermissionResolver(context.Background(), "nornic", func(database, permission string) bool {
+		return permission == "read" || permission == "write" && database == "cmp"
+	})
+	_, err := exec.Execute(ctx, "USE cmp CREATE (:AllowedOnTarget)", nil)
+	require.NoError(t, err)
+
+	nodes, err := target.GetNodesByLabel("AllowedOnTarget")
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+}
+
+func TestUseClause_RejectsUnauthorizedTargetBeforeRouting(t *testing.T) {
+	base := newTestMemoryEngine(t)
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(base, "nornic"))
+	manager := &useAuthDBManager{engine: storage.NewNamespacedEngine(base, "cmp")}
+	exec.SetDatabaseManager(manager)
+	ctx := WithDatabasePermissionResolver(context.Background(), "nornic", func(database, permission string) bool {
+		return database == "nornic" && permission == "read"
+	})
+
+	for _, query := range []string{"USE cmp RETURN 1 AS value", "USE cmp"} {
+		manager.lastAuthToken = ""
+		_, err := exec.Execute(WithAuthToken(ctx, "Bearer should-not-route"), query, nil)
+		var denied *PermissionDeniedError
+		require.True(t, errors.As(err, &denied))
+		require.Equal(t, "read", denied.Permission)
+		require.Empty(t, manager.lastAuthToken)
+	}
 }
 
 func TestParseLeadingUseClauseAndDynamicGraphRefs(t *testing.T) {

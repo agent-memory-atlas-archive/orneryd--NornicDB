@@ -60,11 +60,17 @@ func TestRequestRBACContextRoundTrip(t *testing.T) {
 	if got := RequestResolvedAccessResolverFromContext(base); got != nil {
 		t.Fatalf("expected nil resolver without context, got non-nil resolver")
 	}
+	if got := RequestEntitlementResolverFromContext(base); got != nil {
+		t.Fatalf("expected nil entitlement resolver without context, got non-nil resolver")
+	}
 
 	ctx := WithRequestPrincipalRoles(base, []string{"admin", "editor"})
 	ctx = WithRequestDatabaseAccessMode(ctx, FullDatabaseAccessMode)
 	ctx = WithRequestResolvedAccessResolver(ctx, func(db string) ResolvedAccess {
 		return ResolvedAccess{Read: db != "forbidden", Write: db == "system"}
+	})
+	ctx = WithRequestEntitlementResolver(ctx, func(db string, permission Permission) bool {
+		return db == "system" && permission == PermAdmin
 	})
 
 	roles := RequestPrincipalRolesFromContext(ctx)
@@ -82,6 +88,10 @@ func TestRequestRBACContextRoundTrip(t *testing.T) {
 	got := resolver("system")
 	if !got.Read || !got.Write {
 		t.Fatalf("unexpected resolved access from resolver: %#v", got)
+	}
+	entitlementResolver := RequestEntitlementResolverFromContext(ctx)
+	if entitlementResolver == nil || !entitlementResolver("system", PermAdmin) || entitlementResolver("nornic", PermAdmin) {
+		t.Fatalf("unexpected entitlement resolver result")
 	}
 }
 

@@ -15,8 +15,12 @@ var (
 	requestRBACKeyPrincipalRoles         = requestRBACKey("principal_roles")
 	requestRBACKeyDatabaseAccessMode     = requestRBACKey("database_access_mode")
 	requestRBACKeyResolvedAccessResolver = requestRBACKey("resolved_access_resolver")
+	requestRBACKeyEntitlementResolver    = requestRBACKey("entitlement_resolver")
 	requestRBACKeyDatabaseScope          = requestRBACKey("database_scope")
 )
+
+// RequestEntitlementResolver checks an effective permission for a database.
+type RequestEntitlementResolver func(database string, permission Permission) bool
 
 // RequestDatabaseScope is the server-derived set of database names and aliases
 // an authenticated principal may select for one request.
@@ -89,6 +93,11 @@ func WithRequestResolvedAccessResolver(ctx context.Context, fn func(string) Reso
 	return context.WithValue(ctx, requestRBACKeyResolvedAccessResolver, fn)
 }
 
+// WithRequestEntitlementResolver attaches complete database-scoped entitlements.
+func WithRequestEntitlementResolver(ctx context.Context, resolver RequestEntitlementResolver) context.Context {
+	return context.WithValue(ctx, requestRBACKeyEntitlementResolver, resolver)
+}
+
 // WithRequestDatabaseScope attaches the server-derived database scope.
 func WithRequestDatabaseScope(ctx context.Context, scope *RequestDatabaseScope) context.Context {
 	return context.WithValue(ctx, requestRBACKeyDatabaseScope, scope)
@@ -110,6 +119,12 @@ func RequestDatabaseAccessModeFromContext(ctx context.Context) DatabaseAccessMod
 func RequestResolvedAccessResolverFromContext(ctx context.Context) func(string) ResolvedAccess {
 	v, _ := ctx.Value(requestRBACKeyResolvedAccessResolver).(func(string) ResolvedAccess)
 	return v
+}
+
+// RequestEntitlementResolverFromContext returns the effective entitlement resolver.
+func RequestEntitlementResolverFromContext(ctx context.Context) RequestEntitlementResolver {
+	resolver, _ := ctx.Value(requestRBACKeyEntitlementResolver).(RequestEntitlementResolver)
+	return resolver
 }
 
 // RequestDatabaseScopeFromContext returns the server-derived database scope.

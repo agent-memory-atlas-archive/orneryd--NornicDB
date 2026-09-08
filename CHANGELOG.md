@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.3.1] - 9/8/2026
+
+### Security
+
+- **Fixed a GraphQL arbitrary-Cypher authorization bypass.** `Query.cypher`
+  previously allowed authenticated read-only users to execute data-changing
+  statements because write checks depended on the GraphQL operation type.
+  Top-level and nested Cypher execution now enforce canonical read, write,
+  schema, and admin requirements against the caller's effective access for the
+  selected database. Database aliases and `USE`/Fabric targets are resolved
+  against the request's database scope and authorized before storage routing.
+  Reported by Sevban Dönmez (`jankesec`).
+
 ### Added
 
 - **Editable knowledge-policy control plane.** Decay bindings and promotion
@@ -19,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   result, and authoritative policy state is reloaded after both successful and
   failed updates.
 
+### Changed
+
+- **Performance documentation now uses current, workload-scoped evidence.**
+  Cross-system claims reference the reproducible Northwind comparison and BEIR
+  SciFact retrieval evaluation, report correctness alongside latency,
+  throughput, resource use, and retrieval quality, and distinguish measured
+  configurations from general product claims.
+
 ### Fixed
 
 - **Relationship updates cannot overwrite peer writes published after validation.**
@@ -27,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A late peer update or deletion causes the stale writer to return the existing
   transient conflict error instead of losing newer properties or resurrecting
   a deleted relationship.
+
+- **Transaction snapshot reads no longer admit unpublished MVCC reservations.**
+  A peer could reserve a sequence, let a reader enumerate an existing edge,
+  then publish its deletion at that same sequence. Snapshot lookups now share
+  one pinned read-only Badger transaction, and write admission compares physical
+  publication revisions as well as logical versions. The conflicting write
+  keeps the existing transient error contract without serializing transactions.
 
 ## [v1.3.0] - 9/5/2026
 
@@ -263,14 +291,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Updated AWS SDK dependencies for published security advisories.**
 
 ### Fixed
-
-- **Transaction snapshot reads no longer admit unpublished MVCC reservations.**
-  A peer could reserve a sequence, let a reader enumerate an existing edge,
-  then publish its deletion at that same sequence. Fresh underlying read views
-  made the edge disappear inside the reader's snapshot. Snapshot lookups now
-  share one read-only Badger transaction, and write admission compares physical
-  publication revisions as well as logical versions. The conflicting write
-  keeps the existing transient error contract without serializing transactions.
 
 - **Relationship `MERGE` now includes properties from the pattern in its
   identity.**

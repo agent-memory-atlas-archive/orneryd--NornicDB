@@ -1364,18 +1364,27 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 		if err != nil {
 			return nil, err
 		}
+		if err := authorizeDatabaseSelection(ctx, useDB); err != nil {
+			return nil, err
+		}
 		scopedExec, resolvedDB, err := e.scopedExecutorForUse(useDB, GetAuthTokenFromContext(ctx))
 		if err != nil {
 			return nil, err
 		}
-		ctx = context.WithValue(ctx, ctxKeyUseDatabase, resolvedDB)
+		ctx = withExecutionDatabase(ctx, resolvedDB)
 		if strings.TrimSpace(remaining) == "" {
+			if err := AuthorizeQuery(ctx, "RETURN 1"); err != nil {
+				return nil, err
+			}
 			return &ExecuteResult{
 				Columns: []string{"database"},
 				Rows:    [][]interface{}{{resolvedDB}},
 			}, nil
 		}
 		return scopedExec.Execute(ctx, remaining, params)
+	}
+	if err := AuthorizeQuery(ctx, cypher); err != nil {
+		return nil, err
 	}
 
 	// Reject data queries on composite root — callers must USE a constituent.

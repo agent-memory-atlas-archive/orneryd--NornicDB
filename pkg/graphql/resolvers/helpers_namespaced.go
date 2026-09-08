@@ -85,7 +85,7 @@ func (r *Resolver) createNodeViaCypher(ctx context.Context, labels []string, pro
 	propsStr, params := buildPropertiesString(properties)
 
 	query := fmt.Sprintf("CREATE (n%s %s) RETURN n", labelsStr, propsStr)
-	result, err := r.executeCypher(ctx, query, params, "", true)
+	result, err := r.executeCypher(ctx, query, params, "")
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +118,7 @@ func (r *Resolver) updateNodeViaCypher(ctx context.Context, id string, propertie
 	setClause := strings.Join(setParts, ", ")
 	// Use id(n) function for matching internal storage ID, or fallback to n.id property
 	query := fmt.Sprintf("MATCH (n) WHERE id(n) = $nodeId OR n.id = $nodeId SET %s RETURN n", setClause)
-	result, err := r.executeCypher(ctx, query, params, "", true)
+	result, err := r.executeCypher(ctx, query, params, "")
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +143,7 @@ func (r *Resolver) deleteNodeViaCypher(ctx context.Context, id string) error {
 	// Use id(n) function for matching internal storage ID, or fallback to n.id property
 	query := "MATCH (n) WHERE id(n) = $id OR n.id = $id DETACH DELETE n"
 	params := map[string]interface{}{"id": id}
-	_, err = r.executeCypher(ctx, query, params, "", true)
+	_, err = r.executeCypher(ctx, query, params, "")
 	return err
 }
 
@@ -151,7 +151,7 @@ func (r *Resolver) getNodeViaCypher(ctx context.Context, id string) (*nornicdb.N
 	// Use id(n) function for matching internal storage ID, or fallback to n.id property
 	query := "MATCH (n) WHERE id(n) = $id OR n.id = $id RETURN n LIMIT 1"
 	params := map[string]interface{}{"id": id}
-	result, err := r.executeCypher(ctx, query, params, "", false)
+	result, err := r.executeCypher(ctx, query, params, "")
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func (r *Resolver) listNodesViaCypher(ctx context.Context, label string, limit, 
 		"limit":  limit,
 	}
 
-	result, err := r.executeCypher(ctx, query, params, "", false)
+	result, err := r.executeCypher(ctx, query, params, "")
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +201,7 @@ func (r *Resolver) createEdgeViaCypher(ctx context.Context, source, target, edge
 	// Use id(n) function for matching internal storage ID, or fallback to n.id property
 	// Note: id() returns unprefixed IDs when using NamespacedEngine, so source/target should be unprefixed
 	query := fmt.Sprintf("MATCH (a), (b) WHERE (id(a) = $source OR a.id = $source) AND (id(b) = $target OR b.id = $target) CREATE (a)-[r:%s %s]->(b) RETURN r, id(a) as source, id(b) as target", edgeType, propsStr)
-	result, err := r.executeCypher(ctx, query, params, "", true)
+	result, err := r.executeCypher(ctx, query, params, "")
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +210,7 @@ func (r *Resolver) createEdgeViaCypher(ctx context.Context, source, target, edge
 		// Try to get more info about why the match failed
 		// Check if nodes exist
 		checkQuery := "MATCH (n) WHERE id(n) = $source OR n.id = $source RETURN count(n) as cnt"
-		checkResult, _ := r.executeCypher(ctx, checkQuery, map[string]interface{}{"source": source}, "", false)
+		checkResult, _ := r.executeCypher(ctx, checkQuery, map[string]interface{}{"source": source}, "")
 		sourceExists := false
 		if checkResult != nil && len(checkResult.Rows) > 0 {
 			if cnt, ok := checkResult.Rows[0][0].(int64); ok && cnt > 0 {
@@ -227,7 +227,7 @@ func (r *Resolver) deleteEdgeViaCypher(ctx context.Context, id string) error {
 	// Use id(r) function for matching internal storage ID, or fallback to r.id property
 	query := "MATCH ()-[r]->() WHERE id(r) = $id OR r.id = $id DELETE r"
 	params := map[string]interface{}{"id": id}
-	_, err := r.executeCypher(ctx, query, params, "", true)
+	_, err := r.executeCypher(ctx, query, params, "")
 	return err
 }
 
@@ -235,7 +235,7 @@ func (r *Resolver) getEdgeViaCypher(ctx context.Context, id string) (*nornicdb.G
 	// Use id(r) function for matching internal storage ID, or fallback to r.id property
 	query := "MATCH (a)-[r]->(b) WHERE id(r) = $id OR r.id = $id RETURN r, id(a) as source, id(b) as target LIMIT 1"
 	params := map[string]interface{}{"id": id}
-	result, err := r.executeCypher(ctx, query, params, "", false)
+	result, err := r.executeCypher(ctx, query, params, "")
 	if err != nil {
 		return nil, err
 	}
@@ -263,14 +263,14 @@ func (r *Resolver) getEdgesForNodeViaCypher(ctx context.Context, nodeID string) 
 	// Query outgoing edges: match edges where start node matches
 	outgoingQuery := "MATCH (n)-[r]->(m) WHERE (id(n) = $nodeId OR n.id = $nodeId) RETURN r, id(n) as source, id(m) as target"
 	params := map[string]interface{}{"nodeId": nodeID}
-	outgoingResult, err := r.executeCypher(ctx, outgoingQuery, params, "", false)
+	outgoingResult, err := r.executeCypher(ctx, outgoingQuery, params, "")
 	if err != nil {
 		return nil, err
 	}
 
 	// Query incoming edges: match edges where end node matches
 	incomingQuery := "MATCH (n)<-[r]-(m) WHERE (id(n) = $nodeId OR n.id = $nodeId) RETURN r, id(m) as source, id(n) as target"
-	incomingResult, err := r.executeCypher(ctx, incomingQuery, params, "", false)
+	incomingResult, err := r.executeCypher(ctx, incomingQuery, params, "")
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +323,7 @@ func (r *Resolver) listEdgesViaCypher(ctx context.Context, relType string, limit
 		"limit":  limit,
 	}
 
-	result, err := r.executeCypher(ctx, query, params, "", false)
+	result, err := r.executeCypher(ctx, query, params, "")
 	if err != nil {
 		return nil, err
 	}
@@ -348,11 +348,11 @@ func (r *Resolver) listEdgesViaCypher(ctx context.Context, relType string, limit
 
 func (r *Resolver) getLabelsViaCypher(ctx context.Context) ([]string, error) {
 	query := "CALL db.labels() YIELD label RETURN label"
-	result, err := r.executeCypher(ctx, query, nil, "", false)
+	result, err := r.executeCypher(ctx, query, nil, "")
 	if err != nil {
 		// Fallback to MATCH if CALL doesn't work
 		query = "MATCH (n) RETURN DISTINCT labels(n) as labels"
-		result, err = r.executeCypher(ctx, query, nil, "", false)
+		result, err = r.executeCypher(ctx, query, nil, "")
 		if err != nil {
 			return nil, err
 		}
@@ -389,11 +389,11 @@ func (r *Resolver) getLabelsViaCypher(ctx context.Context) ([]string, error) {
 
 func (r *Resolver) getRelationshipTypesViaCypher(ctx context.Context) ([]string, error) {
 	query := "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
-	result, err := r.executeCypher(ctx, query, nil, "", false)
+	result, err := r.executeCypher(ctx, query, nil, "")
 	if err != nil {
 		// Fallback to MATCH if CALL doesn't work
 		query = "MATCH ()-[r]->() RETURN DISTINCT type(r) as type"
-		result, err = r.executeCypher(ctx, query, nil, "", false)
+		result, err = r.executeCypher(ctx, query, nil, "")
 		if err != nil {
 			return nil, err
 		}
@@ -413,7 +413,7 @@ func (r *Resolver) getRelationshipTypesViaCypher(ctx context.Context) ([]string,
 func (r *Resolver) statsViaCypher() nornicdb.DBStats {
 	// Get node count
 	nodeQuery := "MATCH (n) RETURN count(n) as count"
-	nodeResult, _ := r.executeCypher(context.Background(), nodeQuery, nil, "", false)
+	nodeResult, _ := r.executeCypher(context.Background(), nodeQuery, nil, "")
 	nodeCount := int64(0)
 	if len(nodeResult.Rows) > 0 && len(nodeResult.Rows[0]) > 0 {
 		if cnt, ok := nodeResult.Rows[0][0].(int64); ok {
@@ -423,7 +423,7 @@ func (r *Resolver) statsViaCypher() nornicdb.DBStats {
 
 	// Get edge count
 	edgeQuery := "MATCH ()-[r]->() RETURN count(r) as count"
-	edgeResult, _ := r.executeCypher(context.Background(), edgeQuery, nil, "", false)
+	edgeResult, _ := r.executeCypher(context.Background(), edgeQuery, nil, "")
 	edgeCount := int64(0)
 	if len(edgeResult.Rows) > 0 && len(edgeResult.Rows[0]) > 0 {
 		if cnt, ok := edgeResult.Rows[0][0].(int64); ok {
