@@ -23,7 +23,7 @@ func TestE2E_NornicDbKnowledgePolicyInfoReflectsSchemaCounts(t *testing.T) {
 
 	stmts := []string{
 		"CREATE DECAY PROFILE profile_alpha OPTIONS { halfLifeSeconds: 3600, function: 'exponential', scope: 'NODE', scoreFrom: 'CREATED', visibilityThreshold: 0.3 }",
-		"CREATE DECAY PROFILE binding_alpha FOR (n:MemoryEpisode) APPLY { DECAY PROFILE 'profile_alpha' }",
+		"CREATE DECAY PROFILE binding_alpha FOR (n:MemoryEpisode) APPLY { DECAY PROFILE 'profile_alpha' n.summary NO DECAY }",
 		"CREATE PROMOTION PROFILE promo_alpha OPTIONS { multiplier: 1.25, scoreFloor: 0.4, scoreCap: 0.95, scope: 'NODE' }",
 		"CREATE PROMOTION POLICY policy_alpha FOR (n:MemoryEpisode) APPLY { WHEN n.accessCount >= 3 APPLY PROFILE promo_alpha }",
 	}
@@ -179,7 +179,7 @@ func TestE2E_CallNornicDbKnowledgePolicyProfilesAndPolicies(t *testing.T) {
 
 	stmts := []string{
 		"CREATE DECAY PROFILE profile_alpha OPTIONS { halfLifeSeconds: 3600, function: 'exponential', scope: 'NODE', scoreFrom: 'CREATED', visibilityThreshold: 0.3, scoreFloor: 0.1 }",
-		"CREATE DECAY PROFILE binding_alpha FOR (n:MemoryEpisode) APPLY { DECAY PROFILE 'profile_alpha' }",
+		"CREATE DECAY PROFILE binding_alpha FOR (n:MemoryEpisode) APPLY { DECAY PROFILE 'profile_alpha' n.summary NO DECAY }",
 		"CREATE PROMOTION PROFILE promo_alpha OPTIONS { multiplier: 1.25, scoreFloor: 0.4, scoreCap: 0.95, scope: 'NODE' }",
 		"CREATE PROMOTION POLICY policy_alpha FOR (n:MemoryEpisode) APPLY { WHEN n.accessCount >= 3 APPLY PROFILE promo_alpha }",
 	}
@@ -190,7 +190,7 @@ func TestE2E_CallNornicDbKnowledgePolicyProfilesAndPolicies(t *testing.T) {
 
 	profiles, err := exec.Execute(ctx, "CALL nornicdb.knowledgepolicy.profiles()", nil)
 	require.NoError(t, err)
-	require.Equal(t, []string{"kind", "Name", "HalfLifeSeconds", "VisibilityThreshold", "ScoreFloor", "Function", "Scope", "DecayEnabled", "ScoreFrom", "ScoreFromProperty", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge", "ProfileRef", "NoDecay", "Order"}, profiles.Columns)
+	require.Equal(t, []string{"kind", "Name", "HalfLifeSeconds", "VisibilityThreshold", "ScoreFloor", "Function", "Scope", "DecayEnabled", "ScoreFrom", "ScoreFromProperty", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge", "ProfileRef", "NoDecay", "Order", "Apply"}, profiles.Columns)
 	require.Len(t, profiles.Rows, 2)
 
 	rowsByName := make(map[string][]interface{}, len(profiles.Rows))
@@ -203,10 +203,11 @@ func TestE2E_CallNornicDbKnowledgePolicyProfilesAndPolicies(t *testing.T) {
 	assert.Equal(t, "binding", rowsByName["binding_alpha"][0])
 	assert.Equal(t, "profile_alpha", rowsByName["binding_alpha"][15])
 	assert.Equal(t, 0, rowsByName["binding_alpha"][17])
+	assert.Equal(t, "DECAY PROFILE 'profile_alpha'\nn.summary NO DECAY", rowsByName["binding_alpha"][18])
 
 	policies, err := exec.Execute(ctx, "CALL nornicdb.knowledgepolicy.policies()", nil)
 	require.NoError(t, err)
-	require.Equal(t, []string{"kind", "Name", "Scope", "Multiplier", "ScoreFloor", "ScoreCap", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge"}, policies.Columns)
+	require.Equal(t, []string{"kind", "Name", "Scope", "Multiplier", "ScoreFloor", "ScoreCap", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge", "Apply"}, policies.Columns)
 	require.Len(t, policies.Rows, 2)
 
 	policyRowsByName := make(map[string][]interface{}, len(policies.Rows))
@@ -218,6 +219,100 @@ func TestE2E_CallNornicDbKnowledgePolicyProfilesAndPolicies(t *testing.T) {
 	assert.Equal(t, "policy", policyRowsByName["policy_alpha"][0])
 	assert.Equal(t, true, policyRowsByName["policy_alpha"][6])
 	assert.Equal(t, []string{"MemoryEpisode"}, policyRowsByName["policy_alpha"][7])
+	assert.Equal(t, "WHEN n.accessCount >= 3 APPLY PROFILE 'promo_alpha'", policyRowsByName["policy_alpha"][11])
+}
+
+func TestKnowledgePolicyApplyFormattingRoundTrips(t *testing.T) {
+	visibilityThreshold := 0.25
+	binding := knowledgepolicy.DecayProfileBinding{
+		ProfileRef:          "decay_base",
+		HalfLifeSeconds:     7200,
+		ScoreFloor:          0.15,
+		VisibilityThreshold: &visibilityThreshold,
+		PropertyRules: []knowledgepolicy.DecayProfilePropertyRule{
+			{PropertyPath: "summary", NoDecay: true, Order: 0},
+			{PropertyPath: "confidence", ProfileRef: "decay_slow", HalfLifeSeconds: 14400, ScoreFloor: 0.4, Order: 1},
+		},
+	}
+	var parsedBinding knowledgepolicy.DecayProfileBinding
+	require.NoError(t, parseBindingApplyBlock(formatDecayBindingApply(binding), &parsedBinding))
+	assert.Equal(t, binding.ProfileRef, parsedBinding.ProfileRef)
+	assert.Equal(t, binding.HalfLifeSeconds, parsedBinding.HalfLifeSeconds)
+	assert.Equal(t, binding.ScoreFloor, parsedBinding.ScoreFloor)
+	require.NotNil(t, parsedBinding.VisibilityThreshold)
+	assert.Equal(t, *binding.VisibilityThreshold, *parsedBinding.VisibilityThreshold)
+	assert.Equal(t, binding.PropertyRules, parsedBinding.PropertyRules)
+
+	policy := knowledgepolicy.PromotionPolicyDef{
+		OnAccess: &knowledgepolicy.PromotionPolicyOnAccess{
+			Mutations: []knowledgepolicy.OnAccessMutation{
+				{Expression: "n.accessCount = coalesce(n.accessCount, 0) + 1"},
+				{
+					Expression: "n.confidence = $evaluatedConfidence",
+					Kalman: &knowledgepolicy.KalmanConfig{
+						Mode: knowledgepolicy.KalmanModeManual, Q: 0.05, R: 50, VarianceScale: 5, WindowSize: 64,
+					},
+				},
+			},
+		},
+		WhenClauses: []knowledgepolicy.PromotionPolicyWhenClause{
+			{Predicate: "n.accessCount >= 5", ProfileRef: "boost", Order: 0},
+		},
+	}
+	var parsedPolicy knowledgepolicy.PromotionPolicyDef
+	require.NoError(t, parsePolicyApplyBlock(formatPromotionPolicyApply(policy), &parsedPolicy))
+	assert.Equal(t, policy.OnAccess, parsedPolicy.OnAccess)
+	assert.Equal(t, policy.WhenClauses, parsedPolicy.WhenClauses)
+}
+
+func TestE2E_AlterKnowledgePolicyDefinitions(t *testing.T) {
+	be, err := storage.NewBadgerEngineInMemory()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = be.Close() })
+
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(be, "test"))
+	ctx := context.Background()
+	statements := []string{
+		"CREATE DECAY PROFILE decay_a OPTIONS { halfLifeSeconds: 3600, function: 'exponential', scope: 'NODE', scoreFrom: 'CREATED' }",
+		"CREATE DECAY PROFILE decay_b OPTIONS { halfLifeSeconds: 7200, function: 'linear', scope: 'NODE', scoreFrom: 'CREATED' }",
+		"CREATE DECAY PROFILE editable_binding FOR (n:Original) APPLY { DECAY PROFILE 'decay_a' }",
+		"CREATE PROMOTION PROFILE boost OPTIONS { multiplier: 1.5, scoreFloor: 0.1, scoreCap: 1.0, scope: 'NODE' }",
+		"CREATE PROMOTION POLICY editable_policy FOR (n:Original) APPLY { WHEN n.accessCount > 1 APPLY PROFILE 'boost' }",
+		"ALTER PROMOTION POLICY editable_policy DISABLE",
+		"ALTER DECAY PROFILE editable_binding FOR (n:KnowledgeFact:Reviewed) APPLY { DECAY PROFILE 'decay_b' n.summary NO DECAY }",
+		"ALTER PROMOTION POLICY editable_policy FOR ()-[r:REFERENCES]-() APPLY { ON ACCESS { SET r.accessCount = coalesce(r.accessCount, 0) + 1 } WHEN r.accessCount >= 5 APPLY PROFILE 'boost' }",
+	}
+	for _, statement := range statements {
+		_, err := exec.Execute(ctx, statement, nil)
+		require.NoError(t, err, statement)
+	}
+
+	profiles, err := exec.Execute(ctx, "CALL nornicdb.knowledgepolicy.profiles()", nil)
+	require.NoError(t, err)
+	var bindingRow []interface{}
+	for _, row := range profiles.Rows {
+		if row[1] == "editable_binding" {
+			bindingRow = row
+		}
+	}
+	require.NotNil(t, bindingRow)
+	assert.Equal(t, []string{"KnowledgeFact", "Reviewed"}, bindingRow[11])
+	assert.Equal(t, "decay_b", bindingRow[15])
+	assert.Contains(t, bindingRow[18], "n.summary NO DECAY")
+
+	policyResult, err := exec.Execute(ctx, "CALL nornicdb.knowledgepolicy.policies()", nil)
+	require.NoError(t, err)
+	var policyRow []interface{}
+	for _, row := range policyResult.Rows {
+		if row[1] == "editable_policy" {
+			policyRow = row
+		}
+	}
+	require.NotNil(t, policyRow)
+	assert.Equal(t, "REFERENCES", policyRow[8])
+	assert.Equal(t, false, policyRow[6])
+	assert.Contains(t, policyRow[11], "ON ACCESS")
+	assert.Contains(t, policyRow[11], "WHEN r.accessCount >= 5")
 }
 
 func TestE2E_CallNornicDbKnowledgePolicyResolve(t *testing.T) {

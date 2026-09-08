@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Editable knowledge-policy control plane.** Decay bindings and promotion
+  policies now support atomic `ALTER ... FOR ... APPLY { ... }` replacement.
+  Knowledge-policy catalog procedures expose canonical `Apply` bodies for
+  lossless editing. The admin UI now provides inline ui-grid text and numeric
+  editors, constrained selects, and enablement toggles for policy targets,
+  apply directives, and profile settings, with visual validation before
+  submission. Saves are serialized, accessible popup notifications report the
+  result, and authoritative policy state is reloaded after both successful and
+  failed updates.
+
 ### Fixed
 
 - **Relationship updates cannot overwrite peer writes published after validation.**

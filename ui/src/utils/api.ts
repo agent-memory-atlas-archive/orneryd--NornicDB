@@ -317,6 +317,7 @@ export interface DecayProfileBinding {
   NoDecay?: boolean;
   VisibilityThreshold?: number;
   Order: number;
+  Apply: string;
 }
 
 export interface PromotionProfileDef {
@@ -335,6 +336,7 @@ export interface PromotionPolicyDef {
   IsWildcard: boolean;
   IsEdge: boolean;
   Enabled: boolean;
+  Apply: string;
 }
 
 export interface ScoringResolution {
@@ -569,8 +571,14 @@ class NornicDBClient {
       },
     );
     if (!res.ok) {
-      const message = await this.parseErrorMessage(res, "Cypher request failed");
-      return { results: [], errors: [{ code: "Neo.ClientError.Request.Invalid", message }] };
+      const message = await this.parseErrorMessage(
+        res,
+        "Cypher request failed",
+      );
+      return {
+        results: [],
+        errors: [{ code: "Neo.ClientError.Request.Invalid", message }],
+      };
     }
     const json = await res.json();
     return json as CypherResponse;
@@ -1745,6 +1753,7 @@ class NornicDBClient {
           NoDecay: asBoolean(row.NoDecay),
           VisibilityThreshold: asOptionalNumber(row.VisibilityThreshold),
           Order: asNumber(row.Order),
+          Apply: asString(row.Apply),
         });
       }
     }
@@ -1791,6 +1800,7 @@ class NornicDBClient {
           IsWildcard: asBoolean(row.IsWildcard),
           IsEdge: asBoolean(row.IsEdge),
           Enabled: asBoolean(row.Enabled),
+          Apply: asString(row.Apply),
         });
       }
     }
@@ -1799,6 +1809,15 @@ class NornicDBClient {
       promotion_profiles,
       promotion_policies,
     };
+  }
+
+  async alterKnowledgePolicy(
+    statement: string,
+    database?: string,
+  ): Promise<void> {
+    const dbName = await this.getResolvedDatabaseName(database);
+    const response = await this.executeCypherOnDatabase(dbName, statement);
+    this.assertCypherSuccess(response, "Failed to update knowledge policy");
   }
 
   async resolveKnowledgePolicy(params: {

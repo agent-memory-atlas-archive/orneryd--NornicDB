@@ -114,10 +114,44 @@ func (sm *SchemaManager) AlterDecayProfile(name string, updates map[string]inter
 		return localizedError(localization.StorageSchemaDecayProfileBundleNotFound(name), nil)
 	}
 
-	if err := applyBundleUpdates(bundle, updates); err != nil {
+	updated := *bundle
+	if err := applyBundleUpdates(&updated, updates); err != nil {
 		sm.mu.Unlock()
 		return err
 	}
+	if err := validateDecayProfileBundle(&updated); err != nil {
+		sm.mu.Unlock()
+		return err
+	}
+	sm.decayProfileBundles[name] = &updated
+	return sm.finishKnowledgePolicyMutationLocked()
+}
+
+// AlterDecayProfileBinding replaces the target and APPLY definition of an existing binding.
+func (sm *SchemaManager) AlterDecayProfileBinding(name string, replacement knowledgepolicy.DecayProfileBinding) error {
+	sm.mu.Lock()
+
+	existing, ok := sm.decayProfileBindings[name]
+	if !ok {
+		sm.mu.Unlock()
+		return localizedError(localization.StorageSchemaDecayProfileNotFound(name), nil)
+	}
+
+	replacement.Name = name
+	replacement.Order = existing.Order
+	if replacement.ProfileRef != "" {
+		if _, ok := sm.decayProfileBundles[replacement.ProfileRef]; !ok {
+			sm.mu.Unlock()
+			return localizedError(localization.StorageSchemaDecayProfileBundleNotFound(replacement.ProfileRef), nil)
+		}
+	}
+	if err := sm.validateBindingTarget(&replacement); err != nil {
+		sm.mu.Unlock()
+		return err
+	}
+
+	sort.Strings(replacement.TargetLabels)
+	sm.decayProfileBindings[name] = &replacement
 	return sm.finishKnowledgePolicyMutationLocked()
 }
 
@@ -213,10 +247,16 @@ func (sm *SchemaManager) AlterPromotionProfile(name string, updates map[string]i
 		return localizedError(localization.StorageSchemaPromotionProfileNotFound(name), nil)
 	}
 
-	if err := applyPromotionProfileUpdates(profile, updates); err != nil {
+	updated := *profile
+	if err := applyPromotionProfileUpdates(&updated, updates); err != nil {
 		sm.mu.Unlock()
 		return err
 	}
+	if err := validatePromotionProfile(&updated); err != nil {
+		sm.mu.Unlock()
+		return err
+	}
+	sm.promotionProfiles[name] = &updated
 	return sm.finishKnowledgePolicyMutationLocked()
 }
 
@@ -312,6 +352,32 @@ func (sm *SchemaManager) AlterPromotionPolicy(name string, updates map[string]in
 			policy.Enabled = b
 		}
 	}
+	return sm.finishKnowledgePolicyMutationLocked()
+}
+
+// AlterPromotionPolicyDefinition replaces the target and APPLY definition of an existing policy.
+func (sm *SchemaManager) AlterPromotionPolicyDefinition(name string, replacement knowledgepolicy.PromotionPolicyDef) error {
+	sm.mu.Lock()
+
+	existing, ok := sm.promotionPolicies[name]
+	if !ok {
+		sm.mu.Unlock()
+		return localizedError(localization.StorageSchemaPromotionPolicyNotFound(name), nil)
+	}
+
+	for _, clause := range replacement.WhenClauses {
+		if clause.ProfileRef != "" {
+			if _, ok := sm.promotionProfiles[clause.ProfileRef]; !ok {
+				sm.mu.Unlock()
+				return localizedError(localization.StorageSchemaPromotionProfileWhenClauseNotFound(clause.ProfileRef), nil)
+			}
+		}
+	}
+
+	replacement.Name = name
+	replacement.Enabled = existing.Enabled
+	sort.Strings(replacement.TargetLabels)
+	sm.promotionPolicies[name] = &replacement
 	return sm.finishKnowledgePolicyMutationLocked()
 }
 

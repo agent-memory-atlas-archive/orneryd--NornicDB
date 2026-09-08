@@ -32,6 +32,8 @@ func (e *StorageExecutor) executeKnowledgePolicyDDL(ctx context.Context, cypher 
 		return knowledgePolicySchemaResult("CREATE DECAY PROFILE FOR", schema.CreateDecayProfileBinding(c.Binding))
 	case *AlterDecayProfileCmd:
 		return knowledgePolicySchemaResult("ALTER DECAY PROFILE", schema.AlterDecayProfile(c.Name, c.Updates))
+	case *AlterDecayProfileBindingCmd:
+		return knowledgePolicySchemaResult("ALTER DECAY PROFILE FOR", schema.AlterDecayProfileBinding(c.Binding.Name, c.Binding))
 	case *DropDecayProfileCmd:
 		return knowledgePolicySchemaResult("DROP DECAY PROFILE", schema.DropDecayProfile(c.Name, c.IfExists))
 	case *ShowDecayProfilesCmd:
@@ -48,6 +50,8 @@ func (e *StorageExecutor) executeKnowledgePolicyDDL(ctx context.Context, cypher 
 		return knowledgePolicySchemaResult("CREATE PROMOTION POLICY", schema.CreatePromotionPolicy(c.Policy))
 	case *AlterPromotionPolicyCmd:
 		return knowledgePolicySchemaResult("ALTER PROMOTION POLICY", schema.AlterPromotionPolicy(c.Name, c.Updates))
+	case *AlterPromotionPolicyDefinitionCmd:
+		return knowledgePolicySchemaResult("ALTER PROMOTION POLICY FOR", schema.AlterPromotionPolicyDefinition(c.Policy.Name, c.Policy))
 	case *DropPromotionPolicyCmd:
 		return knowledgePolicySchemaResult("DROP PROMOTION POLICY", schema.DropPromotionPolicy(c.Name, c.IfExists))
 	case *ShowPromotionPoliciesCmd:

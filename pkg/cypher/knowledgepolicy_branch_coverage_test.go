@@ -132,12 +132,12 @@ func TestKnowledgePolicyProcedure_Branches(t *testing.T) {
 
 	profiles, err := exec.callNornicDbKnowledgePolicyProfiles()
 	require.NoError(t, err)
-	require.Equal(t, []string{"kind", "Name", "HalfLifeSeconds", "VisibilityThreshold", "ScoreFloor", "Function", "Scope", "DecayEnabled", "ScoreFrom", "ScoreFromProperty", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge", "ProfileRef", "NoDecay", "Order"}, profiles.Columns)
+	require.Equal(t, []string{"kind", "Name", "HalfLifeSeconds", "VisibilityThreshold", "ScoreFloor", "Function", "Scope", "DecayEnabled", "ScoreFrom", "ScoreFromProperty", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge", "ProfileRef", "NoDecay", "Order", "Apply"}, profiles.Columns)
 	require.Len(t, profiles.Rows, 2)
 
 	policies, err := exec.callNornicDbKnowledgePolicyPolicies()
 	require.NoError(t, err)
-	require.Equal(t, []string{"kind", "Name", "Scope", "Multiplier", "ScoreFloor", "ScoreCap", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge"}, policies.Columns)
+	require.Equal(t, []string{"kind", "Name", "Scope", "Multiplier", "ScoreFloor", "ScoreCap", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge", "Apply"}, policies.Columns)
 	require.Len(t, policies.Rows, 2)
 
 	_, err = exec.callNornicDbKnowledgePolicyResolve([]interface{}{"missing-entity"})

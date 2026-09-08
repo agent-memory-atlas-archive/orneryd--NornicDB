@@ -1,6 +1,7 @@
 package cypher
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/orneryd/nornicdb/pkg/knowledgepolicy"
@@ -36,6 +37,7 @@ func (e *StorageExecutor) callNornicDbKnowledgePolicyProfiles() (*ExecuteResult,
 			"",
 			false,
 			0,
+			"",
 		})
 	}
 	for _, binding := range bindings {
@@ -62,11 +64,12 @@ func (e *StorageExecutor) callNornicDbKnowledgePolicyProfiles() (*ExecuteResult,
 			binding.ProfileRef,
 			binding.NoDecay,
 			binding.Order,
+			formatDecayBindingApply(binding),
 		})
 	}
 
 	return &ExecuteResult{
-		Columns: []string{"kind", "Name", "HalfLifeSeconds", "VisibilityThreshold", "ScoreFloor", "Function", "Scope", "DecayEnabled", "ScoreFrom", "ScoreFromProperty", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge", "ProfileRef", "NoDecay", "Order"},
+		Columns: []string{"kind", "Name", "HalfLifeSeconds", "VisibilityThreshold", "ScoreFloor", "Function", "Scope", "DecayEnabled", "ScoreFrom", "ScoreFromProperty", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge", "ProfileRef", "NoDecay", "Order", "Apply"},
 		Rows:    rows,
 	}, nil
 }
@@ -93,6 +96,7 @@ func (e *StorageExecutor) callNornicDbKnowledgePolicyPolicies() (*ExecuteResult,
 			"",
 			false,
 			false,
+			"",
 		})
 	}
 	for _, policy := range policies {
@@ -108,13 +112,89 @@ func (e *StorageExecutor) callNornicDbKnowledgePolicyPolicies() (*ExecuteResult,
 			policy.TargetEdgeType,
 			policy.IsWildcard,
 			policy.IsEdge,
+			formatPromotionPolicyApply(policy),
 		})
 	}
 
 	return &ExecuteResult{
-		Columns: []string{"kind", "Name", "Scope", "Multiplier", "ScoreFloor", "ScoreCap", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge"},
+		Columns: []string{"kind", "Name", "Scope", "Multiplier", "ScoreFloor", "ScoreCap", "Enabled", "TargetLabels", "TargetEdgeType", "IsWildcard", "IsEdge", "Apply"},
 		Rows:    rows,
 	}, nil
+}
+
+func formatDecayBindingApply(binding knowledgepolicy.DecayProfileBinding) string {
+	lines := make([]string, 0, 5+len(binding.PropertyRules))
+	if binding.ProfileRef != "" {
+		lines = append(lines, "DECAY PROFILE "+quoteKnowledgePolicyName(binding.ProfileRef))
+	}
+	if binding.NoDecay {
+		lines = append(lines, "NO DECAY")
+	}
+	if binding.HalfLifeSeconds != 0 {
+		lines = append(lines, "DECAY HALF LIFE "+strconv.FormatInt(binding.HalfLifeSeconds, 10))
+	}
+	if binding.VisibilityThreshold != nil {
+		lines = append(lines, "DECAY VISIBILITY THRESHOLD "+formatKnowledgePolicyFloat(*binding.VisibilityThreshold))
+	}
+	if binding.ScoreFloor != 0 {
+		lines = append(lines, "DECAY FLOOR "+formatKnowledgePolicyFloat(binding.ScoreFloor))
+	}
+
+	variable := "n"
+	if binding.IsEdge {
+		variable = "r"
+	}
+	for _, rule := range binding.PropertyRules {
+		prefix := variable + "." + rule.PropertyPath
+		if rule.NoDecay {
+			lines = append(lines, prefix+" NO DECAY")
+		}
+		if rule.ProfileRef != "" {
+			lines = append(lines, prefix+" DECAY PROFILE "+quoteKnowledgePolicyName(rule.ProfileRef))
+		}
+		if rule.HalfLifeSeconds != 0 {
+			lines = append(lines, prefix+" DECAY HALF LIFE "+strconv.FormatInt(rule.HalfLifeSeconds, 10))
+		}
+		if rule.ScoreFloor != 0 {
+			lines = append(lines, prefix+" DECAY FLOOR "+formatKnowledgePolicyFloat(rule.ScoreFloor))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatPromotionPolicyApply(policy knowledgepolicy.PromotionPolicyDef) string {
+	lines := make([]string, 0, len(policy.WhenClauses)+1)
+	if policy.OnAccess != nil && len(policy.OnAccess.Mutations) > 0 {
+		mutationLines := make([]string, 0, len(policy.OnAccess.Mutations))
+		for _, mutation := range policy.OnAccess.Mutations {
+			prefix := ""
+			if mutation.Kalman != nil {
+				config := []string{
+					"q: " + formatKnowledgePolicyFloat(mutation.Kalman.Q),
+					"varianceScale: " + formatKnowledgePolicyFloat(mutation.Kalman.VarianceScale),
+					"windowSize: " + strconv.Itoa(mutation.Kalman.WindowSize),
+				}
+				if mutation.Kalman.Mode == knowledgepolicy.KalmanModeManual {
+					config = append(config, "r: "+formatKnowledgePolicyFloat(mutation.Kalman.R))
+				}
+				prefix = "WITH KALMAN { " + strings.Join(config, ", ") + " } "
+			}
+			mutationLines = append(mutationLines, "  "+prefix+"SET "+mutation.Expression)
+		}
+		lines = append(lines, "ON ACCESS {\n"+strings.Join(mutationLines, "\n")+"\n}")
+	}
+	for _, clause := range policy.WhenClauses {
+		lines = append(lines, "WHEN "+clause.Predicate+" APPLY PROFILE "+quoteKnowledgePolicyName(clause.ProfileRef))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func quoteKnowledgePolicyName(name string) string {
+	return "'" + strings.ReplaceAll(name, "'", "\\'") + "'"
+}
+
+func formatKnowledgePolicyFloat(value float64) string {
+	return strconv.FormatFloat(value, 'g', -1, 64)
 }
 
 func (e *StorageExecutor) callNornicDbKnowledgePolicyResolve(args []interface{}) (*ExecuteResult, error) {

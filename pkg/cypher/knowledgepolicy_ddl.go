@@ -197,6 +197,10 @@ type AlterDecayProfileCmd struct {
 	Updates map[string]interface{}
 }
 
+type AlterDecayProfileBindingCmd struct {
+	Binding knowledgepolicy.DecayProfileBinding
+}
+
 type DropDecayProfileCmd struct {
 	Name     string
 	IfExists bool
@@ -227,6 +231,10 @@ type CreatePromotionPolicyCmd struct {
 type AlterPromotionPolicyCmd struct {
 	Name    string
 	Updates map[string]interface{}
+}
+
+type AlterPromotionPolicyDefinitionCmd struct {
+	Policy knowledgepolicy.PromotionPolicyDef
 }
 
 type DropPromotionPolicyCmd struct {
@@ -764,6 +772,14 @@ func parseAlterDecayProfile(s string, i int) (interface{}, bool, error) {
 	}
 
 	i = kpSkipSpaces(s, i)
+	if j := kpMatchKeywordAt(s, i, "FOR"); j > 0 {
+		cmd, _, err := parseDecayProfileBinding(name, s, j)
+		if err != nil {
+			return nil, false, err
+		}
+		return &AlterDecayProfileBindingCmd{Binding: cmd.(*CreateDecayProfileBindingCmd).Binding}, true, nil
+	}
+
 	if j := kpMatchKeywordAt(s, i, "SET"); j > 0 {
 		j = kpSkipSpaces(s, j)
 		if k := kpMatchKeywordAt(s, j, "OPTIONS"); k > 0 {
@@ -932,12 +948,17 @@ func parseCreatePromotionPolicy(s string, i int) (interface{}, bool, error) {
 		return nil, false, localizedError(localization.CypherKnowledgePolicyPolicyNameExpectedAfter("CREATE PROMOTION POLICY"), nil)
 	}
 
-	i = kpSkipSpaces(s, i)
-
-	policy := knowledgepolicy.PromotionPolicyDef{
-		Name:    name,
-		Enabled: true,
+	policy, err := parsePromotionPolicyDefinition(name, s, i)
+	if err != nil {
+		return nil, false, err
 	}
+
+	return &CreatePromotionPolicyCmd{Policy: policy}, true, nil
+}
+
+func parsePromotionPolicyDefinition(name, s string, i int) (knowledgepolicy.PromotionPolicyDef, error) {
+	i = kpSkipSpaces(s, i)
+	policy := knowledgepolicy.PromotionPolicyDef{Name: name, Enabled: true}
 
 	if j := kpMatchKeywordAt(s, i, "FOR"); j > 0 {
 		i = kpSkipSpaces(s, j)
@@ -945,7 +966,7 @@ func parseCreatePromotionPolicy(s string, i int) (interface{}, bool, error) {
 		var err error
 		binding, i, err = parseForTarget(s, i, binding)
 		if err != nil {
-			return nil, false, err
+			return policy, err
 		}
 		policy.TargetLabels = binding.TargetLabels
 		policy.TargetEdgeType = binding.TargetEdgeType
@@ -959,16 +980,16 @@ func parseCreatePromotionPolicy(s string, i int) (interface{}, bool, error) {
 		j = kpSkipSpaces(s, j)
 		body, k := kpScanBraceBlock(s, j)
 		if k < 0 {
-			return nil, false, localizedError(localization.CypherKnowledgePolicyExpectedAfter("{", "APPLY"), nil)
+			return policy, localizedError(localization.CypherKnowledgePolicyExpectedAfter("{", "APPLY"), nil)
 		}
 		_ = k
 
 		if err := parsePolicyApplyBlock(body, &policy); err != nil {
-			return nil, false, err
+			return policy, err
 		}
 	}
 
-	return &CreatePromotionPolicyCmd{Policy: policy}, true, nil
+	return policy, nil
 }
 
 func parsePolicyApplyBlock(body string, policy *knowledgepolicy.PromotionPolicyDef) error {
@@ -1189,6 +1210,14 @@ func parseAlterPromotionPolicy(s string, i int) (interface{}, bool, error) {
 	}
 
 	i = kpSkipSpaces(s, i)
+	if kpMatchKeywordAt(s, i, "FOR") > 0 {
+		policy, err := parsePromotionPolicyDefinition(name, s, i)
+		if err != nil {
+			return nil, false, err
+		}
+		return &AlterPromotionPolicyDefinitionCmd{Policy: policy}, true, nil
+	}
+
 	updates := make(map[string]interface{})
 
 	if j := kpMatchKeywordAt(s, i, "SET"); j > 0 {

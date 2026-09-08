@@ -343,6 +343,29 @@ func TestParseDDL_AlterDecayProfile_QuotedName(t *testing.T) {
 	assert.Equal(t, false, c.Updates["enabled"])
 }
 
+func TestParseDDL_AlterDecayProfileBinding(t *testing.T) {
+	stmt := `ALTER DECAY PROFILE fact_binding FOR (n:KnowledgeFact:Reviewed) APPLY {
+		DECAY PROFILE 'slow_decay'
+		DECAY VISIBILITY THRESHOLD 0.25
+		n.summary NO DECAY
+	}`
+
+	cmd, ok, err := ParseKnowledgePolicyDDL(stmt)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	c, ok := cmd.(*AlterDecayProfileBindingCmd)
+	require.True(t, ok, "expected *AlterDecayProfileBindingCmd, got %T", cmd)
+	assert.Equal(t, "fact_binding", c.Binding.Name)
+	assert.Equal(t, []string{"KnowledgeFact", "Reviewed"}, c.Binding.TargetLabels)
+	assert.Equal(t, "slow_decay", c.Binding.ProfileRef)
+	require.NotNil(t, c.Binding.VisibilityThreshold)
+	assert.Equal(t, 0.25, *c.Binding.VisibilityThreshold)
+	require.Len(t, c.Binding.PropertyRules, 1)
+	assert.Equal(t, "summary", c.Binding.PropertyRules[0].PropertyPath)
+	assert.True(t, c.Binding.PropertyRules[0].NoDecay)
+}
+
 func TestParseDDL_AlterDecayProfile_MissingSetOptions(t *testing.T) {
 	stmt := `ALTER DECAY PROFILE slow_decay SOMETHING_ELSE`
 	_, _, err := ParseKnowledgePolicyDDL(stmt)
@@ -883,6 +906,27 @@ func TestParseDDL_AlterPromotionPolicy_Disable(t *testing.T) {
 	c := cmd.(*AlterPromotionPolicyCmd)
 	assert.Equal(t, "fact_promo", c.Name)
 	assert.Equal(t, false, c.Updates["enabled"])
+}
+
+func TestParseDDL_AlterPromotionPolicyDefinition(t *testing.T) {
+	stmt := `ALTER PROMOTION POLICY fact_promo FOR ()-[r:REFERENCES]-() APPLY {
+		ON ACCESS { SET r.accessCount = coalesce(r.accessCount, 0) + 1 }
+		WHEN r.accessCount >= 5 APPLY PROFILE 'boost'
+	}`
+
+	cmd, ok, err := ParseKnowledgePolicyDDL(stmt)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	c, ok := cmd.(*AlterPromotionPolicyDefinitionCmd)
+	require.True(t, ok, "expected *AlterPromotionPolicyDefinitionCmd, got %T", cmd)
+	assert.Equal(t, "fact_promo", c.Policy.Name)
+	assert.True(t, c.Policy.IsEdge)
+	assert.Equal(t, "REFERENCES", c.Policy.TargetEdgeType)
+	require.NotNil(t, c.Policy.OnAccess)
+	require.Len(t, c.Policy.OnAccess.Mutations, 1)
+	require.Len(t, c.Policy.WhenClauses, 1)
+	assert.Equal(t, "boost", c.Policy.WhenClauses[0].ProfileRef)
 }
 
 func TestParseDDL_AlterPromotionPolicy_MissingName(t *testing.T) {

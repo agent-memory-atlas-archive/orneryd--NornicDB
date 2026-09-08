@@ -275,6 +275,42 @@ func TestAlterDecayProfile(t *testing.T) {
 	assert.Equal(t, int64(1209600), bundles[0].HalfLifeSeconds)
 }
 
+func TestAlterDecayProfileBinding_ReplacesDefinitionAtomically(t *testing.T) {
+	sm := NewSchemaManager()
+	require.NoError(t, sm.CreateDecayProfileBundle(validBundle("original_bundle")))
+	require.NoError(t, sm.CreateDecayProfileBundle(validBundle("replacement_bundle")))
+	require.NoError(t, sm.CreateDecayProfileBinding(knowledgepolicy.DecayProfileBinding{
+		Name:         "editable_binding",
+		TargetLabels: []string{"Original"},
+		ProfileRef:   "original_bundle",
+		Order:        7,
+	}))
+
+	err := sm.AlterDecayProfileBinding("editable_binding", knowledgepolicy.DecayProfileBinding{
+		TargetLabels: []string{"Reviewed", "KnowledgeFact"},
+		ProfileRef:   "replacement_bundle",
+		NoDecay:      true,
+	})
+	require.NoError(t, err)
+
+	_, bindings := sm.ShowDecayProfiles()
+	require.Len(t, bindings, 1)
+	assert.Equal(t, "editable_binding", bindings[0].Name)
+	assert.Equal(t, []string{"KnowledgeFact", "Reviewed"}, bindings[0].TargetLabels)
+	assert.Equal(t, "replacement_bundle", bindings[0].ProfileRef)
+	assert.True(t, bindings[0].NoDecay)
+	assert.Equal(t, 7, bindings[0].Order)
+
+	err = sm.AlterDecayProfileBinding("editable_binding", knowledgepolicy.DecayProfileBinding{
+		TargetLabels: []string{"Invalid"},
+		ProfileRef:   "missing_bundle",
+	})
+	require.Error(t, err)
+	_, bindings = sm.ShowDecayProfiles()
+	assert.Equal(t, []string{"KnowledgeFact", "Reviewed"}, bindings[0].TargetLabels)
+	assert.Equal(t, "replacement_bundle", bindings[0].ProfileRef)
+}
+
 // TestAlterDecayProfile_UnknownOption tests that passing an unrecognised option key returns an error.
 func TestAlterDecayProfile_UnknownOption(t *testing.T) {
 	sm := NewSchemaManager()
@@ -286,6 +322,20 @@ func TestAlterDecayProfile_UnknownOption(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown option")
+}
+
+func TestAlterDecayProfile_InvalidUpdateDoesNotMutate(t *testing.T) {
+	sm := NewSchemaManager()
+	require.NoError(t, sm.CreateDecayProfileBundle(validBundle("validated_bundle")))
+
+	err := sm.AlterDecayProfile("validated_bundle", map[string]interface{}{
+		"visibilityThreshold": 1.5,
+	})
+	require.Error(t, err)
+
+	bundles, _ := sm.ShowDecayProfiles()
+	require.Len(t, bundles, 1)
+	assert.Equal(t, 0.10, bundles[0].VisibilityThreshold)
 }
 
 // TestShowDecayProfiles_Sorted verifies that ShowDecayProfiles returns bundles and bindings in name order.
@@ -433,6 +483,20 @@ func TestAlterPromotionProfile(t *testing.T) {
 	assert.Equal(t, 3.0, profiles[0].Multiplier)
 }
 
+func TestAlterPromotionProfile_InvalidUpdateDoesNotMutate(t *testing.T) {
+	sm := NewSchemaManager()
+	require.NoError(t, sm.CreatePromotionProfile(validPromoProfile("validated_profile")))
+
+	err := sm.AlterPromotionProfile("validated_profile", map[string]interface{}{
+		"scoreFloor": -0.25,
+	})
+	require.Error(t, err)
+
+	profiles := sm.ShowPromotionProfiles()
+	require.Len(t, profiles, 1)
+	assert.Equal(t, 0.0, profiles[0].ScoreFloor)
+}
+
 // TestCreatePromotionPolicy tests creating a policy with WHEN clauses referencing an existing profile.
 func TestCreatePromotionPolicy(t *testing.T) {
 	sm := NewSchemaManager()
@@ -474,6 +538,47 @@ func TestCreatePromotionPolicy_MissingProfileRef(t *testing.T) {
 	err := sm.CreatePromotionPolicy(policy)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestAlterPromotionPolicyDefinition_ReplacesDefinitionAtomically(t *testing.T) {
+	sm := NewSchemaManager()
+	require.NoError(t, sm.CreatePromotionProfile(validPromoProfile("replacement_profile")))
+	require.NoError(t, sm.CreatePromotionPolicy(knowledgepolicy.PromotionPolicyDef{
+		Name:         "editable_policy",
+		TargetLabels: []string{"Original"},
+		Enabled:      false,
+	}))
+
+	err := sm.AlterPromotionPolicyDefinition("editable_policy", knowledgepolicy.PromotionPolicyDef{
+		IsEdge:         true,
+		TargetEdgeType: "REFERENCES",
+		OnAccess: &knowledgepolicy.PromotionPolicyOnAccess{Mutations: []knowledgepolicy.OnAccessMutation{
+			{Expression: "r.accessCount = coalesce(r.accessCount, 0) + 1"},
+		}},
+		WhenClauses: []knowledgepolicy.PromotionPolicyWhenClause{
+			{Predicate: "r.accessCount >= 5", ProfileRef: "replacement_profile"},
+		},
+	})
+	require.NoError(t, err)
+
+	policies := sm.ShowPromotionPolicies()
+	require.Len(t, policies, 1)
+	assert.Equal(t, "editable_policy", policies[0].Name)
+	assert.True(t, policies[0].IsEdge)
+	assert.Equal(t, "REFERENCES", policies[0].TargetEdgeType)
+	assert.False(t, policies[0].Enabled, "definition replacement must preserve enabled state")
+	require.Len(t, policies[0].WhenClauses, 1)
+
+	err = sm.AlterPromotionPolicyDefinition("editable_policy", knowledgepolicy.PromotionPolicyDef{
+		TargetLabels: []string{"Invalid"},
+		WhenClauses: []knowledgepolicy.PromotionPolicyWhenClause{
+			{Predicate: "n.score > 0", ProfileRef: "missing_profile"},
+		},
+	})
+	require.Error(t, err)
+	policies = sm.ShowPromotionPolicies()
+	assert.True(t, policies[0].IsEdge)
+	assert.Equal(t, "REFERENCES", policies[0].TargetEdgeType)
 }
 
 // TestDropPromotionPolicy tests that a policy can be dropped successfully.

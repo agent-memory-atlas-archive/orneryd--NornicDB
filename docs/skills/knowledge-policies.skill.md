@@ -11,14 +11,15 @@ NornicDB scores every node and edge through a Cypher-controlled pipeline. The me
 
 There is **one targeting mechanism** (`FOR (...)`) used in two places. Object kinds:
 
-| Kind | Carries a target? | What it does | Effect on scores by itself |
-|---|---|---|---|
-| **Decay bundle** — `CREATE DECAY PROFILE <name> OPTIONS { ... }` | No | Names a reusable parameter set: `halfLifeSeconds`, `function`, `visibilityThreshold`, `scoreFloor`, `scope`, `scoreFrom`, `scoreFromProperty` | None. A bundle on its own is inert. |
-| **Decay binding** — `CREATE DECAY PROFILE <name> FOR (...) APPLY { ... }` | Yes (`FOR`) | Attaches decay math to a label / multi-label / edge type / wildcard. The `APPLY` block either references a bundle (`DECAY PROFILE 'name'`) or sets parameters inline, plus per-property overrides. | Decay is active for entities matching `FOR`. |
-| **Promotion profile** — `CREATE PROMOTION PROFILE <name> OPTIONS { ... }` | No | Names a reusable boost: `multiplier`, `scoreFloor`, `scoreCap`, `scope`. | None on its own. |
-| **Promotion policy** — `CREATE PROMOTION POLICY <name> FOR (...) APPLY { ON ACCESS { ... } WHEN ... APPLY PROFILE '...' }` | Yes (`FOR`) | Attaches access-counter mutations and conditional boosts to a target. ON ACCESS mutations write to access metadata; WHEN clauses select which promotion profile applies. | Mutates access metadata; promotion math applies when a WHEN matches. |
+| Kind                                                                                                                       | Carries a target? | What it does                                                                                                                                                                                       | Effect on scores by itself                                           |
+| -------------------------------------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **Decay bundle** — `CREATE DECAY PROFILE <name> OPTIONS { ... }`                                                           | No                | Names a reusable parameter set: `halfLifeSeconds`, `function`, `visibilityThreshold`, `scoreFloor`, `scope`, `scoreFrom`, `scoreFromProperty`                                                      | None. A bundle on its own is inert.                                  |
+| **Decay binding** — `CREATE DECAY PROFILE <name> FOR (...) APPLY { ... }`                                                  | Yes (`FOR`)       | Attaches decay math to a label / multi-label / edge type / wildcard. The `APPLY` block either references a bundle (`DECAY PROFILE 'name'`) or sets parameters inline, plus per-property overrides. | Decay is active for entities matching `FOR`.                         |
+| **Promotion profile** — `CREATE PROMOTION PROFILE <name> OPTIONS { ... }`                                                  | No                | Names a reusable boost: `multiplier`, `scoreFloor`, `scoreCap`, `scope`.                                                                                                                           | None on its own.                                                     |
+| **Promotion policy** — `CREATE PROMOTION POLICY <name> FOR (...) APPLY { ON ACCESS { ... } WHEN ... APPLY PROFILE '...' }` | Yes (`FOR`)       | Attaches access-counter mutations and conditional boosts to a target. ON ACCESS mutations write to access metadata; WHEN clauses select which promotion profile applies.                           | Mutates access metadata; promotion math applies when a WHEN matches. |
 
 So:
+
 - **Bundles and profiles are inert parameter packages.** They never select entities, never run code on their own, and never change scores until a binding or policy references them.
 - **Bindings and policies are the only objects that reference entities.** Both use the same `FOR (...)` target syntax.
 - Yes, the keyword `CREATE DECAY PROFILE` has two shapes — the parser chooses bundle vs binding based on whether `OPTIONS` or `FOR` follows the name. Same keyword, two distinct objects.
@@ -33,18 +34,18 @@ Decay is **pure time math, evaluated on every read**. Nothing has to "tick" or f
    - the binding's compiled parameters (half-life, function, threshold, floor, scoreFrom),
    - the entity's anchor timestamp (selected by `scoreFrom`),
    - the entity's access metadata (only used when `scoreFrom: 'LAST_ACCESSED'`),
-   and computes the score from those values right then.
+     and computes the score from those values right then.
 
 A decay binding does **not** need a promotion policy to function. `CREATE DECAY PROFILE doc_binding FOR (n:Document) APPLY { DECAY PROFILE 'doc_retention' }` with no promotion policy in the catalog produces a fully-working forgetting curve on `:Document`. ON ACCESS is unrelated to making decay run.
 
 ### Anchor timestamps (`scoreFrom`)
 
-| Mode | Anchor used as `t = 0` | Where it comes from |
-|---|---|---|
-| `CREATED` (default) | entity creation time | `node.CreatedAt` / `edge.CreatedAt` |
-| `VERSION` | last property update | `node.UpdatedAt` |
-| `CUSTOM` | a property | the property named in `scoreFromProperty` (must hold a timestamp) |
-| `LAST_ACCESSED` | last access | access metadata's `lastAccessedAt`; falls back to `CreatedAt` until first access is recorded |
+| Mode                | Anchor used as `t = 0` | Where it comes from                                                                          |
+| ------------------- | ---------------------- | -------------------------------------------------------------------------------------------- |
+| `CREATED` (default) | entity creation time   | `node.CreatedAt` / `edge.CreatedAt`                                                          |
+| `VERSION`           | last property update   | `node.UpdatedAt`                                                                             |
+| `CUSTOM`            | a property             | the property named in `scoreFromProperty` (must hold a timestamp)                            |
+| `LAST_ACCESSED`     | last access            | access metadata's `lastAccessedAt`; falls back to `CreatedAt` until first access is recorded |
 
 `LAST_ACCESSED` decay only **reads** access metadata. To make `LAST_ACCESSED` actually reset on each access, you also need a promotion policy on the same target whose `ON ACCESS` writes `lastAccessedAt` (see "Combining decay with access tracking" below).
 
@@ -63,6 +64,7 @@ suppressed   = finalScore < visibilityThreshold              // strict less-than
 ```
 
 `baseDecay(t) = f(t, halfLifeSeconds)`:
+
 - `exponential` — `e^(-ln(2)/halfLife * t)`
 - `linear` — `max(0, 1 - t/(2 * halfLife))` (0.5 at one half-life, 0.0 at two)
 - `step` — `1.0` if `t < halfLife`, else `0.0`
@@ -76,6 +78,7 @@ Two specific things that catch people:
 ## Binding resolution (which decay binding wins)
 
 When multiple decay bindings could match an entity:
+
 1. Multi-label binding (most labels matched) wins over fewer-label.
 2. Exact-label binding wins over wildcard `FOR ()`.
 3. Two bindings against the same target with different `Order` values: the lower `Order` wins. Two bindings against the same target with the same `Order` cause the binding-table build to return a conflict error, so this state is rejected at DDL time rather than silently picked.
@@ -187,13 +190,20 @@ APPLY {
 }
 
 ALTER PROMOTION POLICY episode_reinforcement DISABLE   -- or ENABLE
+ALTER PROMOTION POLICY episode_reinforcement
+FOR (n:ReviewedEpisode)
+APPLY {
+  ON ACCESS { SET n.lastAccessedAt = timestamp() }
+  WHEN n.accessCount >= 5 APPLY PROFILE 'reinforced_episode'
+}
 DROP   PROMOTION POLICY IF EXISTS episode_reinforcement
 SHOW PROMOTION POLICIES
 ```
 
-`ALTER PROMOTION POLICY` only honors enable/disable today. To change the target, the `WHEN` predicates, or the `ON ACCESS` block, drop and recreate the policy. Use `ALTER PROMOTION PROFILE … SET OPTIONS { multiplier, scoreFloor, scoreCap, enabled }` to change the math without rebuilding the binding.
+`ALTER PROMOTION POLICY … FOR … APPLY` atomically replaces the target, `WHEN` predicates, and `ON ACCESS` block while preserving the policy's enabled state. Use `ALTER PROMOTION POLICY … ENABLE|DISABLE` for enablement, and `ALTER PROMOTION PROFILE … SET OPTIONS { multiplier, scoreFloor, scoreCap, enabled }` to change the referenced math.
 
 ON ACCESS rules:
+
 - Each `SET` is a mutation against access metadata. Inspect the result with `policy(n)` or `nornicdb.knowledgepolicy.resolve(...)` — `n.Properties` is unchanged.
 - Mutations are eventually-consistent: a read immediately after access may see the previous values until the access flusher commits.
 - `WITH KALMAN` defaults when keys are omitted: `q=0.1`, `r=88.0`, `varianceScale=10.0`, `windowSize=32`. Setting `r` explicitly switches the filter from auto-R mode to manual mode.
@@ -205,6 +215,7 @@ Decay and promotion are independent. Two common combinations:
 
 - **Forgetting curve, no access tracking.** A decay binding alone is enough. Use `scoreFrom: 'CREATED'` (default) so the anchor never moves.
 - **Consolidation curve that resets on access.** You need both:
+
   ```cypher
   -- 1. Decay binding with LAST_ACCESSED scoreFrom (reads access metadata)
   CREATE DECAY PROFILE consolidation OPTIONS {
@@ -221,17 +232,24 @@ Decay and promotion are independent. Two common combinations:
     ON ACCESS { SET n.lastAccessedAt = timestamp() }
   }
   ```
+
   Without the promotion policy's ON ACCESS, `lastAccessedAt` would never update and the decay binding would behave as if `scoreFrom: 'CREATED'`.
 
 ### Alter / drop / list (decay)
 
 ```cypher
 ALTER DECAY PROFILE working_memory SET OPTIONS { halfLifeSeconds: 1209600 }
+ALTER DECAY PROFILE session_record_retention
+FOR (n:SessionRecord:Reviewed)
+APPLY {
+  DECAY PROFILE 'working_memory'
+  n.tenantId NO DECAY
+}
 DROP  DECAY PROFILE IF EXISTS session_record_retention
 SHOW  DECAY PROFILES
 ```
 
-`ALTER` only operates on bundles. To change a binding, drop and recreate it (or alter the bundle it references).
+`ALTER DECAY PROFILE … SET OPTIONS` updates a bundle. `ALTER DECAY PROFILE … FOR … APPLY` atomically replaces a binding's target and complete apply block while preserving its resolution order.
 
 ## Diagnostics & inspection
 
@@ -276,20 +294,20 @@ MATCH (n:Document) RETURN reveal(n) AS node, decayScore(n) AS score
 1. **Bundle first.** Create the parameter set (`OPTIONS { ... }`). Nothing scores differently yet — confirm with `SHOW DECAY PROFILES` (the bundle appears with `kind='bundle'`).
 2. **Binding next.** `CREATE DECAY PROFILE <bindingName> FOR (...) APPLY { DECAY PROFILE '<bundleName>' ... }`. Decay is now active for matched entities. Confirm with `CALL nornicdb.knowledgepolicy.resolve('', '<labels>', '')` — `ResolvedDecayProfileID` should be the bundle name; `EffectiveRate`, `EffectiveThreshold`, and `EffectiveMultiplier` should match what you intended. (For the floor value, read `floor` from `decay(n)` on a real entity — the `resolve()` projection does not include the floor directly.)
 3. **Promotion only when needed.** Create promotion profiles (`OPTIONS`) and a promotion policy (`FOR ... APPLY { ... }`). Even a policy with only `ON ACCESS` and no `WHEN` is useful — it lets a `LAST_ACCESSED` decay binding work correctly.
-4. **Tune by altering the bundle.** Most tuning changes only the math; `ALTER DECAY PROFILE <bundleName> SET OPTIONS { ... }` propagates to every binding that references it. Drop and recreate a binding only when the target needs to change.
+4. **Tune with `ALTER`.** `ALTER DECAY PROFILE <bundleName> SET OPTIONS { ... }` propagates math changes to every referencing binding. Use `ALTER DECAY PROFILE <bindingName> FOR (...) APPLY { ... }` when the target or binding overrides change.
 5. **Validate again** after every change: `SHOW DECAY PROFILES`, `SHOW PROMOTION POLICIES`, `CALL nornicdb.knowledgepolicy.resolve(...)`, then `MATCH (n:Label) RETURN decay(n)` on a known entity.
 
 ## Tuning knobs (what to reach for first)
 
-| Symptom | First lever |
-|---|---|
-| Entities disappear too fast | Lengthen `halfLifeSeconds` on the bundle |
-| Entities never decay enough | Shorten `halfLifeSeconds`, or switch `function` from `none`/`step` to `exponential` |
-| Old entries linger above zero | Lower `scoreFloor` or remove it from the bundle/binding |
-| Hot path scores too high | Lower the promotion `multiplier`, or add a `scoreCap` to the promotion profile |
-| Noisy behavioral signal causing oscillation | Wrap the offending `SET` with `WITH KALMAN { ... }` |
-| Score is high enough but entity still hidden | Raise `scoreFloor` to `>= visibilityThreshold`, or lower `visibilityThreshold` |
-| `LAST_ACCESSED` decay never advances | Missing promotion policy with `SET n.lastAccessedAt = timestamp()` in `ON ACCESS` |
+| Symptom                                      | First lever                                                                         |
+| -------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Entities disappear too fast                  | Lengthen `halfLifeSeconds` on the bundle                                            |
+| Entities never decay enough                  | Shorten `halfLifeSeconds`, or switch `function` from `none`/`step` to `exponential` |
+| Old entries linger above zero                | Lower `scoreFloor` or remove it from the bundle/binding                             |
+| Hot path scores too high                     | Lower the promotion `multiplier`, or add a `scoreCap` to the promotion profile      |
+| Noisy behavioral signal causing oscillation  | Wrap the offending `SET` with `WITH KALMAN { ... }`                                 |
+| Score is high enough but entity still hidden | Raise `scoreFloor` to `>= visibilityThreshold`, or lower `visibilityThreshold`      |
+| `LAST_ACCESSED` decay never advances         | Missing promotion policy with `SET n.lastAccessedAt = timestamp()` in `ON ACCESS`   |
 
 ## Common gotchas
 
@@ -302,7 +320,7 @@ MATCH (n:Document) RETURN reveal(n) AS node, decayScore(n) AS score
 - **`multiplier < 1.0` is a valid promotion** — it dampens. Pair with inverted decay (`halfLifeSeconds: -...`) for a punish-frequent-access pattern.
 - **A wildcard binding (`FOR ()`)** catches every entity that no more-specific binding matches. Useful for global defaults; easy to forget. Inspect with `SHOW DECAY PROFILES` and look for a binding with `target='*'`.
 - **Negative half-lives bypass the threshold-age fast path.** Reads cost slightly more CPU. Reserve for label sets where consolidation is the actual model.
-- **`ALTER DECAY PROFILE` only edits bundles.** To change a binding's target or APPLY block, `DROP` and `CREATE` it.
+- **Binding and policy definition alters are complete replacements.** Include the full current `FOR` target and `APPLY` body; omitted directives are removed. Promotion policy enablement and decay binding order are preserved.
 - **Drop order matters.** Dropping a bundle while a binding still references it returns a validation error. Drop the binding first, then the bundle.
 
 ## Worked example: minimum bootstrap
