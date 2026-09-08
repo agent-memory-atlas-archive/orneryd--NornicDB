@@ -387,8 +387,11 @@ func TestLoadFromEnv_ComprehensiveAdditionalEnvCoverage(t *testing.T) {
 	t.Setenv("NORNICDB_TLS_DIR", "/tlsdir")
 	t.Setenv("NORNICDB_HTTP_ENABLED", "false")
 	t.Setenv("NORNICDB_HTTP_ADDRESS", "127.0.0.2")
+	t.Setenv("NORNICDB_HTTP_TRUSTED_PROXIES", "10.0.0.5, 2001:db8::/32")
 	t.Setenv("NORNICDB_HTTPS_ENABLED", "true")
 	t.Setenv("NORNICDB_HTTPS_PORT", "9443")
+	t.Setenv("NORNICDB_HTTP_TLS_CERT", "/tls/http.crt")
+	t.Setenv("NORNICDB_HTTP_TLS_KEY", "/tls/http.key")
 	t.Setenv("NORNICDB_ENV", "production")
 	t.Setenv("NORNICDB_ALLOW_HTTP", "false")
 	t.Setenv("NORNICDB_PLUGINS_DIR", "/env/plugins")
@@ -524,6 +527,9 @@ func TestLoadFromEnv_ComprehensiveAdditionalEnvCoverage(t *testing.T) {
 	if cfg.Server.HTTPEnabled || cfg.Server.HTTPAddress != "127.0.0.2" || !cfg.Server.HTTPSEnabled || cfg.Server.HTTPSPort != 9443 {
 		t.Fatalf("unexpected http server config: %+v", cfg.Server)
 	}
+	require.Equal(t, []string{"10.0.0.5", "2001:db8::/32"}, cfg.Server.HTTPTrustedProxies)
+	require.Equal(t, "/tls/http.crt", cfg.Server.HTTPTLSCert)
+	require.Equal(t, "/tls/http.key", cfg.Server.HTTPTLSKey)
 	if cfg.Server.Environment != "production" || cfg.Server.AllowHTTP {
 		t.Fatalf("unexpected server env flags: %+v", cfg.Server)
 	}
@@ -1350,6 +1356,34 @@ plugins:
 	require.Equal(t, 9*time.Second, cfg.Logging.SlowQueryThreshold)
 	require.Equal(t, "/plugins", cfg.Server.PluginsDir)
 	require.Equal(t, "/plugins/heim", cfg.Server.HeimdallPluginsDir)
+}
+
+func TestLoadFromFile_HTTPProxyAndHTTPS(t *testing.T) {
+	clearEnvVars(t)
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	err := os.WriteFile(path, []byte(`
+server:
+  http_address: "0.0.0.0"
+  http_trusted_proxies:
+    - "10.20.0.5"
+    - "2001:db8::/32"
+  https:
+    enabled: true
+    port: 8443
+    cert_file: "/tls/http.crt"
+    key_file: "/tls/http.key"
+`), 0o600)
+	require.NoError(t, err)
+
+	cfg, err := LoadFromFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "0.0.0.0", cfg.Server.HTTPAddress)
+	require.Equal(t, []string{"10.20.0.5", "2001:db8::/32"}, cfg.Server.HTTPTrustedProxies)
+	require.True(t, cfg.Server.HTTPSEnabled)
+	require.Equal(t, 8443, cfg.Server.HTTPSPort)
+	require.Equal(t, "/tls/http.crt", cfg.Server.HTTPTLSCert)
+	require.Equal(t, "/tls/http.key", cfg.Server.HTTPTLSKey)
 }
 
 func TestLoadFromFile_AuthBlockWithoutEnabledKeepsDefaultAuthState(t *testing.T) {

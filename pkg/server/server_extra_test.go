@@ -2964,6 +2964,7 @@ func TestBaseURLAndAuditBranches(t *testing.T) {
 	req.Host = "example.com:8443"
 	req.Header.Set("X-Forwarded-Proto", "https, http")
 	req.Header.Set("X-Base-Path", "nornic")
+	req = req.WithContext(context.WithValue(req.Context(), contextKeyTrustedProxy, true))
 	base := server.getBaseURL(req)
 	assert.Equal(t, "https://example.com:8443/nornic", base)
 

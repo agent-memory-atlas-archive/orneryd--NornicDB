@@ -269,6 +269,9 @@ func isHTTPSRequest(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
+	if trusted, _ := r.Context().Value(contextKeyTrustedProxy).(bool); !trusted {
+		return false
+	}
 
 	// Support TLS termination behind reverse proxies.
 	// X-Forwarded-Proto can be a comma-separated list; use first hop.

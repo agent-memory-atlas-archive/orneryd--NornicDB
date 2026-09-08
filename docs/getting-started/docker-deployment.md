@@ -188,7 +188,9 @@ export NORNICDB_PASSWORD=$(openssl rand -base64 32)
 
 ### 2. Enable TLS/HTTPS
 
-Terminate TLS at a reverse proxy or ingress in front of the container, then pass traffic to NornicDB on its internal HTTP/Bolt ports. See the reverse-proxy and scaling patterns in [Scaling](../operations/scaling.md).
+Terminate TLS at a reverse proxy or ingress in front of the container, then pass HTTP traffic to NornicDB on a private network. Authenticated non-loopback HTTP requires an explicit trusted-proxy IP/CIDR, and wildcard CORS is rejected. Use the tested configuration and Nginx example in [Reverse Proxy and TLS Termination](../operations/reverse-proxy.md).
+
+HTTP proxy trust does not apply to Bolt or Qdrant gRPC. Disable those listeners when unused, or secure them independently as described in the reverse-proxy guide.
 
 ### 3. Restrict Network Access
 

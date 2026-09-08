@@ -328,6 +328,8 @@ func (s *Server) wrapWithMiddleware(next http.Handler) http.Handler {
 	handler = s.localizationMiddleware(handler)
 	// Base path middleware runs FIRST (outermost) to strip prefix before routing
 	handler = s.basePathMiddleware(handler)
+	// Authenticate proxy metadata before base-path and other middleware consume it.
+	handler = s.trustedProxyMiddleware(handler)
 
 	return handler
 }

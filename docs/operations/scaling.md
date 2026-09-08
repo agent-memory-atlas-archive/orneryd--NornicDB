@@ -80,6 +80,10 @@ See [Clustering Guide](../user-guides/clustering.md) for the full set of cluster
 
 ### Load Balancing
 
+The proxy must also set the trusted forwarding headers and NornicDB must trust
+the proxy's immediate IP. Start with [Reverse Proxy and TLS Termination](reverse-proxy.md),
+then add routing rules such as these:
+
 ```nginx
 # nginx.conf
 upstream nornicdb_read {
@@ -92,6 +96,10 @@ upstream nornicdb_write {
 }
 
 server {
+  proxy_set_header Host              $http_host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header X-Forwarded-For   $remote_addr;
+
     location /db/nornic/tx/commit {
         # Route writes to primary
         proxy_pass http://nornicdb_write;

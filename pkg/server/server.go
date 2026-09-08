@@ -169,6 +169,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -387,6 +388,9 @@ type Config struct {
 	TLSCertFile string
 	// TLSKeyFile for HTTPS
 	TLSKeyFile string
+	// TrustedProxies contains exact IP addresses or CIDR ranges for reverse
+	// proxies allowed to supply forwarded HTTP headers.
+	TrustedProxies []string
 
 	// HTTP/2 Configuration
 	// HTTP/2 is always enabled (backwards compatible with HTTP/1.1)
@@ -675,6 +679,9 @@ type Server struct {
 
 	// Rate limiter for DoS protection
 	rateLimiter *IPRateLimiter
+	// trustedProxyPrefixes is parsed once during construction and used by the
+	// outermost middleware to authenticate forwarded HTTP metadata.
+	trustedProxyPrefixes []netip.Prefix
 
 	// OAuth manager for OAuth 2.0 authentication
 	oauthManager *auth.OAuthManager
@@ -1005,6 +1012,10 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 	if db == nil {
 		return nil, fmt.Errorf("database required")
 	}
+	trustedProxyPrefixes, err := parseTrustedProxyPrefixes(config.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
 	// Phase 2 D-01a: graceful-degrade discard fallback when caller did not
 	// thread observability.Provider.Logger() through Config.Logger. Keeps
 	// existing tests/callers compileable; tightens post-M1 once all
@@ -1098,21 +1109,22 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 	db.SetDatabaseStorageResolver(dbManager.GetStorage)
 
 	s := &Server{
-		config:             config,
-		db:                 db,
-		dbManager:          dbManager,
-		auth:               authenticator,
-		log:                config.Logger.With("component", "server"),
-		localizer:          config.Localizer,
-		mcpServer:          mcpServer,
-		graphqlHandler:     graphql.NewHandler(db, dbManager),
-		basicAuthCache:     auth.NewBasicAuthCache(auth.DefaultAuthCacheEntries, auth.DefaultAuthCacheTTL),
-		searchServices:     make(map[string]*search.Service),
-		executors:          make(map[string]*cypher.StorageExecutor),
-		perDBYAMLOverrides: config.PerDBYAMLOverrides,
-		processConfig:      globalConfig,
-		dbConfigActive:     make(map[string]map[string]string),
-		dbConfigPending:    make(map[string]map[string]struct{}),
+		config:               config,
+		db:                   db,
+		dbManager:            dbManager,
+		auth:                 authenticator,
+		log:                  config.Logger.With("component", "server"),
+		localizer:            config.Localizer,
+		mcpServer:            mcpServer,
+		graphqlHandler:       graphql.NewHandler(db, dbManager),
+		basicAuthCache:       auth.NewBasicAuthCache(auth.DefaultAuthCacheEntries, auth.DefaultAuthCacheTTL),
+		trustedProxyPrefixes: trustedProxyPrefixes,
+		searchServices:       make(map[string]*search.Service),
+		executors:            make(map[string]*cypher.StorageExecutor),
+		perDBYAMLOverrides:   config.PerDBYAMLOverrides,
+		processConfig:        globalConfig,
+		dbConfigActive:       make(map[string]map[string]string),
+		dbConfigPending:      make(map[string]map[string]struct{}),
 	}
 	// Foreground-first policy: while tx requests are active, background embed work yields.
 	s.db.SetEmbedQueueShouldYield(func() bool {

@@ -150,6 +150,7 @@ Use the canonical runtime references instead of maintaining a partial Docker-onl
 
 - [Environment Variables Reference](./environment-variables.md) for supported environment variables and defaults.
 - [Configuration Guide](./configuration.md) for YAML and operational configuration.
+- [Reverse Proxy and TLS Termination](./reverse-proxy.md) before exposing an authenticated container through Nginx or another ingress.
 
 Common Docker-specific overrides that are verified in the runtime docs:
 

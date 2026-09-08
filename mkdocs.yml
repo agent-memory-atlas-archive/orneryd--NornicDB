@@ -253,6 +253,7 @@ nav:
           - Environment Variables: operations/environment-variables.md
           - Deployment: operations/deployment.md
           - Docker: operations/docker.md
+          - Reverse Proxy & TLS: operations/reverse-proxy.md
           - Scaling: operations/scaling.md
           - Low-Memory Mode: operations/low-memory-mode.md
           - Troubleshooting: operations/troubleshooting.md

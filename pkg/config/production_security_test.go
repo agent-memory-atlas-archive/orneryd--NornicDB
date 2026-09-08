@@ -36,6 +36,21 @@ func TestValidateSecurityConfiguration(t *testing.T) {
 		{name: "loopback wildcard cors", mutate: func(c *Config) { c.Server.CORSOrigins = []string{"*"} }},
 		{name: "public wildcard cors", mutate: func(c *Config) { c.Server.CORSOrigins = []string{"*"}; c.Server.HTTPAddress = "0.0.0.0" }, match: "wildcard CORS"},
 		{name: "public http", mutate: func(c *Config) { c.Server.HTTPAddress = "0.0.0.0" }, match: "plaintext HTTP"},
+		{name: "public http behind trusted proxy", mutate: func(c *Config) {
+			c.Server.HTTPAddress = "0.0.0.0"
+			c.Server.HTTPTrustedProxies = []string{"10.0.0.0/8"}
+		}},
+		{name: "invalid trusted proxy", mutate: func(c *Config) { c.Server.HTTPTrustedProxies = []string{"not-a-cidr"} }, match: "trusted proxy"},
+		{name: "native https", mutate: func(c *Config) {
+			c.Server.HTTPAddress = "0.0.0.0"
+			c.Server.HTTPSEnabled = true
+			c.Server.HTTPTLSCert = "/tls/server.crt"
+			c.Server.HTTPTLSKey = "/tls/server.key"
+		}},
+		{name: "https missing certificate", mutate: func(c *Config) {
+			c.Server.HTTPSEnabled = true
+			c.Server.HTTPTLSKey = "/tls/server.key"
+		}, match: "HTTPS certificate and key"},
 		{name: "public bolt without required tls", mutate: func(c *Config) { c.Server.BoltAddress = "192.0.2.1" }, match: "must require TLS"},
 		{name: "public grpc", mutate: func(c *Config) { c.Features.QdrantGRPCEnabled = true; c.Features.QdrantGRPCListenAddr = ":6334" }, match: "plaintext gRPC"},
 	}
@@ -92,4 +107,13 @@ func TestValidateSecurityConfigurationAllowsExplicitNoAuthContainerStartup(t *te
 			require.NoError(t, ValidateSecurityConfiguration(config))
 		})
 	}
+}
+
+func TestValidateSecurityConfigurationRejectsIncompleteHTTPSWithoutAuth(t *testing.T) {
+	config := LoadDefaults()
+	config.Auth.Enabled = false
+	config.Server.HTTPSEnabled = true
+	config.Server.HTTPTLSCert = "/tls/server.crt"
+
+	require.ErrorContains(t, ValidateSecurityConfiguration(config), "HTTPS certificate and key")
 }

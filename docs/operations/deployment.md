@@ -4,12 +4,12 @@
 
 ## Deployment Options
 
-| Method | Best For | Complexity |
-|--------|----------|------------|
-| Docker | Most deployments | Low |
-| Docker Compose | Multi-service | Low |
-| Kubernetes | Enterprise/Cloud | Medium |
-| Bare Metal | Maximum performance | High |
+| Method         | Best For            | Complexity |
+| -------------- | ------------------- | ---------- |
+| Docker         | Most deployments    | Low        |
+| Docker Compose | Multi-service       | Low        |
+| Kubernetes     | Enterprise/Cloud    | Medium     |
+| Bare Metal     | Maximum performance | High       |
 
 ## Docker Deployment
 
@@ -47,7 +47,7 @@ docker run -d \
 
 ```yaml
 # docker-compose.yml
-version: '3.8'
+version: "3.8"
 services:
   nornicdb:
     image: timothyswt/nornicdb-arm64-metal:latest
@@ -66,7 +66,7 @@ services:
       resources:
         limits:
           memory: 4G
-          cpus: '2'
+          cpus: "2"
 
 volumes:
   nornicdb-data:
@@ -93,45 +93,45 @@ spec:
         app: nornicdb
     spec:
       containers:
-      - name: nornicdb
-        image: timothyswt/nornicdb-arm64-metal:latest
-        ports:
-        - containerPort: 7474
-        - containerPort: 7687
-        env:
-        - name: NORNICDB_ADDRESS
-          value: "0.0.0.0"
-        - name: NORNICDB_AUTH_JWT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: nornicdb-secrets
-              key: jwt-secret
-        volumeMounts:
-        - name: data
-          mountPath: /data
-        resources:
-          requests:
-            memory: "2Gi"
-            cpu: "1"
-          limits:
-            memory: "4Gi"
-            cpu: "2"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 7474
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 7474
-          initialDelaySeconds: 5
-          periodSeconds: 5
+        - name: nornicdb
+          image: timothyswt/nornicdb-arm64-metal:latest
+          ports:
+            - containerPort: 7474
+            - containerPort: 7687
+          env:
+            - name: NORNICDB_ADDRESS
+              value: "0.0.0.0"
+            - name: NORNICDB_AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: nornicdb-secrets
+                  key: jwt-secret
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1"
+            limits:
+              memory: "4Gi"
+              cpu: "2"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 7474
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 7474
+            initialDelaySeconds: 5
+            periodSeconds: 5
       volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: nornicdb-pvc
+        - name: data
+          persistentVolumeClaim:
+            claimName: nornicdb-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -141,12 +141,12 @@ spec:
   selector:
     app: nornicdb
   ports:
-  - name: http
-    port: 7474
-    targetPort: 7474
-  - name: bolt
-    port: 7687
-    targetPort: 7687
+    - name: http
+      port: 7474
+      targetPort: 7474
+    - name: bolt
+      port: 7687
+      targetPort: 7687
 ```
 
 ### Secrets
@@ -225,15 +225,15 @@ sudo systemctl start nornicdb
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `NORNICDB_ADDRESS` | Bind address | `127.0.0.1` |
-| `NORNICDB_HTTP_PORT` | HTTP port | `7474` |
-| `NORNICDB_BOLT_PORT` | Bolt port | `7687` |
-| `NORNICDB_DATA_DIR` | Data directory | `./data` |
-| `NORNICDB_AUTH` | `none` to disable; `user/pass` to enable | `none` (auth off) |
-| `NORNICDB_AUTH_JWT_SECRET` | JWT signing key | Required |
-| `NORNICDB_ENCRYPTION_PASSWORD` | Encryption key | Optional |
+| Variable                       | Description                              | Default           |
+| ------------------------------ | ---------------------------------------- | ----------------- |
+| `NORNICDB_ADDRESS`             | Bind address                             | `127.0.0.1`       |
+| `NORNICDB_HTTP_PORT`           | HTTP port                                | `7474`            |
+| `NORNICDB_BOLT_PORT`           | Bolt port                                | `7687`            |
+| `NORNICDB_DATA_DIR`            | Data directory                           | `./data`          |
+| `NORNICDB_AUTH`                | `none` to disable; `user/pass` to enable | `none` (auth off) |
+| `NORNICDB_AUTH_JWT_SECRET`     | JWT signing key                          | Required          |
+| `NORNICDB_ENCRYPTION_PASSWORD` | Encryption key                           | Optional          |
 
 ### CLI Flags
 
@@ -261,12 +261,18 @@ NORNICDB_ADDRESS: "0.0.0.0"
 
 ### Enable TLS
 
+For native HTTPS on the HTTP API:
+
 ```yaml
-tls:
-  enabled: true
-  cert_file: /etc/nornicdb/server.crt
-  key_file: /etc/nornicdb/server.key
+server:
+  https:
+    enabled: true
+    port: 7473
+    cert_file: /etc/nornicdb/server.crt
+    key_file: /etc/nornicdb/server.key
 ```
+
+For TLS termination in Nginx or another ingress, follow [Reverse Proxy and TLS Termination](reverse-proxy.md). Authenticated cleartext HTTP on a non-loopback backend requires `http_trusted_proxies` and a non-wildcard CORS policy.
 
 ### Enable Encryption
 
@@ -296,4 +302,3 @@ curl http://localhost:7474/status \
 - **[Monitoring](monitoring.md)** - Metrics and alerting
 - **[Scaling](scaling.md)** - Horizontal scaling
 - **[Backup & Restore](backup-restore.md)** - Data protection
-

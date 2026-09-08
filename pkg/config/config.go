@@ -482,6 +482,10 @@ type ServerConfig struct {
 	HTTPPort int
 	// HTTPAddress to bind to
 	HTTPAddress string
+	// HTTPTrustedProxies contains IP addresses or CIDR ranges for reverse
+	// proxies allowed to terminate TLS and supply forwarded HTTP headers.
+	// Env: NORNICDB_HTTP_TRUSTED_PROXIES
+	HTTPTrustedProxies []string
 	// HTTPSEnabled for encrypted connections
 	HTTPSEnabled bool
 	// HTTPSPort for HTTPS connections (default 7473)
@@ -1378,22 +1382,30 @@ func (c *Config) String() string {
 type YAMLConfig struct {
 	// Server configuration
 	Server struct {
-		BoltPort               int    `yaml:"bolt_port"`
-		HTTPPort               int    `yaml:"http_port"`
-		Port                   int    `yaml:"port"`                     // Alias for bolt_port
-		Host                   string `yaml:"host"`                     // Bind address
-		Address                string `yaml:"address"`                  // Alias for host
-		DataDir                string `yaml:"data_dir"`                 // Data directory
-		Auth                   string `yaml:"auth"`                     // Format: "username:password" or "none"
-		BoltEnabled            bool   `yaml:"bolt_enabled"`             // Enable Bolt protocol
-		HTTPEnabled            bool   `yaml:"http_enabled"`             // Enable HTTP API
-		BoltServerAnnouncement string `yaml:"bolt_server_announcement"` // Override Bolt HELLO server metadata
-		BoltStatementTimeout   string `yaml:"bolt_statement_timeout"`
+		BoltPort               int      `yaml:"bolt_port"`
+		HTTPPort               int      `yaml:"http_port"`
+		HTTPAddress            string   `yaml:"http_address"`
+		HTTPTrustedProxies     []string `yaml:"http_trusted_proxies"`
+		Port                   int      `yaml:"port"`                     // Alias for bolt_port
+		Host                   string   `yaml:"host"`                     // Bind address
+		Address                string   `yaml:"address"`                  // Alias for host
+		DataDir                string   `yaml:"data_dir"`                 // Data directory
+		Auth                   string   `yaml:"auth"`                     // Format: "username:password" or "none"
+		BoltEnabled            bool     `yaml:"bolt_enabled"`             // Enable Bolt protocol
+		HTTPEnabled            bool     `yaml:"http_enabled"`             // Enable HTTP API
+		BoltServerAnnouncement string   `yaml:"bolt_server_announcement"` // Override Bolt HELLO server metadata
+		BoltStatementTimeout   string   `yaml:"bolt_statement_timeout"`
 		TLS                    struct {
 			Enabled  bool   `yaml:"enabled"`
 			CertFile string `yaml:"cert_file"`
 			KeyFile  string `yaml:"key_file"`
 		} `yaml:"tls"`
+		HTTPS struct {
+			Enabled  bool   `yaml:"enabled"`
+			Port     int    `yaml:"port"`
+			CertFile string `yaml:"cert_file"`
+			KeyFile  string `yaml:"key_file"`
+		} `yaml:"https"`
 	} `yaml:"server"`
 
 	// Database/Storage configuration
@@ -2211,11 +2223,24 @@ func applyEnvVars(config *Config) error {
 	if v := getEnv("NORNICDB_HTTP_ADDRESS", ""); v != "" {
 		config.Server.HTTPAddress = v
 	}
+	if v := getEnv("NORNICDB_HTTP_TRUSTED_PROXIES", ""); v != "" {
+		proxies := strings.Split(v, ",")
+		for i, proxy := range proxies {
+			proxies[i] = strings.TrimSpace(proxy)
+		}
+		config.Server.HTTPTrustedProxies = proxies
+	}
 	if getEnv("NORNICDB_HTTPS_ENABLED", "") == "true" {
 		config.Server.HTTPSEnabled = true
 	}
 	if v := getEnvInt("NORNICDB_HTTPS_PORT", 0); v > 0 {
 		config.Server.HTTPSPort = v
+	}
+	if v := getEnv("NORNICDB_HTTP_TLS_CERT", ""); v != "" {
+		config.Server.HTTPTLSCert = v
+	}
+	if v := getEnv("NORNICDB_HTTP_TLS_KEY", ""); v != "" {
+		config.Server.HTTPTLSKey = v
 	}
 
 	// Server environment settings
@@ -2896,6 +2921,9 @@ func LoadFromFile(configPath string) (*Config, error) {
 	if yamlCfg.Server.HTTPPort > 0 {
 		config.Server.HTTPPort = yamlCfg.Server.HTTPPort
 	}
+	if len(yamlCfg.Server.HTTPTrustedProxies) > 0 {
+		config.Server.HTTPTrustedProxies = append([]string(nil), yamlCfg.Server.HTTPTrustedProxies...)
+	}
 	if yamlCfg.Server.Host != "" {
 		config.Server.BoltAddress = yamlCfg.Server.Host
 		config.Server.HTTPAddress = yamlCfg.Server.Host
@@ -2903,6 +2931,9 @@ func LoadFromFile(configPath string) (*Config, error) {
 	if yamlCfg.Server.Address != "" {
 		config.Server.BoltAddress = yamlCfg.Server.Address
 		config.Server.HTTPAddress = yamlCfg.Server.Address
+	}
+	if yamlCfg.Server.HTTPAddress != "" {
+		config.Server.HTTPAddress = yamlCfg.Server.HTTPAddress
 	}
 	if yamlCfg.Server.BoltServerAnnouncement != "" {
 		config.Server.BoltServerAnnouncement = yamlCfg.Server.BoltServerAnnouncement
@@ -2932,6 +2963,18 @@ func LoadFromFile(configPath string) (*Config, error) {
 	if yamlCfg.Server.TLS.KeyFile != "" {
 		config.Server.BoltTLSKey = yamlCfg.Server.TLS.KeyFile
 		config.Server.HTTPTLSKey = yamlCfg.Server.TLS.KeyFile
+	}
+	if yamlCfg.Server.HTTPS.Enabled {
+		config.Server.HTTPSEnabled = true
+	}
+	if yamlCfg.Server.HTTPS.Port > 0 {
+		config.Server.HTTPSPort = yamlCfg.Server.HTTPS.Port
+	}
+	if yamlCfg.Server.HTTPS.CertFile != "" {
+		config.Server.HTTPTLSCert = yamlCfg.Server.HTTPS.CertFile
+	}
+	if yamlCfg.Server.HTTPS.KeyFile != "" {
+		config.Server.HTTPTLSKey = yamlCfg.Server.HTTPS.KeyFile
 	}
 
 	// === Database Settings ===

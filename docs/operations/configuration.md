@@ -382,15 +382,21 @@ The yaml `databases:` map is read into `dbconfig.Store` **only on first boot** f
 server:
   bolt_enabled: true
   bolt_port: 7687
-  bolt_address: "0.0.0.0"
   bolt_server_announcement: "" # Optional compatibility override for the Bolt HELLO server string
-  bolt_tls_enabled: false
 
   http_enabled: true
   http_port: 7474
-  http_address: "0.0.0.0"
-  http_tls_enabled: false
+  http_address: "127.0.0.1"
+  http_trusted_proxies: [] # Exact proxy IPs or CIDRs
+  https:
+    enabled: false
+    port: 7473
+    cert_file: ""
+    key_file: ""
 ```
+
+For authenticated TLS termination, required forwarding headers, CORS, listener
+isolation, and native HTTPS examples, see [Reverse Proxy and TLS Termination](reverse-proxy.md).
 
 ### Bolt announcement override for strict Neo4j clients
 

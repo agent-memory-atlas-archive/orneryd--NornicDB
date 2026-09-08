@@ -1,6 +1,12 @@
-# Operator-Declared GraphQL Schema — Implementation Plan
+# Operator-Declared GraphQL Schema - Superseded Plan
 
-Status: **Draft, 2026-05-22.**
+Status: **Superseded, 2026-09-08.**
+
+This live-managed SDL design has been replaced by the
+[generated GraphQL schema plan](generated-graphql-schema-plan.md). The active
+plan generates a deterministic SDL artifact with `nornicdb-admin`, loads it
+only at server startup, and requires an operator-controlled restart to activate
+changes. The material below is retained as historical design context only.
 
 ## Problem
 
@@ -106,14 +112,14 @@ Required on every field that returns another @node type or a list
 thereof.
 """
 directive @relationship(
-    type: String!
-    direction: RelationshipDirection!
+  type: String!
+  direction: RelationshipDirection!
 ) on FIELD_DEFINITION
 
 enum RelationshipDirection {
-    OUT
-    IN
-    BOTH
+  OUT
+  IN
+  BOTH
 }
 ```
 
@@ -152,13 +158,13 @@ builder synthesizes it from the `@property` fields on `Person` (see
 For every `@node` type, the schema builder emits one filter input with
 mechanical operators per scalar property type:
 
-| GraphQL type           | Operators emitted                                                       |
-|------------------------|-------------------------------------------------------------------------|
-| `String` / `ID`        | `<f>_eq`, `<f>_ne`, `<f>_in`, `<f>_contains`, `<f>_starts_with`, `<f>_ends_with` |
-| `Int` / `Float`        | `<f>_eq`, `<f>_ne`, `<f>_in`, `<f>_lt`, `<f>_lte`, `<f>_gt`, `<f>_gte`  |
-| `Boolean`              | `<f>_eq`                                                                |
-| Enum                   | `<f>_eq`, `<f>_in`                                                      |
-| List of scalar         | `<f>_includes`, `<f>_excludes`                                          |
+| GraphQL type    | Operators emitted                                                                |
+| --------------- | -------------------------------------------------------------------------------- |
+| `String` / `ID` | `<f>_eq`, `<f>_ne`, `<f>_in`, `<f>_contains`, `<f>_starts_with`, `<f>_ends_with` |
+| `Int` / `Float` | `<f>_eq`, `<f>_ne`, `<f>_in`, `<f>_lt`, `<f>_lte`, `<f>_gt`, `<f>_gte`           |
+| `Boolean`       | `<f>_eq`                                                                         |
+| Enum            | `<f>_eq`, `<f>_in`                                                               |
+| List of scalar  | `<f>_includes`, `<f>_excludes`                                                   |
 
 Plus three logical combinators: `AND: [PersonFilter!]`,
 `OR: [PersonFilter!]`, `NOT: PersonFilter`.
@@ -172,16 +178,16 @@ Validation happens at two boundaries: at PUT time (operator's SDL),
 and at boot (existing SDL re-checked against current topology). The
 validator walks the parsed SDL AST and verifies:
 
-| Check | Failure mode |
-|-------|--------------|
-| Every `@node(label:)` references a label that has at least one node OR appears in the label registry | `unknown_label` |
-| Every `@property(key:)` is in `PropertyKeyDict` (or matches the field name when `key` is omitted) | `unknown_property` |
-| Every `@relationship(type:)` is a known relationship type with at least one edge OR appears in the relationship-type registry | `unknown_relationship_type` |
-| Every relationship field returns a `@node` type | `relationship_target_not_a_node` |
-| Every scalar field on a `@node` type carries `@property` | `missing_property_directive` |
-| Every type referenced from a `@relationship` target type is itself a `@node` type | `relationship_target_unbound` |
-| `Query` field arguments are valid (no unknown filter keys, `limit`/`offset` are non-negative) | `invalid_query_argument` |
-| The SDL parses as syntactically valid GraphQL | `syntax_error` |
+| Check                                                                                                                         | Failure mode                     |
+| ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| Every `@node(label:)` references a label that has at least one node OR appears in the label registry                          | `unknown_label`                  |
+| Every `@property(key:)` is in `PropertyKeyDict` (or matches the field name when `key` is omitted)                             | `unknown_property`               |
+| Every `@relationship(type:)` is a known relationship type with at least one edge OR appears in the relationship-type registry | `unknown_relationship_type`      |
+| Every relationship field returns a `@node` type                                                                               | `relationship_target_not_a_node` |
+| Every scalar field on a `@node` type carries `@property`                                                                      | `missing_property_directive`     |
+| Every type referenced from a `@relationship` target type is itself a `@node` type                                             | `relationship_target_unbound`    |
+| `Query` field arguments are valid (no unknown filter keys, `limit`/`offset` are non-negative)                                 | `invalid_query_argument`         |
+| The SDL parses as syntactically valid GraphQL                                                                                 | `syntax_error`                   |
 
 Validation **does not** require that data exist for every label. An
 operator declaring a `type Tombstone @node(label: "Tombstone") { ... }`
@@ -213,13 +219,13 @@ dominant cost for any non-trivial query.
 
 #### Translation table
 
-| GraphQL                                     | Cypher                                                              |
-|---------------------------------------------|---------------------------------------------------------------------|
-| `Query.person(id: $id)`                     | `MATCH (n:Person {id:$id}) RETURN n`                                |
-| `Query.people(filter: {...}, limit: 10)`    | `MATCH (n:Person) WHERE <filter-cypher> RETURN n LIMIT 10`          |
-| `person { name age }`                       | `RETURN n {.name, .age}`                                            |
-| `person { knows { name } }`                 | `MATCH (n)-[:KNOWS]->(m:Person) RETURN n, collect(m {.name}) AS knows` |
-| `person { managedBy { name } }`             | `OPTIONAL MATCH (n)-[:REPORTS_TO]->(m:Manager) RETURN n {.id, .name}, m {.name}` |
+| GraphQL                                  | Cypher                                                                           |
+| ---------------------------------------- | -------------------------------------------------------------------------------- |
+| `Query.person(id: $id)`                  | `MATCH (n:Person {id:$id}) RETURN n`                                             |
+| `Query.people(filter: {...}, limit: 10)` | `MATCH (n:Person) WHERE <filter-cypher> RETURN n LIMIT 10`                       |
+| `person { name age }`                    | `RETURN n {.name, .age}`                                                         |
+| `person { knows { name } }`              | `MATCH (n)-[:KNOWS]->(m:Person) RETURN n, collect(m {.name}) AS knows`           |
+| `person { managedBy { name } }`          | `OPTIONAL MATCH (n)-[:REPORTS_TO]->(m:Manager) RETURN n {.id, .name}, m {.name}` |
 
 For nested traversals deeper than one hop, the transpiler emits a
 single Cypher query with `OPTIONAL MATCH` per level and `collect()`
@@ -257,12 +263,12 @@ type registry the resolvers consult.
 
 ### Admin endpoints
 
-| Endpoint                         | Method | Auth                | Effect                                                  |
-|----------------------------------|--------|---------------------|---------------------------------------------------------|
-| `/admin/graphql/schema`          | GET    | `PermAdmin`         | Returns `{sdl, updated_at, updated_by, version, last_validated}` |
-| `/admin/graphql/schema`          | PUT    | `PermAdmin`         | Body is SDL text. Validates + builds + swaps. 200 on success, 422 with errors on validation failure, 409 on CAS conflict |
-| `/admin/graphql/schema`          | DELETE | `PermAdmin`         | Clears the schema. `/graphql` returns 503 until next PUT |
-| `/admin/graphql/schema/validate` | POST   | `PermAdmin`         | Validate without persisting. Lets operators check SDL before they push it. Returns the same `validationResult` shape |
+| Endpoint                         | Method | Auth        | Effect                                                                                                                   |
+| -------------------------------- | ------ | ----------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `/admin/graphql/schema`          | GET    | `PermAdmin` | Returns `{sdl, updated_at, updated_by, version, last_validated}`                                                         |
+| `/admin/graphql/schema`          | PUT    | `PermAdmin` | Body is SDL text. Validates + builds + swaps. 200 on success, 422 with errors on validation failure, 409 on CAS conflict |
+| `/admin/graphql/schema`          | DELETE | `PermAdmin` | Clears the schema. `/graphql` returns 503 until next PUT                                                                 |
+| `/admin/graphql/schema/validate` | POST   | `PermAdmin` | Validate without persisting. Lets operators check SDL before they push it. Returns the same `validationResult` shape     |
 
 The PUT response body on success carries the validation result so
 operators can see warnings (declared types with no data backing yet)
@@ -270,11 +276,11 @@ even on a successful save.
 
 ### Public endpoints
 
-| Endpoint              | Method | Auth                 | Effect                                                  |
-|-----------------------|--------|----------------------|---------------------------------------------------------|
-| `/graphql`            | POST   | Any auth'd user      | Executes a GraphQL query against the current schema. 503 when no schema is configured |
-| `/graphql/schema.sdl` | GET    | Any auth'd user      | Returns the current SDL. Useful for tooling that wants to type-generate clients |
-| `/graphql`            | GET    | Any auth'd user      | Returns introspection result (the GraphQL spec's `__schema` query result) when called without a body. Same 503 when no schema |
+| Endpoint              | Method | Auth            | Effect                                                                                                                        |
+| --------------------- | ------ | --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `/graphql`            | POST   | Any auth'd user | Executes a GraphQL query against the current schema. 503 when no schema is configured                                         |
+| `/graphql/schema.sdl` | GET    | Any auth'd user | Returns the current SDL. Useful for tooling that wants to type-generate clients                                               |
+| `/graphql`            | GET    | Any auth'd user | Returns introspection result (the GraphQL spec's `__schema` query result) when called without a body. Same 503 when no schema |
 
 The introspection endpoint is what makes the dynamic schema "real" —
 GraphiQL, GraphQL Code Generator, Apollo Studio, and anything else
@@ -298,25 +304,25 @@ graph schemas on one cluster.
 
 ## Call sites
 
-| File                                                | Change                                                                                                  |
-|-----------------------------------------------------|---------------------------------------------------------------------------------------------------------|
-| `pkg/graphql/sdl_store.go` (NEW)                    | `SDLStore` interface; `systemDBSDLStore` impl reads/writes per-DB SDL documents in system DB            |
-| `pkg/graphql/sdl_store_test.go` (NEW)               | Round-trip, version-bump, missing-key, multi-DB isolation                                               |
-| `pkg/graphql/validator.go` (NEW)                    | `Validate(sdl, topology) []validationError`                                                             |
-| `pkg/graphql/validator_test.go` (NEW)               | Unknown-label / unknown-property / unknown-rel / syntax-error / valid-but-empty-data cases              |
-| `pkg/graphql/filter_synth.go` (NEW)                 | `SynthesizeFilters(parsedSDL) parsedSDL` — emits `<Type>Filter` inputs from `@property` fields          |
-| `pkg/graphql/filter_synth_test.go` (NEW)            | Per-scalar-type operator coverage; AND/OR/NOT nesting                                                   |
-| `pkg/graphql/transpiler.go` (NEW)                   | `Transpile(operation, schema) cypherStatement` — selection set → Cypher RETURN clause                   |
-| `pkg/graphql/transpiler_test.go` (NEW)              | One-hop and two-hop traversal; filter compilation; parameterization assertions                          |
-| `pkg/graphql/runtime.go` (NEW)                      | `graphqlRuntime` bundle (parsed schema + version + type registry); `BuildRuntime(sdl, topology) (*graphqlRuntime, error)` |
-| `pkg/graphql/runtime_test.go` (NEW)                 | Boot path; CAS swap on PUT; nil after DELETE                                                            |
-| `pkg/server/server_graphql.go` (MODIFY)             | `/graphql` POST routes through transpiler when a runtime is loaded; 503 otherwise. `/graphql` GET introspects |
-| `pkg/server/server_admin_graphql.go` (NEW)          | `/admin/graphql/schema` GET / PUT / DELETE / `validate`                                                 |
-| `pkg/server/server_router.go` (MODIFY)              | Register the four admin endpoints + the public introspection/SDL endpoints                              |
-| `pkg/server/server.go` (MODIFY)                     | Server struct gains `graphqlSchema atomic.Pointer[graphqlRuntime]`. Boot loads schema per default DB    |
-| `cmd/nornicdb/main.go` (MODIFY)                     | Plumb `pkg/graphql.NewBuilder(...)` into server construction                                            |
-| `docs/operations/configuration.md` (MODIFY)         | New "GraphQL Schema" section: how to push SDL, what's validated, what 503 means                         |
-| `docs/user-guides/graphql.md` (MODIFY or CREATE)    | Operator walkthrough: write SDL, push via curl, query via GraphiQL                                      |
+| File                                             | Change                                                                                                                    |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `pkg/graphql/sdl_store.go` (NEW)                 | `SDLStore` interface; `systemDBSDLStore` impl reads/writes per-DB SDL documents in system DB                              |
+| `pkg/graphql/sdl_store_test.go` (NEW)            | Round-trip, version-bump, missing-key, multi-DB isolation                                                                 |
+| `pkg/graphql/validator.go` (NEW)                 | `Validate(sdl, topology) []validationError`                                                                               |
+| `pkg/graphql/validator_test.go` (NEW)            | Unknown-label / unknown-property / unknown-rel / syntax-error / valid-but-empty-data cases                                |
+| `pkg/graphql/filter_synth.go` (NEW)              | `SynthesizeFilters(parsedSDL) parsedSDL` — emits `<Type>Filter` inputs from `@property` fields                            |
+| `pkg/graphql/filter_synth_test.go` (NEW)         | Per-scalar-type operator coverage; AND/OR/NOT nesting                                                                     |
+| `pkg/graphql/transpiler.go` (NEW)                | `Transpile(operation, schema) cypherStatement` — selection set → Cypher RETURN clause                                     |
+| `pkg/graphql/transpiler_test.go` (NEW)           | One-hop and two-hop traversal; filter compilation; parameterization assertions                                            |
+| `pkg/graphql/runtime.go` (NEW)                   | `graphqlRuntime` bundle (parsed schema + version + type registry); `BuildRuntime(sdl, topology) (*graphqlRuntime, error)` |
+| `pkg/graphql/runtime_test.go` (NEW)              | Boot path; CAS swap on PUT; nil after DELETE                                                                              |
+| `pkg/server/server_graphql.go` (MODIFY)          | `/graphql` POST routes through transpiler when a runtime is loaded; 503 otherwise. `/graphql` GET introspects             |
+| `pkg/server/server_admin_graphql.go` (NEW)       | `/admin/graphql/schema` GET / PUT / DELETE / `validate`                                                                   |
+| `pkg/server/server_router.go` (MODIFY)           | Register the four admin endpoints + the public introspection/SDL endpoints                                                |
+| `pkg/server/server.go` (MODIFY)                  | Server struct gains `graphqlSchema atomic.Pointer[graphqlRuntime]`. Boot loads schema per default DB                      |
+| `cmd/nornicdb/main.go` (MODIFY)                  | Plumb `pkg/graphql.NewBuilder(...)` into server construction                                                              |
+| `docs/operations/configuration.md` (MODIFY)      | New "GraphQL Schema" section: how to push SDL, what's validated, what 503 means                                           |
+| `docs/user-guides/graphql.md` (MODIFY or CREATE) | Operator walkthrough: write SDL, push via curl, query via GraphiQL                                                        |
 
 ## Phasing
 

@@ -22,7 +22,7 @@
 
 # =============================================================================
 # SERVER CONFIGURATION
-# Docs: https://github.com/orneryd/nornicdb/docs/getting-started/configuration.md
+# Docs: https://github.com/orneryd/nornicdb/docs/operations/configuration.md
 # =============================================================================
 server:
   # Bolt protocol port - Neo4j driver compatible
@@ -79,14 +79,23 @@ server:
     # base_directory: ""  # If set, looks for public.crt and private.key here
 
   # HTTPS Configuration (secure HTTP API)
-  # Env: NORNICDB_HTTPS_ENABLED, NORNICDB_HTTPS_PORT
+  # Env: NORNICDB_HTTPS_ENABLED, NORNICDB_HTTPS_PORT,
+  #      NORNICDB_HTTP_TLS_CERT, NORNICDB_HTTP_TLS_KEY
   https:
     enabled: false
     port: 7473
+    cert_file: "" # Path to HTTP PEM certificate
+    key_file: "" # Path to HTTP PEM private key
 
   # HTTP bind address (separate from Bolt)
   # Env: NORNICDB_HTTP_ADDRESS
   http_address: "127.0.0.1"
+
+  # Reverse proxies allowed to terminate TLS and set forwarded HTTP headers.
+  # Use exact IPs or narrow CIDRs for the immediate proxy peers. This setting
+  # permits authenticated cleartext HTTP on a non-loopback backend listener.
+  # Env: NORNICDB_HTTP_TRUSTED_PROXIES (comma-separated)
+  http_trusted_proxies: []
 
   # Runtime environment (development, production)
   # Env: NORNICDB_ENV

@@ -39,6 +39,10 @@ import (
 // =============================================================================
 
 func setupTestServer(t *testing.T) (*Server, *auth.Authenticator) {
+	return setupTestServerWithConfig(t, nil)
+}
+
+func setupTestServerWithConfig(t *testing.T, configure func(*Config)) (*Server, *auth.Authenticator) {
 	t.Helper()
 
 	// Create temporary directory for test database
@@ -101,6 +105,9 @@ func setupTestServer(t *testing.T) (*Server, *auth.Authenticator) {
 	// Enable CORS with wildcard for tests (not recommended for production)
 	serverConfig.EnableCORS = true
 	serverConfig.CORSOrigins = []string{"*"}
+	if configure != nil {
+		configure(serverConfig)
+	}
 
 	// Create server
 	server, err := New(db, authenticator, serverConfig)

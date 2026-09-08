@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 )
 
@@ -11,6 +12,13 @@ import (
 func ValidateSecurityConfiguration(config *Config) error {
 	if config == nil {
 		return fmt.Errorf("security configuration: config is required")
+	}
+	if err := validateTrustedProxies(config.Server.HTTPTrustedProxies); err != nil {
+		return err
+	}
+	nativeHTTPS := config.Server.HTTPSEnabled && strings.TrimSpace(config.Server.HTTPTLSCert) != "" && strings.TrimSpace(config.Server.HTTPTLSKey) != ""
+	if config.Server.HTTPSEnabled && !nativeHTTPS {
+		return fmt.Errorf("security configuration: HTTPS certificate and key are required when HTTPS is enabled")
 	}
 	if !config.Auth.Enabled {
 		return nil
@@ -25,7 +33,7 @@ func ValidateSecurityConfiguration(config *Config) error {
 			}
 		}
 	}
-	if config.Server.HTTPEnabled && isPublicListener(config.Server.HTTPAddress) {
+	if config.Server.HTTPEnabled && isPublicListener(config.Server.HTTPAddress) && !nativeHTTPS && len(config.Server.HTTPTrustedProxies) == 0 {
 		return fmt.Errorf("security configuration: public plaintext HTTP listener is not allowed")
 	}
 	if config.Server.BoltEnabled && isPublicListener(config.Server.BoltAddress) && !config.Server.BoltTLSRequire {
@@ -33,6 +41,22 @@ func ValidateSecurityConfiguration(config *Config) error {
 	}
 	if config.Features.QdrantGRPCEnabled && isPublicListener(config.Features.QdrantGRPCListenAddr) {
 		return fmt.Errorf("security configuration: public plaintext gRPC listener is not allowed")
+	}
+	return nil
+}
+
+func validateTrustedProxies(proxies []string) error {
+	for _, proxy := range proxies {
+		proxy = strings.TrimSpace(proxy)
+		if proxy == "" {
+			return fmt.Errorf("security configuration: trusted proxy entry must not be empty")
+		}
+		if _, err := netip.ParsePrefix(proxy); err == nil {
+			continue
+		}
+		if _, err := netip.ParseAddr(proxy); err != nil {
+			return fmt.Errorf("security configuration: invalid trusted proxy %q: expected an IP address or CIDR", proxy)
+		}
 	}
 	return nil
 }

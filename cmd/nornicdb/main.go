@@ -776,7 +776,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Create and start HTTP server
 	serverConfig := server.DefaultConfig()
 	serverConfig.ProcessConfig = cfg
-	serverConfig.Port = httpPort
+	applyHTTPTransportConfig(serverConfig, cfg, httpPort, cmd.Flags().Changed("http-port"))
+	httpPort = serverConfig.Port
 	serverConfig.BoltPort = boltPort
 	serverConfig.Address = resolvedAddress
 	// MCP server configuration
@@ -1322,6 +1323,21 @@ func resolveBindAddress(cmd *cobra.Command, cfg *config.Config, cliAddress strin
 		return "127.0.0.1"
 	}
 	return strings.TrimSpace(resolvedAddress)
+}
+
+func applyHTTPTransportConfig(serverConfig *server.Config, cfg *config.Config, cliPort int, cliPortChanged bool) {
+	serverConfig.Port = cliPort
+	if !cliPortChanged && cfg.Server.HTTPPort > 0 {
+		serverConfig.Port = cfg.Server.HTTPPort
+	}
+	if cfg.Server.HTTPSEnabled {
+		if !cliPortChanged && cfg.Server.HTTPSPort > 0 {
+			serverConfig.Port = cfg.Server.HTTPSPort
+		}
+		serverConfig.TLSCertFile = cfg.Server.HTTPTLSCert
+		serverConfig.TLSKeyFile = cfg.Server.HTTPTLSKey
+	}
+	serverConfig.TrustedProxies = append([]string(nil), cfg.Server.HTTPTrustedProxies...)
 }
 
 func hasExplicitProtocolBindEnv() bool {
