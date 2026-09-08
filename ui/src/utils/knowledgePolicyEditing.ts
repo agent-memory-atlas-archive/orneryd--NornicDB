@@ -8,7 +8,9 @@ export function quotePolicyName(name: string): string {
   if (IDENTIFIER_PATTERN.test(name)) return name;
   if (!name.includes("'")) return `'${name}'`;
   if (!name.includes('"')) return `"${name}"`;
-  throw new Error("Policy names containing both quote styles cannot be edited.");
+  throw new Error(
+    "Policy names containing both quote styles cannot be edited.",
+  );
 }
 
 export function targetValue(
@@ -62,8 +64,8 @@ export function buildPromotionPolicyAlter(
 ): string {
   const scope: PolicyScope = policy.IsEdge ? "EDGE" : "NODE";
   const apply = policy.Apply.trim();
-  if (!apply) throw new Error("The promotion APPLY block cannot be empty.");
-  return `ALTER PROMOTION POLICY ${quotePolicyName(policy.Name)} FOR ${buildTarget(policy.Target, scope)} APPLY {\n${apply}\n}`;
+  const alterTarget = `ALTER PROMOTION POLICY ${quotePolicyName(policy.Name)} FOR ${buildTarget(policy.Target, scope)}`;
+  return apply ? `${alterTarget} APPLY {\n${apply}\n}` : alterTarget;
 }
 
 export function optionLiteral(value: unknown): string {

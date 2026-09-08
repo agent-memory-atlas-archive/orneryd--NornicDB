@@ -4,6 +4,9 @@
 @config "../tailwind.config.js";
 
 .nornic-grid {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   --ui-grid-surface: #141824;
   --ui-grid-border-color: #2a3247;
   --ui-grid-header-background: #1e2433;
@@ -31,6 +34,12 @@
   --ui-grid-cell-editor-focus-outline: 2px solid rgba(16, 185, 129, 0.2);
   --ui-grid-expandable-row-background: rgba(16, 185, 129, 0.04);
   --ui-grid-empty-state-min-height: 10rem;
+}
+
+.nornic-grid > ui-grid-element {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 body {

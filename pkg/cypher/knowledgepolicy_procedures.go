@@ -197,6 +197,29 @@ func formatKnowledgePolicyFloat(value float64) string {
 	return strconv.FormatFloat(value, 'g', -1, 64)
 }
 
+type knowledgePolicyEntityKind uint8
+
+const (
+	knowledgePolicyEntityAny knowledgePolicyEntityKind = iota
+	knowledgePolicyEntityNode
+	knowledgePolicyEntityEdge
+)
+
+func parseKnowledgePolicyEntityID(entityID string) (string, knowledgePolicyEntityKind) {
+	parts := strings.SplitN(strings.TrimSpace(entityID), ":", 3)
+	if len(parts) != 3 {
+		return entityID, knowledgePolicyEntityAny
+	}
+	switch parts[0] {
+	case "4":
+		return parts[2], knowledgePolicyEntityNode
+	case "5":
+		return parts[2], knowledgePolicyEntityEdge
+	default:
+		return entityID, knowledgePolicyEntityAny
+	}
+}
+
 func (e *StorageExecutor) callNornicDbKnowledgePolicyResolve(args []interface{}) (*ExecuteResult, error) {
 	entityID, err := optionalStringArg(args, 0)
 	if err != nil {
@@ -233,16 +256,17 @@ func (e *StorageExecutor) callNornicDbKnowledgePolicyResolve(args []interface{})
 
 	var resolution knowledgepolicy.ScoringResolution
 	if entityID != "" {
-		if node, nodeErr := e.storage.GetNode(storage.NodeID(entityID)); nodeErr == nil && node != nil {
+		lookupID, entityKind := parseKnowledgePolicyEntityID(entityID)
+		if node, nodeErr := e.storage.GetNode(storage.NodeID(lookupID)); entityKind != knowledgePolicyEntityEdge && nodeErr == nil && node != nil {
 			createdNanos := node.CreatedAt.UnixNano()
 			versionNanos := createdNanos
 			if !node.UpdatedAt.IsZero() {
 				versionNanos = node.UpdatedAt.UnixNano()
 			}
-			resolution = scorer.ScoreNode(entityID, node.Labels, loadAccessMeta(e.storage, entityID), createdNanos, versionNanos, nowNanos)
-		} else if edge, edgeErr := e.storage.GetEdge(storage.EdgeID(entityID)); edgeErr == nil && edge != nil {
+			resolution = scorer.ScoreNode(entityID, node.Labels, loadAccessMeta(e.storage, lookupID), createdNanos, versionNanos, nowNanos)
+		} else if edge, edgeErr := e.storage.GetEdge(storage.EdgeID(lookupID)); entityKind != knowledgePolicyEntityNode && edgeErr == nil && edge != nil {
 			createdNanos := edge.CreatedAt.UnixNano()
-			resolution = scorer.ScoreEdge(entityID, edge.Type, loadAccessMeta(e.storage, entityID), createdNanos, createdNanos, nowNanos)
+			resolution = scorer.ScoreEdge(entityID, edge.Type, loadAccessMeta(e.storage, lookupID), createdNanos, createdNanos, nowNanos)
 		} else {
 			return nil, localizedError(localization.CypherKnowledgePolicyEntityNotFound(entityID), nil)
 		}

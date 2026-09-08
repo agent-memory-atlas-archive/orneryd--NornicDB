@@ -361,6 +361,54 @@ func TestE2E_CallNornicDbKnowledgePolicyResolve(t *testing.T) {
 	assert.Equal(t, false, row[13])
 }
 
+func TestE2E_CallNornicDbKnowledgePolicyResolve_AcceptsNeo4jElementIDs(t *testing.T) {
+	be, err := storage.NewBadgerEngineInMemory()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = be.Close() })
+
+	store := storage.NewNamespacedEngine(be, "nornic")
+	exec := NewStorageExecutor(store)
+	ctx := context.Background()
+	_, err = exec.Execute(ctx, "CREATE DECAY PROFILE profile_alpha OPTIONS { halfLifeSeconds: 3600, function: 'exponential', scope: 'NODE', scoreFrom: 'CREATED' }", nil)
+	require.NoError(t, err)
+
+	createdAt := time.Unix(1700000000, 0)
+	for _, nodeID := range []storage.NodeID{"node-1", "node-2"} {
+		_, err = store.CreateNode(&storage.Node{ID: nodeID, Labels: []string{"MemoryEpisode"}, CreatedAt: createdAt})
+		require.NoError(t, err)
+	}
+	edgeID := storage.EdgeID("edge-1")
+	require.NoError(t, store.CreateEdge(&storage.Edge{
+		ID: edgeID, StartNode: "node-1", EndNode: "node-2", Type: "REFERENCES", CreatedAt: createdAt,
+	}))
+
+	tests := []struct {
+		name      string
+		entityID  string
+		wantID    string
+		wantScope string
+	}{
+		{name: "raw node ID", entityID: "node-1", wantID: "node-1", wantScope: "NODE"},
+		{name: "node element ID", entityID: "4:nornicdb:node-1", wantID: "4:nornicdb:node-1", wantScope: "NODE"},
+		{name: "raw relationship ID", entityID: "edge-1", wantID: "edge-1", wantScope: "EDGE"},
+		{name: "relationship element ID", entityID: "5:nornicdb:edge-1", wantID: "5:nornicdb:edge-1", wantScope: "EDGE"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, resolveErr := exec.Execute(ctx, fmt.Sprintf("CALL nornicdb.knowledgepolicy.resolve('%s', '', '')", tt.entityID), nil)
+			require.NoError(t, resolveErr)
+			require.Len(t, result.Rows, 1)
+			assert.Equal(t, tt.wantID, result.Rows[0][0])
+			assert.Equal(t, tt.wantScope, result.Rows[0][1])
+		})
+	}
+
+	_, err = exec.Execute(ctx, "CALL nornicdb.knowledgepolicy.resolve('4:nornicdb:edge-1', '', '')", nil)
+	require.EqualError(t, err, "entity not found: 4:nornicdb:edge-1")
+	_, err = exec.Execute(ctx, "CALL nornicdb.knowledgepolicy.resolve('5:nornicdb:node-1', '', '')", nil)
+	require.EqualError(t, err, "entity not found: 5:nornicdb:node-1")
+}
+
 func TestE2E_CallNornicDbKnowledgePolicyDeindexStatus(t *testing.T) {
 	be, err := storage.NewBadgerEngineInMemory()
 	require.NoError(t, err)

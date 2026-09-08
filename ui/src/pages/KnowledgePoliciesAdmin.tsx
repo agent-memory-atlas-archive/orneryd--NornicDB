@@ -233,13 +233,13 @@ export function KnowledgePoliciesAdmin() {
 
   const handleAlterPolicy = useCallback(
     async (statement: string, successMessage: string) => {
-      if (!selectedDb) return;
+      if (!selectedDb) return false;
       if (mutationInFlight.current) {
         showNotification(
           "error",
           "Wait for the current policy update to finish before editing again.",
         );
-        return;
+        return false;
       }
       mutationInFlight.current = true;
       setSaving(true);
@@ -247,6 +247,7 @@ export function KnowledgePoliciesAdmin() {
         await api.alterKnowledgePolicy(statement, selectedDb);
         await loadData(selectedDb);
         showNotification("success", successMessage);
+        return true;
       } catch (err) {
         try {
           await loadData(selectedDb);
@@ -259,6 +260,7 @@ export function KnowledgePoliciesAdmin() {
             ? err.message
             : "Failed to update knowledge policy",
         );
+        return false;
       } finally {
         mutationInFlight.current = false;
         setSaving(false);
@@ -301,7 +303,7 @@ export function KnowledgePoliciesAdmin() {
   }
 
   return (
-    <PageLayout>
+    <PageLayout className="min-w-0">
       <PageHeader
         title="Knowledge Policies"
         backTo="/security"
@@ -320,7 +322,7 @@ export function KnowledgePoliciesAdmin() {
         }
       />
 
-      <main className="max-w-6xl mx-auto p-6 space-y-6">
+      <main className="w-full min-w-0 max-w-6xl mx-auto px-4 py-6 sm:p-6 space-y-6">
         {notification && (
           <div
             className="fixed right-4 top-4 z-50 w-[min(26rem,calc(100vw-2rem))]"
@@ -385,13 +387,13 @@ export function KnowledgePoliciesAdmin() {
         </section>
 
         {/* Tab nav */}
-        <div className="flex gap-1 border-b border-norse-rune">
+        <div className="flex max-w-full gap-1 overflow-x-auto border-b border-norse-rune">
           {TABS.map((tab) => (
             <button
               type="button"
               key={tab.id}
               onClick={() => handleTabChange(tab.id)}
-              className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+              className={`shrink-0 px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
                 activeTab === tab.id
                   ? "bg-norse-shadow border border-b-norse-shadow border-norse-rune text-white"
                   : "text-norse-silver hover:text-white hover:bg-norse-stone/40"
@@ -650,7 +652,7 @@ export function KnowledgePoliciesAdmin() {
                       label="Entity ID"
                       value={resolveEntityId}
                       onChange={setResolveEntityId}
-                      placeholder="e.g., node-uuid-here"
+                      placeholder="Value from id(n) or elementId(n)"
                     />
                     <FormInput
                       id="resolve-labels"
@@ -694,12 +696,14 @@ export function KnowledgePoliciesAdmin() {
                   </div>
 
                   {resolveError && (
-                    <Alert
-                      type="error"
-                      message={resolveError}
-                      dismissible
-                      onDismiss={() => setResolveError("")}
-                    />
+                    <div role="alert" aria-live="assertive" aria-atomic="true">
+                      <Alert
+                        type="error"
+                        message={resolveError}
+                        dismissible
+                        onDismiss={() => setResolveError("")}
+                      />
+                    </div>
                   )}
                 </section>
 

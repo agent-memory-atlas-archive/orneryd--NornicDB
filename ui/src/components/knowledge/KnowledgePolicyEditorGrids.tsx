@@ -7,6 +7,10 @@ import {
   useState,
 } from "react";
 import { UiGrid } from "@ornery/ui-grid-react";
+import {
+  buildGridPipeline,
+  registerRustWasmGridEngine,
+} from "@ornery/ui-grid-core";
 import type {
   GridCellTemplateContext,
   GridColumnDef,
@@ -40,7 +44,7 @@ interface KnowledgePolicyEditorGridsProps {
   profiles: KPProfilesResponse | null;
   policies: KPPoliciesResponse | null;
   saving: boolean;
-  onAlter: (statement: string, successMessage: string) => Promise<void>;
+  onAlter: (statement: string, successMessage: string) => Promise<boolean>;
   onValidationError: (message: string) => void;
 }
 
@@ -85,6 +89,10 @@ const gridLabels = {
   validateRequired: "A value is required",
 };
 
+// ui-grid 5 has no per-grid WASM opt-out. Register its TypeScript pipeline
+// before mounting so the vanilla adapter does not attempt WASM initialization.
+registerRustWasmGridEngine({ buildPipeline: buildGridPipeline });
+
 function editorSelectClass(): string {
   return "w-full min-w-24 rounded border border-norse-rune bg-norse-stone px-2 py-1 text-xs text-white focus:outline-none focus:ring-2 focus:ring-nornic-primary";
 }
@@ -118,7 +126,9 @@ function EditorToggle({
 function usePolicyEditor(): PolicyEditorContextValue {
   const context = useContext(PolicyEditorContext);
   if (!context) {
-    throw new Error("Knowledge policy cell renderer requires an editor context");
+    throw new Error(
+      "Knowledge policy cell renderer requires an editor context",
+    );
   }
   return context;
 }
@@ -265,19 +275,20 @@ function gridHeight(rowCount: number): number {
 }
 
 async function submitAlter(
-  onAlter: (statement: string, successMessage: string) => Promise<void>,
+  onAlter: (statement: string, successMessage: string) => Promise<boolean>,
   onValidationError: (message: string) => void,
   buildStatement: () => string,
   successMessage: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await onAlter(buildStatement(), successMessage);
+    return await onAlter(buildStatement(), successMessage);
   } catch (error) {
     onValidationError(
       error instanceof Error
         ? error.message
         : "Failed to generate the policy update.",
     );
+    return false;
   }
 }
 
@@ -324,6 +335,18 @@ async function validateEdit(
   const messages = api.validate.getErrorMessages(row, column);
   onValidationError(messages.join(". ") || "The edited value is invalid.");
   return false;
+}
+
+async function restoreEditedCell(
+  api: UiGridApi,
+  row: GridRecord,
+  column: GridColumnDef,
+  oldValue: unknown,
+  rejectedValue: unknown,
+): Promise<void> {
+  row[column.field ?? column.name] = oldValue;
+  await api.validate.runValidators(row, column, oldValue, rejectedValue);
+  api.core.refreshRows();
 }
 
 export function KnowledgePolicyEditorGrids({
@@ -648,8 +671,10 @@ export function KnowledgePolicyEditorGrids({
               oldValue,
               onValidationError,
             ))
-          )
+          ) {
+            await restoreEditedCell(bundleApi, row, column, oldValue, newValue);
             return;
+          }
           const numericFields = new Set([
             "HalfLifeSeconds",
             "VisibilityThreshold",
@@ -658,7 +683,7 @@ export function KnowledgePolicyEditorGrids({
           const value = numericFields.has(column.name)
             ? Number(newValue)
             : String(newValue ?? "");
-          await submitAlter(
+          const saved = await submitAlter(
             onAlter,
             onValidationError,
             () =>
@@ -670,6 +695,9 @@ export function KnowledgePolicyEditorGrids({
               ),
             `Updated decay profile ${String(row.Name)}`,
           );
+          if (!saved) {
+            await restoreEditedCell(bundleApi, row, column, oldValue, newValue);
+          }
         })();
       },
     );
@@ -691,9 +719,17 @@ export function KnowledgePolicyEditorGrids({
               oldValue,
               onValidationError,
             ))
-          )
+          ) {
+            await restoreEditedCell(
+              promotionProfileApi,
+              row,
+              column,
+              oldValue,
+              newValue,
+            );
             return;
-          await submitAlter(
+          }
+          const saved = await submitAlter(
             onAlter,
             onValidationError,
             () =>
@@ -705,6 +741,15 @@ export function KnowledgePolicyEditorGrids({
               ),
             `Updated promotion profile ${String(row.Name)}`,
           );
+          if (!saved) {
+            await restoreEditedCell(
+              promotionProfileApi,
+              row,
+              column,
+              oldValue,
+              newValue,
+            );
+          }
         })();
       },
     );
@@ -726,18 +771,35 @@ export function KnowledgePolicyEditorGrids({
               oldValue,
               onValidationError,
             ))
-          )
+          ) {
+            await restoreEditedCell(
+              bindingApi,
+              row,
+              column,
+              oldValue,
+              newValue,
+            );
             return;
+          }
           const updatedRow = {
             ...row,
             [column.field ?? column.name]: newValue,
           } as BindingRow;
-          await submitAlter(
+          const saved = await submitAlter(
             onAlter,
             onValidationError,
             () => buildDecayBindingAlter(updatedRow),
             `Updated decay binding ${String(row.Name)}`,
           );
+          if (!saved) {
+            await restoreEditedCell(
+              bindingApi,
+              row,
+              column,
+              oldValue,
+              newValue,
+            );
+          }
         })();
       },
     );
@@ -759,18 +821,35 @@ export function KnowledgePolicyEditorGrids({
               oldValue,
               onValidationError,
             ))
-          )
+          ) {
+            await restoreEditedCell(
+              promotionPolicyApi,
+              row,
+              column,
+              oldValue,
+              newValue,
+            );
             return;
+          }
           const updatedRow = {
             ...row,
             [column.field ?? column.name]: newValue,
           } as PromotionPolicyRow;
-          await submitAlter(
+          const saved = await submitAlter(
             onAlter,
             onValidationError,
             () => buildPromotionPolicyAlter(updatedRow),
             `Updated promotion policy ${String(row.Name)}`,
           );
+          if (!saved) {
+            await restoreEditedCell(
+              promotionPolicyApi,
+              row,
+              column,
+              oldValue,
+              newValue,
+            );
+          }
         })();
       },
     );
@@ -781,7 +860,6 @@ export function KnowledgePolicyEditorGrids({
     field: string,
     value: string | boolean,
   ) => {
-    row[field] = value;
     void submitAlter(
       onAlter,
       onValidationError,
@@ -800,12 +878,10 @@ export function KnowledgePolicyEditorGrids({
     row: PromotionProfileRow,
     enabled: boolean,
   ) => {
-    row.Enabled = enabled;
     void submitAlter(
       onAlter,
       onValidationError,
-      () =>
-        buildProfileOptionAlter("PROMOTION", row.Name, "enabled", enabled),
+      () => buildProfileOptionAlter("PROMOTION", row.Name, "enabled", enabled),
       `Updated promotion profile ${row.Name}`,
     );
   };
@@ -814,7 +890,6 @@ export function KnowledgePolicyEditorGrids({
     row: PromotionPolicyRow,
     enabled: boolean,
   ) => {
-    row.Enabled = enabled;
     void submitAlter(
       onAlter,
       onValidationError,
@@ -838,126 +913,126 @@ export function KnowledgePolicyEditorGrids({
 
   return (
     <PolicyEditorContext.Provider value={editorContext}>
-      <div className="space-y-6">
-      {section === "decay" && (
-        <section
-          aria-labelledby={decayBundlesHeadingId}
-          className="bg-norse-shadow border border-norse-rune rounded-lg p-6 space-y-4"
-        >
-          <div>
-            <h2
-              id={decayBundlesHeadingId}
-              className="text-lg font-semibold text-white"
-            >
-              Decay profile bundles
-            </h2>
-            <p className="mt-1 text-sm text-norse-silver">
-              Select a constrained value or focus a numeric cell to edit it.
-              Press Enter to commit and Escape to cancel.
-            </p>
-          </div>
-          <div
-            className="nornic-grid overflow-x-auto"
-            style={{ height: gridHeight(bundleRows.length) }}
-            aria-busy={saving}
+      <div className="min-w-0 space-y-6">
+        {section === "decay" && (
+          <section
+            aria-labelledby={decayBundlesHeadingId}
+            className="min-w-0 overflow-hidden bg-norse-shadow border border-norse-rune rounded-lg p-4 sm:p-6 space-y-4"
           >
-            <UiGrid
-              options={bundleOptions}
-              onRegisterApi={setBundleApi}
-              cellRenderers={bundleRenderers}
-            />
-          </div>
-        </section>
-      )}
+            <div>
+              <h2
+                id={decayBundlesHeadingId}
+                className="text-lg font-semibold text-white"
+              >
+                Decay profile bundles
+              </h2>
+              <p className="mt-1 text-sm text-norse-silver">
+                Select a constrained value or focus a numeric cell to edit it.
+                Press Enter to commit and Escape to cancel.
+              </p>
+            </div>
+            <div
+              className="nornic-grid w-full min-w-0 max-w-full overflow-x-auto"
+              style={{ height: gridHeight(bundleRows.length) }}
+              aria-busy={saving}
+            >
+              <UiGrid
+                options={bundleOptions}
+                onRegisterApi={setBundleApi}
+                cellRenderers={bundleRenderers}
+              />
+            </div>
+          </section>
+        )}
 
-      {section === "decay" && (
-        <section
-          aria-labelledby={decayBindingsHeadingId}
-          className="bg-norse-shadow border border-norse-rune rounded-lg p-6 space-y-4"
-        >
-          <div>
-            <h2
-              id={decayBindingsHeadingId}
-              className="text-lg font-semibold text-white"
-            >
-              Decay profile bindings
-            </h2>
-            <p className="mt-1 text-sm text-norse-silver">
-              Edit a target or the canonical APPLY directives in place. Targets
-              accept colon-separated node labels, or one edge type.
-            </p>
-          </div>
-          <div
-            className="nornic-grid overflow-x-auto"
-            style={{ height: gridHeight(bindingRows.length) }}
-            aria-busy={saving}
+        {section === "decay" && (
+          <section
+            aria-labelledby={decayBindingsHeadingId}
+            className="min-w-0 overflow-hidden bg-norse-shadow border border-norse-rune rounded-lg p-4 sm:p-6 space-y-4"
           >
-            <UiGrid options={bindingOptions} onRegisterApi={setBindingApi} />
-          </div>
-        </section>
-      )}
+            <div>
+              <h2
+                id={decayBindingsHeadingId}
+                className="text-lg font-semibold text-white"
+              >
+                Decay profile bindings
+              </h2>
+              <p className="mt-1 text-sm text-norse-silver">
+                Edit a target or the canonical APPLY directives in place.
+                Targets accept colon-separated node labels, or one edge type.
+              </p>
+            </div>
+            <div
+              className="nornic-grid w-full min-w-0 max-w-full overflow-x-auto"
+              style={{ height: gridHeight(bindingRows.length) }}
+              aria-busy={saving}
+            >
+              <UiGrid options={bindingOptions} onRegisterApi={setBindingApi} />
+            </div>
+          </section>
+        )}
 
-      {section === "promotion" && (
-        <section
-          aria-labelledby={promotionPoliciesHeadingId}
-          className="bg-norse-shadow border border-norse-rune rounded-lg p-6 space-y-4"
-        >
-          <div>
-            <h2
-              id={promotionPoliciesHeadingId}
-              className="text-lg font-semibold text-white"
-            >
-              Promotion policies
-            </h2>
-            <p className="mt-1 text-sm text-norse-silver">
-              Targets and complete APPLY directives are editable. Enablement
-              remains an independent switch.
-            </p>
-          </div>
-          <div
-            className="nornic-grid overflow-x-auto"
-            style={{ height: gridHeight(promotionPolicyRows.length) }}
-            aria-busy={saving}
+        {section === "promotion" && (
+          <section
+            aria-labelledby={promotionPoliciesHeadingId}
+            className="min-w-0 overflow-hidden bg-norse-shadow border border-norse-rune rounded-lg p-4 sm:p-6 space-y-4"
           >
-            <UiGrid
-              options={promotionPolicyOptions}
-              onRegisterApi={setPromotionPolicyApi}
-              cellRenderers={promotionPolicyRenderers}
-            />
-          </div>
-        </section>
-      )}
+            <div>
+              <h2
+                id={promotionPoliciesHeadingId}
+                className="text-lg font-semibold text-white"
+              >
+                Promotion policies
+              </h2>
+              <p className="mt-1 text-sm text-norse-silver">
+                Targets and complete APPLY directives are editable. Enablement
+                remains an independent switch.
+              </p>
+            </div>
+            <div
+              className="nornic-grid w-full min-w-0 max-w-full overflow-x-auto"
+              style={{ height: gridHeight(promotionPolicyRows.length) }}
+              aria-busy={saving}
+            >
+              <UiGrid
+                options={promotionPolicyOptions}
+                onRegisterApi={setPromotionPolicyApi}
+                cellRenderers={promotionPolicyRenderers}
+              />
+            </div>
+          </section>
+        )}
 
-      {section === "promotion" && (
-        <section
-          aria-labelledby={promotionProfilesHeadingId}
-          className="bg-norse-shadow border border-norse-rune rounded-lg p-6 space-y-4"
-        >
-          <div>
-            <h2
-              id={promotionProfilesHeadingId}
-              className="text-lg font-semibold text-white"
-            >
-              Promotion profiles
-            </h2>
-            <p className="mt-1 text-sm text-norse-silver">
-              Edit multiplier, floor, and cap values directly; invalid ranges
-              are marked before submission.
-            </p>
-          </div>
-          <div
-            className="nornic-grid overflow-x-auto"
-            style={{ height: gridHeight(promotionProfileRows.length) }}
-            aria-busy={saving}
+        {section === "promotion" && (
+          <section
+            aria-labelledby={promotionProfilesHeadingId}
+            className="min-w-0 overflow-hidden bg-norse-shadow border border-norse-rune rounded-lg p-4 sm:p-6 space-y-4"
           >
-            <UiGrid
-              options={promotionProfileOptions}
-              onRegisterApi={setPromotionProfileApi}
-              cellRenderers={promotionProfileRenderers}
-            />
-          </div>
-        </section>
-      )}
+            <div>
+              <h2
+                id={promotionProfilesHeadingId}
+                className="text-lg font-semibold text-white"
+              >
+                Promotion profiles
+              </h2>
+              <p className="mt-1 text-sm text-norse-silver">
+                Edit multiplier, floor, and cap values directly; invalid ranges
+                are marked before submission.
+              </p>
+            </div>
+            <div
+              className="nornic-grid w-full min-w-0 max-w-full overflow-x-auto"
+              style={{ height: gridHeight(promotionProfileRows.length) }}
+              aria-busy={saving}
+            >
+              <UiGrid
+                options={promotionProfileOptions}
+                onRegisterApi={setPromotionProfileApi}
+                cellRenderers={promotionProfileRenderers}
+              />
+            </div>
+          </section>
+        )}
       </div>
     </PolicyEditorContext.Provider>
   );

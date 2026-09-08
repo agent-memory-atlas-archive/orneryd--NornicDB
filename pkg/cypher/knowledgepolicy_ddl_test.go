@@ -929,6 +929,21 @@ func TestParseDDL_AlterPromotionPolicyDefinition(t *testing.T) {
 	assert.Equal(t, "boost", c.Policy.WhenClauses[0].ProfileRef)
 }
 
+func TestParseDDL_AlterPromotionPolicyTargetOnly(t *testing.T) {
+	stmt := `ALTER PROMOTION POLICY fact_promo FOR (n:KnowledgeFact)`
+
+	cmd, ok, err := ParseKnowledgePolicyDDL(stmt)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	c, ok := cmd.(*AlterPromotionPolicyDefinitionCmd)
+	require.True(t, ok, "expected *AlterPromotionPolicyDefinitionCmd, got %T", cmd)
+	assert.Equal(t, "fact_promo", c.Policy.Name)
+	assert.Equal(t, []string{"KnowledgeFact"}, c.Policy.TargetLabels)
+	assert.Nil(t, c.Policy.OnAccess)
+	assert.Empty(t, c.Policy.WhenClauses)
+}
+
 func TestParseDDL_AlterPromotionPolicy_MissingName(t *testing.T) {
 	stmt := `ALTER PROMOTION POLICY ENABLE`
 	cmd, ok, err := ParseKnowledgePolicyDDL(stmt)
