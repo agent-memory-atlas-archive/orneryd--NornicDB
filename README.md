@@ -607,8 +607,8 @@ make cross-all             # All platforms
 - [x] Data Explorer UI (Browser query editor, semantic search, node details)
 - [x] GDPR Compliance
 - [x] per-DB Search Index Overrides for BM2 and HNSW as independently levers for deferred or skipped construction (`docs/plans/nornicdb-admin-import-plan.md`)
-- [*] Bulk Import Tool
-- [*] Cross-platform GPU-assisted HNSW construction with CPU-serving persistence parity (`docs/plans/gpu-hnsw-construction-plan.md`)
+- [x] Bulk Import Tool
+- [x] Cross-platform GPU-assisted HNSW construction with CPU-serving persistence parity (`docs/plans/gpu-hnsw-construction-plan.md`)
 
 ### Planned (from `docs/plans`)
 
