@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejects incomplete TLS material, invalid client-auth modes, and public
   authenticated plaintext listeners.
 
+- **Fixed OAuth callback identity and credential exposure.** OAuth callback
+  JWTs now retain the internal user subject required by authenticated profile
+  and API requests, including repeat logins for existing users. Public user
+  responses no longer expose upstream OAuth access or refresh tokens stored in
+  account metadata.
+
 ### Fixed
 
 - **Container ingress settings now reach NornicDB unchanged.** Shipped Docker

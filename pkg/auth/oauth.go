@@ -282,19 +282,18 @@ func (m *OAuthManager) HandleCallback(code, state string) (*User, string, time.T
 		username = userInfo.Sub
 	}
 
-	// Try to get existing user
-	user, err := m.authenticator.GetUser(username)
+	// Token issuance needs the internal user ID, which public-safe user lookups redact.
+	user, err := m.authenticator.getUserForToken(username)
 	if err != nil {
+		if err != ErrUserNotFound {
+			return nil, "", time.Time{}, fmt.Errorf("failed to get user: %w", err)
+		}
 		// User doesn't exist - create them
 		// Use a random password since OAuth users don't need passwords
 		randomPassword := base64.URLEncoding.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
-		_, err = m.authenticator.CreateUser(username, randomPassword, ConvertOAuthRoles(userInfo.Roles))
+		user, err = m.authenticator.CreateUser(username, randomPassword, ConvertOAuthRoles(userInfo.Roles))
 		if err != nil {
 			return nil, "", time.Time{}, fmt.Errorf("failed to create user: %w", err)
-		}
-		user, err = m.authenticator.GetUser(username)
-		if err != nil {
-			return nil, "", time.Time{}, fmt.Errorf("failed to get created user: %w", err)
 		}
 	}
 

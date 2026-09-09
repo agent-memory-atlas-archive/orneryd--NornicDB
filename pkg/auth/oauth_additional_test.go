@@ -97,6 +97,30 @@ func TestOAuthManager_HandleCallbackAndRefreshFlow(t *testing.T) {
 	if token == "" || expiry.Before(time.Now()) {
 		t.Fatalf("expected non-empty token and future expiry")
 	}
+	claims, err := mgr.authenticator.ValidateToken(token)
+	if err != nil {
+		t.Fatalf("validate callback token: %v", err)
+	}
+	if claims.Sub == "" {
+		t.Fatal("expected callback token to contain a user subject")
+	}
+	if _, err := mgr.authenticator.GetUserByID(claims.Sub); err != nil {
+		t.Fatalf("callback token subject does not resolve to its OAuth user: %v", err)
+	}
+
+	existingState := "state-2"
+	mgr.states[existingState] = time.Now().Add(time.Minute)
+	_, existingToken, _, err := mgr.HandleCallback("code-2", existingState)
+	if err != nil {
+		t.Fatalf("handle callback for existing OAuth user failed: %v", err)
+	}
+	existingClaims, err := mgr.authenticator.ValidateToken(existingToken)
+	if err != nil {
+		t.Fatalf("validate existing-user callback token: %v", err)
+	}
+	if existingClaims.Sub != claims.Sub {
+		t.Fatalf("existing OAuth user subject changed: got %q, want %q", existingClaims.Sub, claims.Sub)
+	}
 
 	oauthUser := &User{Username: "oauthuser", Metadata: map[string]string{
 		"auth_method":         "oauth",

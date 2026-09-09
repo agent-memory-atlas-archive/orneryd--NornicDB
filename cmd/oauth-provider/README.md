@@ -113,6 +113,30 @@ NORNICDB_OAUTH_ISSUER=http://localhost:8888
 NORNICDB_OAUTH_CALLBACK_URL=http://localhost:7474/auth/oauth/callback
 ```
 
+### HTTPS reverse-proxy testing
+
+Use one public HTTPS origin for NornicDB and this provider when testing the
+browser flow through a reverse proxy. Route `/oauth2/` and
+`/.well-known/oauth-authorization-server` to the provider and all other paths
+to NornicDB. For example:
+
+```bash
+oauth-provider \
+    -issuer=https://nornicdb.localhost:8443 \
+    -redirect-uri=https://nornicdb.localhost:8443/auth/oauth/callback
+```
+
+Configure NornicDB with that same issuer and callback URL. When Nginx is in a
+separate container, set `NORNICDB_HTTP_TRUSTED_PROXIES` to its exact container
+IP, leave the NornicDB HTTP port unpublished, and make Nginx overwrite all
+`X-Forwarded-*` headers. The NornicDB container must resolve the public issuer
+hostname back to Nginx and trust the test CA, for example through
+`SSL_CERT_FILE=/tls/ca.crt`.
+
+The callback must issue a `Secure`, `HttpOnly`, `SameSite=Lax` session cookie.
+Verify the session through `GET /auth/me`; provider access and refresh tokens
+are internal credentials and are never included in that response.
+
 ### Testing OAuth Flow
 
 1. **Start the OAuth provider:**

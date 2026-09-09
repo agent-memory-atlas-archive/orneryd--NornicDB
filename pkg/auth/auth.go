@@ -1217,6 +1217,20 @@ func (a *Authenticator) GetUser(username string) (*User, error) {
 	return a.copyUserSafe(user), nil
 }
 
+func (a *Authenticator) getUserForToken(username string) (*User, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	user, exists := a.users[username]
+	if !exists {
+		return nil, ErrUserNotFound
+	}
+
+	safeCopy := a.copyUserSafe(user)
+	safeCopy.ID = user.ID
+	return safeCopy, nil
+}
+
 // ListUsers returns all users without sensitive data.
 func (a *Authenticator) ListUsers() []*User {
 	a.mu.RLock()
@@ -1789,6 +1803,9 @@ func (a *Authenticator) copyUserSafe(u *User) *User {
 
 	metadata := make(map[string]string)
 	for k, v := range u.Metadata {
+		if k == "oauth_access_token" || k == "oauth_refresh_token" {
+			continue
+		}
 		metadata[k] = v
 	}
 

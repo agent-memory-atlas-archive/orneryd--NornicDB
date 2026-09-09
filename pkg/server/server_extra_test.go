@@ -1918,10 +1918,15 @@ func TestAuthMeAndRoleByIDBranches(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 
 	// handleMe OAuth metadata path.
-	_ = authn.UpdateUser("admin", "admin@example.com", map[string]string{"auth_method": "oauth"})
-	adminUser, userErr := authn.GetUser("admin")
+	_ = authn.UpdateUser("admin", "admin@example.com", map[string]string{
+		"auth_method":         "oauth",
+		"oauth_access_token":  "provider-access-secret",
+		"oauth_refresh_token": "provider-refresh-secret",
+		"display_theme":       "dark",
+	})
+	adminTokenForMe := getAuthToken(t, authn, "admin")
+	claims, userErr := authn.ValidateToken(adminTokenForMe)
 	assert.NoError(t, userErr)
-	claims = &auth.JWTClaims{Sub: adminUser.ID, Username: "admin", Roles: []string{"admin"}}
 	req = httptest.NewRequest(http.MethodGet, "/auth/me", nil).WithContext(context.WithValue(context.Background(), contextKeyClaims, claims))
 	rec = httptest.NewRecorder()
 	origProvider := os.Getenv("NORNICDB_AUTH_PROVIDER")
@@ -1931,7 +1936,10 @@ func TestAuthMeAndRoleByIDBranches(t *testing.T) {
 	server.handleMe(rec, req)
 	_ = os.Setenv("NORNICDB_AUTH_PROVIDER", origProvider)
 	_ = os.Setenv("NORNICDB_OAUTH_ISSUER", origIssuer)
-	assert.Contains(t, []int{http.StatusOK, http.StatusNotFound}, rec.Code)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "provider-access-secret")
+	assert.NotContains(t, rec.Body.String(), "provider-refresh-secret")
+	assert.Contains(t, rec.Body.String(), `"display_theme":"dark"`)
 
 	// RoleByID nil store branch.
 	server.roleStore = nil
