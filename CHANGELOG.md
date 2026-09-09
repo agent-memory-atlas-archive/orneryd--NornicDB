@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Upgraded gRPC-Go to `v1.83.2`.** This includes the upstream HTTP/2
+  transport fix that rejects requests missing both `:authority` and `Host`,
+  preventing the crafted-request denial of service affecting xDS-enabled
+  gRPC-Go servers.
+
 - **Fixed a GraphQL arbitrary-Cypher authorization bypass.** `Query.cypher`
   previously allowed authenticated read-only users to execute data-changing
   statements because write checks depended on the GraphQL operation type.
