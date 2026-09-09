@@ -107,10 +107,31 @@ already proxies GraphQL; no GraphQL-specific ingress variables are required.
 
 ## Qdrant gRPC
 
-Qdrant gRPC is a separate plaintext HTTP/2 listener. It does not consume HTTP
-forwarding headers and currently has no native TLS mode. For an authenticated
-deployment, terminate TLS at an HTTP/2-capable gRPC proxy and bind NornicDB's
-backend listener to loopback:
+Qdrant-compatible and NornicSearch gRPC share a separate HTTP/2 listener. They
+do not consume HTTP forwarding headers. For a public authenticated listener,
+prefer native TLS so encryption remains end-to-end:
+
+```bash
+NORNICDB_QDRANT_GRPC_ENABLED=true
+NORNICDB_QDRANT_GRPC_LISTEN_ADDR=0.0.0.0:6334
+NORNICDB_QDRANT_GRPC_TLS_ENABLED=true
+NORNICDB_QDRANT_GRPC_TLS_CERT=/tls/grpc.crt
+NORNICDB_QDRANT_GRPC_TLS_KEY=/tls/grpc.key
+```
+
+For mTLS, additionally configure:
+
+```bash
+NORNICDB_QDRANT_GRPC_TLS_CLIENT_CA=/tls/client-ca.crt
+NORNICDB_QDRANT_GRPC_TLS_CLIENT_AUTH_MODE=require_verify
+```
+
+The other client-auth modes are `none`, `request`, and `request_verify`.
+Certificates are loaded with a TLS 1.2 minimum and support the same atomic-file
+rotation behavior as Bolt certificates.
+
+TLS can instead terminate at an HTTP/2-capable gRPC proxy when NornicDB's
+plaintext backend listener is restricted to loopback:
 
 ```bash
 NORNICDB_QDRANT_GRPC_ENABLED=true
@@ -135,8 +156,9 @@ Nginx and NornicDB must run on the same host, or as sidecars sharing one network
 namespace, for the loopback boundary to hold. Plaintext gRPC to a separate
 container requires a public backend listener and is rejected when
 authentication is enabled. `NORNICDB_HTTP_TRUSTED_PROXIES` does not apply to
-gRPC. Client `authorization` and `x-api-key` metadata continue through the gRPC
-proxy and are validated by NornicDB.
+gRPC. Client `authorization` and `x-api-key` metadata must be preserved by the
+proxy and are validated by NornicDB. Native TLS and mTLS authenticate the
+transport; they do not replace NornicDB application authentication or RBAC.
 
 ## Bolt and the built-in interface
 

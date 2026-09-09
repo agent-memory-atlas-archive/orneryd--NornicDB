@@ -156,7 +156,7 @@ Common Docker-specific overrides that are verified in the runtime docs:
 
 - `NORNICDB_LOW_MEMORY=true` to reduce memory usage.
 - `NORNICDB_EMBEDDING_ENABLED=true` with `NORNICDB_EMBEDDING_PROVIDER`, `NORNICDB_EMBEDDING_API_URL`, and `NORNICDB_EMBEDDING_MODEL` to enable semantic search.
-- `NORNICDB_QDRANT_GRPC_ENABLED=true` and `NORNICDB_QDRANT_GRPC_LISTEN_ADDR=:6334` when exposing the Qdrant-compatible gRPC interface.
+- `NORNICDB_QDRANT_GRPC_ENABLED=true` and `NORNICDB_QDRANT_GRPC_LISTEN_ADDR=:6334` when exposing the Qdrant-compatible gRPC interface. Authenticated public exposure also requires native TLS certificate/key settings; mount those files read-only.
 
 ### Volume Mounts
 

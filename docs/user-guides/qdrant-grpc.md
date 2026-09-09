@@ -19,6 +19,9 @@ This endpoint is intended for:
 ```bash
 export NORNICDB_QDRANT_GRPC_ENABLED=true
 export NORNICDB_QDRANT_GRPC_LISTEN_ADDR=":6334"   # optional (default :6334)
+export NORNICDB_QDRANT_GRPC_TLS_ENABLED=true
+export NORNICDB_QDRANT_GRPC_TLS_CERT=/tls/grpc.crt
+export NORNICDB_QDRANT_GRPC_TLS_KEY=/tls/grpc.key
 ```
 
 ### YAML config
@@ -30,6 +33,9 @@ features:
   qdrant_grpc_max_vector_dim: 4096
   qdrant_grpc_max_batch_points: 1000
   qdrant_grpc_max_top_k: 1000
+  qdrant_grpc_tls_enabled: true
+  qdrant_grpc_tls_cert: "/tls/grpc.crt"
+  qdrant_grpc_tls_key: "/tls/grpc.key"
 ```
 
 ### Docker / Compose
@@ -44,11 +50,37 @@ ports:
 environment:
   - NORNICDB_QDRANT_GRPC_ENABLED=${NORNICDB_QDRANT_GRPC_ENABLED:-false}
   - NORNICDB_QDRANT_GRPC_LISTEN_ADDR=${NORNICDB_QDRANT_GRPC_LISTEN_ADDR:-0.0.0.0:6334}
+  - NORNICDB_QDRANT_GRPC_TLS_ENABLED=${NORNICDB_QDRANT_GRPC_TLS_ENABLED:-false}
+  - NORNICDB_QDRANT_GRPC_TLS_CERT=${NORNICDB_QDRANT_GRPC_TLS_CERT:-}
+  - NORNICDB_QDRANT_GRPC_TLS_KEY=${NORNICDB_QDRANT_GRPC_TLS_KEY:-}
+  - NORNICDB_QDRANT_GRPC_TLS_CLIENT_CA=${NORNICDB_QDRANT_GRPC_TLS_CLIENT_CA:-}
+  - NORNICDB_QDRANT_GRPC_TLS_CLIENT_AUTH_MODE=${NORNICDB_QDRANT_GRPC_TLS_CLIENT_AUTH_MODE:-none}
 ```
 
 The shipped Compose files also forward the vector-dimension, batch-size, and
-top-k limits. For authenticated exposure through Nginx or another ingress, see
+top-k limits and TLS/mTLS settings. Mount certificate files into the container
+when using native TLS. For secure deployment topologies, see
 [Qdrant gRPC reverse proxying](../operations/reverse-proxy.md#qdrant-grpc).
+
+## TLS, mTLS, and application authentication
+
+Authenticated public listeners require native TLS. Clients must trust the CA
+that issued `NORNICDB_QDRANT_GRPC_TLS_CERT` and connect using TLS on port 6334.
+To require client certificates as well, set:
+
+```bash
+export NORNICDB_QDRANT_GRPC_TLS_CLIENT_CA=/tls/client-ca.crt
+export NORNICDB_QDRANT_GRPC_TLS_CLIENT_AUTH_MODE=require_verify
+```
+
+Supported client-auth modes are `none`, `request`, `request_verify`, and
+`require_verify`. The verifying modes require a client CA. With NornicDB
+authentication enabled, transport authentication is additive: clients must
+still send `authorization: Basic ...`, `authorization: Bearer ...`, or
+`x-api-key` metadata. NornicDB then applies the configured gRPC RBAC policy.
+
+Plaintext gRPC remains supported on loopback for a same-host TLS proxy. It is
+rejected on a public interface when application authentication is enabled.
 
 ---
 

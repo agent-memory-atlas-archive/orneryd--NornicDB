@@ -63,6 +63,7 @@ package qdrantgrpc
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -73,6 +74,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
@@ -90,6 +92,10 @@ import (
 type Config struct {
 	// ListenAddr is the address to listen on (e.g., ":6334")
 	ListenAddr string
+
+	// TLSConfig enables TLS transport when non-nil. ClientAuth and ClientCAs
+	// control optional mutual TLS authentication.
+	TLSConfig *tls.Config
 
 	// Localizer renders public protocol messages. Nil preserves source English.
 	Localizer *localization.Manager
@@ -373,6 +379,9 @@ func (s *Server) Start() error {
 		}),
 		grpc.ChainUnaryInterceptor(unaryInterceptors...),
 		grpc.ChainStreamInterceptor(streamInterceptors...),
+	}
+	if s.config.TLSConfig != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(s.config.TLSConfig.Clone())))
 	}
 
 	s.grpcServer = grpc.NewServer(opts...)

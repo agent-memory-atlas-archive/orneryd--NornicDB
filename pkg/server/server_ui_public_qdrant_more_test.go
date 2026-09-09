@@ -139,6 +139,25 @@ func TestStartQdrantGRPC_AdditionalBranches(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, strings.ToLower(err.Error()), "failed to start")
 
+	server.config.Features = &nornicConfig.FeatureFlagsConfig{
+		QdrantGRPCEnabled:           true,
+		QdrantGRPCListenAddr:        "127.0.0.1:0",
+		QdrantGRPCTLSEnabled:        true,
+		QdrantGRPCTLSClientAuthMode: "invalid",
+	}
+	err = server.startQdrantGRPC()
+	require.ErrorContains(t, err, "invalid TLS client auth mode")
+
+	server.config.Features = &nornicConfig.FeatureFlagsConfig{
+		QdrantGRPCEnabled:    true,
+		QdrantGRPCListenAddr: "127.0.0.1:0",
+		QdrantGRPCTLSEnabled: true,
+		QdrantGRPCTLSCert:    "/missing/grpc.crt",
+		QdrantGRPCTLSKey:     "/missing/grpc.key",
+	}
+	err = server.startQdrantGRPC()
+	require.ErrorContains(t, err, "failed to load TLS configuration")
+
 	// Valid permission override parsing branch before failing start.
 	server.config.Features = &nornicConfig.FeatureFlagsConfig{
 		QdrantGRPCEnabled:    true,

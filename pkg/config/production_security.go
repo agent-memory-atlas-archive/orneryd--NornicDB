@@ -20,6 +20,19 @@ func ValidateSecurityConfiguration(config *Config) error {
 	if config.Server.HTTPSEnabled && !nativeHTTPS {
 		return fmt.Errorf("security configuration: HTTPS certificate and key are required when HTTPS is enabled")
 	}
+	grpcTLS := config.Features.QdrantGRPCTLSEnabled && strings.TrimSpace(config.Features.QdrantGRPCTLSCert) != "" && strings.TrimSpace(config.Features.QdrantGRPCTLSKey) != ""
+	if config.Features.QdrantGRPCTLSEnabled && !grpcTLS {
+		return fmt.Errorf("security configuration: gRPC TLS certificate and key are required when gRPC TLS is enabled")
+	}
+	grpcClientAuthMode := strings.TrimSpace(strings.ToLower(config.Features.QdrantGRPCTLSClientAuthMode))
+	switch grpcClientAuthMode {
+	case "", "none", "request", "request_verify", "require_verify":
+	default:
+		return fmt.Errorf("security configuration: invalid gRPC TLS client auth mode %q", config.Features.QdrantGRPCTLSClientAuthMode)
+	}
+	if (grpcClientAuthMode == "request_verify" || grpcClientAuthMode == "require_verify") && strings.TrimSpace(config.Features.QdrantGRPCTLSClientCA) == "" {
+		return fmt.Errorf("security configuration: gRPC TLS client CA is required for client auth mode %q", grpcClientAuthMode)
+	}
 	if !config.Auth.Enabled {
 		return nil
 	}
@@ -45,7 +58,9 @@ func ValidateSecurityConfiguration(config *Config) error {
 		}
 	}
 	if config.Features.QdrantGRPCEnabled && isPublicListener(config.Features.QdrantGRPCListenAddr) {
-		return fmt.Errorf("security configuration: public plaintext gRPC listener is not allowed")
+		if !grpcTLS {
+			return fmt.Errorf("security configuration: public gRPC listener must use TLS")
+		}
 	}
 	return nil
 }

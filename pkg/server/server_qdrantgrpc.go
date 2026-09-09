@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/orneryd/nornicdb/pkg/auth"
+	"github.com/orneryd/nornicdb/pkg/bolt"
 	nornicConfig "github.com/orneryd/nornicdb/pkg/config"
 	"github.com/orneryd/nornicdb/pkg/localization"
 	"github.com/orneryd/nornicdb/pkg/nornicgrpc"
@@ -65,6 +66,25 @@ func (s *Server) startQdrantGRPC() error {
 	}
 	if features.QdrantGRPCMaxTopK > 0 {
 		cfg.MaxTopK = features.QdrantGRPCMaxTopK
+	}
+	if features.QdrantGRPCTLSEnabled {
+		clientAuthMode, err := bolt.ParseClientAuthMode(features.QdrantGRPCTLSClientAuthMode)
+		if err != nil {
+			return fmt.Errorf("qdrant grpc: invalid TLS client auth mode: %w", err)
+		}
+		if features.QdrantGRPCTLSClientCA != "" || clientAuthMode != bolt.ClientAuthNone {
+			cfg.TLSConfig, err = bolt.LoadTLSConfigWithClientCA(
+				features.QdrantGRPCTLSCert,
+				features.QdrantGRPCTLSKey,
+				features.QdrantGRPCTLSClientCA,
+				clientAuthMode,
+			)
+		} else {
+			cfg.TLSConfig, err = bolt.LoadTLSConfig(features.QdrantGRPCTLSCert, features.QdrantGRPCTLSKey)
+		}
+		if err != nil {
+			return fmt.Errorf("qdrant grpc: failed to load TLS configuration: %w", err)
+		}
 	}
 	if s.config.EmbeddingEnabled {
 		cfg.EmbedQuery = s.db.EmbedQuery

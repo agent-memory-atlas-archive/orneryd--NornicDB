@@ -488,6 +488,11 @@ func TestLoadFromEnv_ComprehensiveAdditionalEnvCoverage(t *testing.T) {
 	t.Setenv("NORNICDB_QDRANT_GRPC_MAX_VECTOR_DIM", "123")
 	t.Setenv("NORNICDB_QDRANT_GRPC_MAX_BATCH_POINTS", "456")
 	t.Setenv("NORNICDB_QDRANT_GRPC_MAX_TOP_K", "78")
+	t.Setenv("NORNICDB_QDRANT_GRPC_TLS_ENABLED", "true")
+	t.Setenv("NORNICDB_QDRANT_GRPC_TLS_CERT", "/tls/grpc.crt")
+	t.Setenv("NORNICDB_QDRANT_GRPC_TLS_KEY", "/tls/grpc.key")
+	t.Setenv("NORNICDB_QDRANT_GRPC_TLS_CLIENT_CA", "/tls/client-ca.crt")
+	t.Setenv("NORNICDB_QDRANT_GRPC_TLS_CLIENT_AUTH_MODE", "require_verify")
 
 	cfg := LoadFromEnv()
 
@@ -623,6 +628,11 @@ func TestLoadFromEnv_ComprehensiveAdditionalEnvCoverage(t *testing.T) {
 	if !cfg.Features.QdrantGRPCEnabled || cfg.Features.QdrantGRPCListenAddr != ":6335" || cfg.Features.QdrantGRPCMaxVectorDim != 123 || cfg.Features.QdrantGRPCMaxBatchPoints != 456 || cfg.Features.QdrantGRPCMaxTopK != 78 {
 		t.Fatalf("unexpected qdrant grpc config: %+v", cfg.Features)
 	}
+	require.True(t, cfg.Features.QdrantGRPCTLSEnabled)
+	require.Equal(t, "/tls/grpc.crt", cfg.Features.QdrantGRPCTLSCert)
+	require.Equal(t, "/tls/grpc.key", cfg.Features.QdrantGRPCTLSKey)
+	require.Equal(t, "/tls/client-ca.crt", cfg.Features.QdrantGRPCTLSClientCA)
+	require.Equal(t, "require_verify", cfg.Features.QdrantGRPCTLSClientAuthMode)
 }
 
 // TestLoadFromEnv_EmbeddingWorkerNumWorkers ensures NORNICDB_EMBED_WORKER_NUM_WORKERS is applied.
@@ -1183,6 +1193,11 @@ features:
   qdrant_grpc_max_vector_dim: 2048
   qdrant_grpc_max_batch_points: 88
   qdrant_grpc_max_top_k: 77
+  qdrant_grpc_tls_enabled: true
+  qdrant_grpc_tls_cert: "/tls/grpc.crt"
+  qdrant_grpc_tls_key: "/tls/grpc.key"
+  qdrant_grpc_tls_client_ca: "/tls/client-ca.crt"
+  qdrant_grpc_tls_client_auth_mode: "require_verify"
   qdrant_grpc_rbac:
     methods:
       "Points/Upsert": "write"
@@ -1331,6 +1346,11 @@ plugins:
 	require.Equal(t, 2048, cfg.Features.QdrantGRPCMaxVectorDim)
 	require.Equal(t, 88, cfg.Features.QdrantGRPCMaxBatchPoints)
 	require.Equal(t, 77, cfg.Features.QdrantGRPCMaxTopK)
+	require.True(t, cfg.Features.QdrantGRPCTLSEnabled)
+	require.Equal(t, "/tls/grpc.crt", cfg.Features.QdrantGRPCTLSCert)
+	require.Equal(t, "/tls/grpc.key", cfg.Features.QdrantGRPCTLSKey)
+	require.Equal(t, "/tls/client-ca.crt", cfg.Features.QdrantGRPCTLSClientCA)
+	require.Equal(t, "require_verify", cfg.Features.QdrantGRPCTLSClientAuthMode)
 	require.Equal(t, map[string]string{"Points/Upsert": "write"}, cfg.Features.QdrantGRPCMethodPermissions)
 
 	require.True(t, cfg.Compliance.RetentionEnabled)

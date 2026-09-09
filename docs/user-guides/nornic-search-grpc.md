@@ -14,6 +14,8 @@ You do **not** need to fork Qdrant drivers.
 
 - `NORNICDB_QDRANT_GRPC_ENABLED=true`
 - Port `6334` exposed/reachable
+- Native TLS enabled for authenticated public listeners, or a loopback-only
+  plaintext hop behind an HTTP/2-capable TLS proxy
 - Existing Qdrant gRPC client in your app (unchanged)
 - Add generated client code from `pkg/nornicgrpc/proto/nornicdb_search.proto`
 
@@ -25,9 +27,9 @@ You do **not** need to fork Qdrant drivers.
 
 ## Go Example (Recommended)
 
-1) Keep your current Qdrant client/protos.
+1. Keep your current Qdrant client/protos.
 
-2) Generate Go stubs for Nornic proto:
+2. Generate Go stubs for Nornic proto:
 
 ```bash
 protoc \
@@ -36,10 +38,14 @@ protoc \
   pkg/nornicgrpc/proto/nornicdb_search.proto
 ```
 
-3) Create both clients on the same connection:
+3. Create both clients on the same connection:
 
 ```go
-conn, err := grpc.Dial("127.0.0.1:6334", grpc.WithTransportCredentials(insecure.NewCredentials()))
+transportCredentials, err := credentials.NewClientTLSFromFile("ca.crt", "db.example.com")
+if err != nil {
+    log.Fatal(err)
+}
+conn, err := grpc.NewClient("db.example.com:6334", grpc.WithTransportCredentials(transportCredentials))
 if err != nil {
     log.Fatal(err)
 }
@@ -68,6 +74,11 @@ if err != nil {
 }
 _ = resp
 ```
+
+Import `google.golang.org/grpc/credentials` for this TLS configuration. Use
+`insecure.NewCredentials()` only for local development or a loopback-only hop
+behind a same-host TLS proxy. For mTLS, construct `credentials.NewTLS` with a
+client certificate and trusted root pool.
 
 ## Existing Qdrant Text Query (No Nornic Proto Needed)
 

@@ -14,17 +14,20 @@ The same client connection talks to both; pick whichever matches the operation.
 
 ## Connection
 
-| Setting | Value |
-|---|---|
-| Listen address | `:6334` (`NORNICDB_QDRANT_GRPC_LISTEN_ADDR`) |
-| Default port (host) | `6334` |
-| Auth | Same `Auth.Enabled` flag as Bolt. When off, gRPC is open. When on, basic auth or bearer JWT in the gRPC metadata. |
-| TLS | None by default (run behind a TLS proxy or in a private network). |
+| Setting             | Value                                                                                                                                          |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Listen address      | `:6334` (`NORNICDB_QDRANT_GRPC_LISTEN_ADDR`)                                                                                                   |
+| Default port (host) | `6334`                                                                                                                                         |
+| Auth                | Same `Auth.Enabled` flag as Bolt. When off, gRPC is open. When on, basic auth or bearer JWT in the gRPC metadata.                              |
+| TLS                 | Native TLS/mTLS is available and required for authenticated public listeners. Plaintext is suitable only for loopback or isolated development. |
 
 Enable the gRPC server (off by default):
 
 ```bash
 export NORNICDB_QDRANT_GRPC_ENABLED=true
+export NORNICDB_QDRANT_GRPC_TLS_ENABLED=true
+export NORNICDB_QDRANT_GRPC_TLS_CERT=/tls/grpc.crt
+export NORNICDB_QDRANT_GRPC_TLS_KEY=/tls/grpc.key
 ```
 
 YAML:
@@ -36,35 +39,39 @@ features:
   qdrant_grpc_max_vector_dim: 4096
   qdrant_grpc_max_batch_points: 1000
   qdrant_grpc_max_top_k: 1000
+  qdrant_grpc_tls_enabled: true
+  qdrant_grpc_tls_cert: "/tls/grpc.crt"
+  qdrant_grpc_tls_key: "/tls/grpc.key"
 ```
 
 ## Limits (defaults)
 
-| Limit | Default | Override |
-|---|---|---|
-| Max vector dimension | 4096 | `NORNICDB_QDRANT_GRPC_MAX_VECTOR_DIM` |
-| Max points per Upsert batch | 1000 | `NORNICDB_QDRANT_GRPC_MAX_BATCH_POINTS` |
-| Max top-K per Search | 1000 | `NORNICDB_QDRANT_GRPC_MAX_TOP_K` |
-| Max payload bytes per point | 1 MB | (not configurable) |
-| Max filter clauses per request | 100 | (not configurable) |
-| Request timeout | 30 s | (not configurable) |
-| Max gRPC message size (recv/send) | 64 MB | (not configurable) |
+| Limit                             | Default | Override                                |
+| --------------------------------- | ------- | --------------------------------------- |
+| Max vector dimension              | 4096    | `NORNICDB_QDRANT_GRPC_MAX_VECTOR_DIM`   |
+| Max points per Upsert batch       | 1000    | `NORNICDB_QDRANT_GRPC_MAX_BATCH_POINTS` |
+| Max top-K per Search              | 1000    | `NORNICDB_QDRANT_GRPC_MAX_TOP_K`        |
+| Max payload bytes per point       | 1 MB    | (not configurable)                      |
+| Max filter clauses per request    | 100     | (not configurable)                      |
+| Request timeout                   | 30 s    | (not configurable)                      |
+| Max gRPC message size (recv/send) | 64 MB   | (not configurable)                      |
 
 ## Data model mapping
 
-| Qdrant concept | NornicDB equivalent | Storage detail |
-|---|---|---|
-| Collection | Database (namespace) | `DatabaseManager.GetStorage(collectionName)`; all point keys live under `collectionName:` |
-| Point | Node | Node ID is `qdrant:point:<rawID>`. Labels include `QdrantPoint`, `Point`. |
-| Point payload | `node.Properties` | Internal `_qdrant_*` keys are stripped from outbound responses. |
-| Single vector | `node.NamedEmbeddings["default"]` | |
-| Named vectors | `node.NamedEmbeddings[<vectorName>]` | Each named vector is independently searchable. |
+| Qdrant concept | NornicDB equivalent                  | Storage detail                                                                            |
+| -------------- | ------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Collection     | Database (namespace)                 | `DatabaseManager.GetStorage(collectionName)`; all point keys live under `collectionName:` |
+| Point          | Node                                 | Node ID is `qdrant:point:<rawID>`. Labels include `QdrantPoint`, `Point`.                 |
+| Point payload  | `node.Properties`                    | Internal `_qdrant_*` keys are stripped from outbound responses.                           |
+| Single vector  | `node.NamedEmbeddings["default"]`    |                                                                                           |
+| Named vectors  | `node.NamedEmbeddings[<vectorName>]` | Each named vector is independently searchable.                                            |
 
 A NornicDB-managed collection is identifiable by the presence of a `_collection_meta` metadata node inside the database.
 
 ## Qdrant RPCs implemented
 
 ### `qdrant.Collections`
+
 - `Create` — single-vector and named-vector configs supported
 - `Get` — minimal-but-valid `CollectionInfo`
 - `List` — list all collections
@@ -73,6 +80,7 @@ A NornicDB-managed collection is identifiable by the presence of a `_collection_
 - `CollectionExists` — fast existence check
 
 ### `qdrant.Points`
+
 - `Upsert` — dense and named vectors
 - `Get` — with payload/vector selectors
 - `Delete` — by ID list or by filter
@@ -89,6 +97,7 @@ A NornicDB-managed collection is identifiable by the presence of a `_collection_
 - `CreateFieldIndex`, `DeleteFieldIndex`
 
 ### `qdrant.Snapshots`
+
 - `Create`, `List`, `Delete` (per collection)
 - `CreateFull`, `ListFull`, `DeleteFull` (database-wide)
 
@@ -191,20 +200,27 @@ If you do have an existing Node app on `@qdrant/js-client-rest`, you'll need to 
 - **Bearer JWT** — pass `authorization: Bearer <token>`.
 - **Per-collection RBAC** — optional, configured via the `qdrant_grpc_rbac` YAML block, mapping `<Service>/<Method>` to a permission tier (`read`, `write`, `create`, `delete`, `admin`).
 
+Native TLS is configured with `NORNICDB_QDRANT_GRPC_TLS_ENABLED`,
+`NORNICDB_QDRANT_GRPC_TLS_CERT`, and `NORNICDB_QDRANT_GRPC_TLS_KEY`. Optional
+mTLS uses `NORNICDB_QDRANT_GRPC_TLS_CLIENT_CA` and
+`NORNICDB_QDRANT_GRPC_TLS_CLIENT_AUTH_MODE=require_verify`. TLS/mTLS does not
+replace Basic, Bearer, or API-key metadata; both layers are enforced.
+
 When `Auth.Enabled=false`, the gRPC endpoint is open — local-development default.
 
 ## When to pick gRPC vs Bolt
 
-| Use case | Pick |
-|---|---|
-| Existing Qdrant SDK code, vector-only workload | gRPC (Qdrant compat) |
-| Existing Neo4j SDK code, graph + vector | Bolt + Cypher |
-| Non-Bolt language (e.g. Rust, C++) needing hybrid search | gRPC + `NornicSearch.SearchText` |
-| Migrating from Qdrant | gRPC; see [`qdrant-migration.skill.md`](qdrant-migration.skill.md) |
-| Migrating from Neo4j | Bolt; see [`neo4j-migration.skill.md`](neo4j-migration.skill.md) |
-| Mixed ingestion (graph + vector) | Bolt; gRPC's collection-as-database model is per-collection isolated |
+| Use case                                                 | Pick                                                                 |
+| -------------------------------------------------------- | -------------------------------------------------------------------- |
+| Existing Qdrant SDK code, vector-only workload           | gRPC (Qdrant compat)                                                 |
+| Existing Neo4j SDK code, graph + vector                  | Bolt + Cypher                                                        |
+| Non-Bolt language (e.g. Rust, C++) needing hybrid search | gRPC + `NornicSearch.SearchText`                                     |
+| Migrating from Qdrant                                    | gRPC; see [`qdrant-migration.skill.md`](qdrant-migration.skill.md)   |
+| Migrating from Neo4j                                     | Bolt; see [`neo4j-migration.skill.md`](neo4j-migration.skill.md)     |
+| Mixed ingestion (graph + vector)                         | Bolt; gRPC's collection-as-database model is per-collection isolated |
 
 ## See also
+
 - [`qdrant-migration.skill.md`](qdrant-migration.skill.md) — end-to-end Qdrant → NornicDB migration.
 - [`neo4j-migration.skill.md`](neo4j-migration.skill.md) — Neo4j → NornicDB via Bolt.
 - [`bolt-client.skill.md`](bolt-client.skill.md) — the Bolt surface and retry classifier.

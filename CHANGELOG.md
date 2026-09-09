@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovery and startup endpoint output. Authenticated public Bolt listeners
   must enable and require native TLS with a certificate and key.
 
+- **Added native TLS and mTLS for the shared Qdrant/Nornic gRPC listener.**
+  Authenticated public gRPC endpoints now accept direct TLS with rotating
+  server certificates and optional verified client certificates. Startup
+  rejects incomplete TLS material, invalid client-auth modes, and public
+  authenticated plaintext listeners.
+
 ### Fixed
 
 - **Container ingress settings now reach NornicDB unchanged.** Shipped Docker

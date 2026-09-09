@@ -63,7 +63,36 @@ func TestValidateSecurityConfiguration(t *testing.T) {
 			c.Server.BoltTLSCert = "/tls/bolt.crt"
 			c.Server.BoltTLSKey = "/tls/bolt.key"
 		}},
-		{name: "public grpc", mutate: func(c *Config) { c.Features.QdrantGRPCEnabled = true; c.Features.QdrantGRPCListenAddr = ":6334" }, match: "plaintext gRPC"},
+		{name: "public grpc without tls", mutate: func(c *Config) { c.Features.QdrantGRPCEnabled = true; c.Features.QdrantGRPCListenAddr = ":6334" }, match: "must use TLS"},
+		{name: "grpc tls missing certificate", mutate: func(c *Config) {
+			c.Features.QdrantGRPCEnabled = true
+			c.Features.QdrantGRPCListenAddr = "127.0.0.1:6334"
+			c.Features.QdrantGRPCTLSEnabled = true
+			c.Features.QdrantGRPCTLSKey = "/tls/grpc.key"
+		}, match: "gRPC TLS certificate and key"},
+		{name: "public grpc with native tls", mutate: func(c *Config) {
+			c.Features.QdrantGRPCEnabled = true
+			c.Features.QdrantGRPCListenAddr = ":6334"
+			c.Features.QdrantGRPCTLSEnabled = true
+			c.Features.QdrantGRPCTLSCert = "/tls/grpc.crt"
+			c.Features.QdrantGRPCTLSKey = "/tls/grpc.key"
+		}},
+		{name: "grpc mtls missing client ca", mutate: func(c *Config) {
+			c.Features.QdrantGRPCEnabled = true
+			c.Features.QdrantGRPCListenAddr = ":6334"
+			c.Features.QdrantGRPCTLSEnabled = true
+			c.Features.QdrantGRPCTLSCert = "/tls/grpc.crt"
+			c.Features.QdrantGRPCTLSKey = "/tls/grpc.key"
+			c.Features.QdrantGRPCTLSClientAuthMode = "require_verify"
+		}, match: "gRPC TLS client CA"},
+		{name: "grpc invalid client auth mode", mutate: func(c *Config) {
+			c.Features.QdrantGRPCEnabled = true
+			c.Features.QdrantGRPCListenAddr = ":6334"
+			c.Features.QdrantGRPCTLSEnabled = true
+			c.Features.QdrantGRPCTLSCert = "/tls/grpc.crt"
+			c.Features.QdrantGRPCTLSKey = "/tls/grpc.key"
+			c.Features.QdrantGRPCTLSClientAuthMode = "invalid"
+		}, match: "gRPC TLS client auth mode"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

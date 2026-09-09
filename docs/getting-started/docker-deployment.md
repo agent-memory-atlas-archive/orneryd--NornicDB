@@ -191,6 +191,10 @@ export NORNICDB_PASSWORD=$(openssl rand -base64 32)
 Terminate TLS at a reverse proxy or ingress in front of the container, then pass HTTP traffic to NornicDB on a private network. Authenticated non-loopback HTTP requires an explicit trusted-proxy IP/CIDR, and wildcard CORS is rejected. Use the tested configuration and Nginx example in [Reverse Proxy and TLS Termination](../operations/reverse-proxy.md).
 
 HTTP proxy trust does not apply to Bolt or Qdrant gRPC. Disable those listeners when unused, or secure them independently as described in the reverse-proxy guide.
+Authenticated public gRPC requires `NORNICDB_QDRANT_GRPC_TLS_ENABLED=true`, a
+mounted server certificate and key, and the matching TLS path variables.
+Optional mTLS also requires a client CA and `request_verify` or
+`require_verify` client-auth mode.
 
 ### 3. Restrict Network Access
 

@@ -1097,6 +1097,12 @@ features:
   qdrant_grpc_max_vector_dim: 4096
   qdrant_grpc_max_batch_points: 1000
   qdrant_grpc_max_top_k: 1000
+  qdrant_grpc_tls_enabled: true
+  qdrant_grpc_tls_cert: "/tls/grpc.crt"
+  qdrant_grpc_tls_key: "/tls/grpc.key"
+  # Optional mTLS:
+  qdrant_grpc_tls_client_ca: "/tls/client-ca.crt"
+  qdrant_grpc_tls_client_auth_mode: "require_verify"
 
   # Optional: override required permissions per RPC (advanced)
   qdrant_grpc_rbac:
@@ -1109,13 +1115,23 @@ features:
 
 ### Environment variables
 
-| Variable                                | Default | Description                              |
-| --------------------------------------- | ------: | ---------------------------------------- |
-| `NORNICDB_QDRANT_GRPC_ENABLED`          | `false` | Enable the Qdrant-compatible gRPC server |
-| `NORNICDB_QDRANT_GRPC_LISTEN_ADDR`      | `:6334` | gRPC listen address                      |
-| `NORNICDB_QDRANT_GRPC_MAX_VECTOR_DIM`   |  `4096` | Maximum vector dimension                 |
-| `NORNICDB_QDRANT_GRPC_MAX_BATCH_POINTS` |  `1000` | Max points per upsert                    |
-| `NORNICDB_QDRANT_GRPC_MAX_TOP_K`        |  `1000` | Max search results per query             |
+| Variable                                    | Default | Description                                              |
+| ------------------------------------------- | ------: | -------------------------------------------------------- |
+| `NORNICDB_QDRANT_GRPC_ENABLED`              | `false` | Enable the Qdrant-compatible gRPC server                 |
+| `NORNICDB_QDRANT_GRPC_LISTEN_ADDR`          | `:6334` | gRPC listen address                                      |
+| `NORNICDB_QDRANT_GRPC_MAX_VECTOR_DIM`       |  `4096` | Maximum vector dimension                                 |
+| `NORNICDB_QDRANT_GRPC_MAX_BATCH_POINTS`     |  `1000` | Max points per upsert                                    |
+| `NORNICDB_QDRANT_GRPC_MAX_TOP_K`            |  `1000` | Max search results per query                             |
+| `NORNICDB_QDRANT_GRPC_TLS_ENABLED`          | `false` | Enable native TLS on the gRPC listener                   |
+| `NORNICDB_QDRANT_GRPC_TLS_CERT`             |   unset | Server certificate path                                  |
+| `NORNICDB_QDRANT_GRPC_TLS_KEY`              |   unset | Server private-key path                                  |
+| `NORNICDB_QDRANT_GRPC_TLS_CLIENT_CA`        |   unset | CA used to verify client certificates                    |
+| `NORNICDB_QDRANT_GRPC_TLS_CLIENT_AUTH_MODE` |  `none` | `none`, `request`, `request_verify`, or `require_verify` |
+
+Authenticated public gRPC listeners must enable native TLS and provide a
+certificate and key. `request_verify` and `require_verify` also require a
+client CA. TLS protects the transport; clients must still send valid Basic,
+Bearer, or API-key metadata when application authentication is enabled.
 
 ### Embedding ownership
 

@@ -247,6 +247,10 @@ export NORNICDB_QDRANT_GRPC_ENABLED=true
 export NORNICDB_QDRANT_GRPC_LISTEN_ADDR=":6334"  # optional
 ```
 
+For authenticated public exposure, also configure native TLS or bind this
+listener to loopback behind an HTTP/2-capable TLS proxy. See the
+[Qdrant gRPC security guide](../operations/reverse-proxy.md#qdrant-grpc).
+
 If you want Qdrant clients to upsert/update/delete vectors directly, also set:
 
 ```bash

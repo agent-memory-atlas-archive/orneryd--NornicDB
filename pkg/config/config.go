@@ -983,6 +983,17 @@ type FeatureFlagsConfig struct {
 	// Environment: NORNICDB_QDRANT_GRPC_MAX_TOP_K (default: 1000)
 	QdrantGRPCMaxTopK int
 
+	// QdrantGRPCTLSEnabled enables TLS for the shared Qdrant/Nornic gRPC listener.
+	// Environment: NORNICDB_QDRANT_GRPC_TLS_ENABLED (default: false)
+	QdrantGRPCTLSEnabled bool
+	// QdrantGRPCTLSCert and QdrantGRPCTLSKey identify the server certificate.
+	QdrantGRPCTLSCert string
+	QdrantGRPCTLSKey  string
+	// QdrantGRPCTLSClientCA enables client-certificate verification for mTLS.
+	QdrantGRPCTLSClientCA string
+	// QdrantGRPCTLSClientAuthMode accepts none, request, request_verify, or require_verify.
+	QdrantGRPCTLSClientAuthMode string
+
 	// QdrantGRPCMethodPermissions optionally overrides required permissions for
 	// specific Qdrant gRPC RPCs.
 	//
@@ -1604,11 +1615,16 @@ type YAMLConfig struct {
 	// Feature flags (subset supported in YAML).
 	Features struct {
 		// Qdrant gRPC compatibility endpoint.
-		QdrantGRPCEnabled        bool   `yaml:"qdrant_grpc_enabled"`
-		QdrantGRPCListenAddr     string `yaml:"qdrant_grpc_listen_addr"`
-		QdrantGRPCMaxVectorDim   int    `yaml:"qdrant_grpc_max_vector_dim"`
-		QdrantGRPCMaxBatchPoints int    `yaml:"qdrant_grpc_max_batch_points"`
-		QdrantGRPCMaxTopK        int    `yaml:"qdrant_grpc_max_top_k"`
+		QdrantGRPCEnabled           bool   `yaml:"qdrant_grpc_enabled"`
+		QdrantGRPCListenAddr        string `yaml:"qdrant_grpc_listen_addr"`
+		QdrantGRPCMaxVectorDim      int    `yaml:"qdrant_grpc_max_vector_dim"`
+		QdrantGRPCMaxBatchPoints    int    `yaml:"qdrant_grpc_max_batch_points"`
+		QdrantGRPCMaxTopK           int    `yaml:"qdrant_grpc_max_top_k"`
+		QdrantGRPCTLSEnabled        bool   `yaml:"qdrant_grpc_tls_enabled"`
+		QdrantGRPCTLSCert           string `yaml:"qdrant_grpc_tls_cert"`
+		QdrantGRPCTLSKey            string `yaml:"qdrant_grpc_tls_key"`
+		QdrantGRPCTLSClientCA       string `yaml:"qdrant_grpc_tls_client_ca"`
+		QdrantGRPCTLSClientAuthMode string `yaml:"qdrant_grpc_tls_client_auth_mode"`
 
 		QdrantGRPCRBAC struct {
 			Methods map[string]string `yaml:"methods"`
@@ -1617,11 +1633,16 @@ type YAMLConfig struct {
 
 	// Qdrant gRPC compatibility endpoint (legacy YAML shape; supported for compatibility).
 	QdrantGRPC struct {
-		Enabled        bool   `yaml:"enabled"`
-		ListenAddr     string `yaml:"listen_addr"`
-		MaxVectorDim   int    `yaml:"max_vector_dim"`
-		MaxBatchPoints int    `yaml:"max_batch_points"`
-		MaxTopK        int    `yaml:"max_top_k"`
+		Enabled           bool   `yaml:"enabled"`
+		ListenAddr        string `yaml:"listen_addr"`
+		MaxVectorDim      int    `yaml:"max_vector_dim"`
+		MaxBatchPoints    int    `yaml:"max_batch_points"`
+		MaxTopK           int    `yaml:"max_top_k"`
+		TLSEnabled        bool   `yaml:"tls_enabled"`
+		TLSCert           string `yaml:"tls_cert"`
+		TLSKey            string `yaml:"tls_key"`
+		TLSClientCA       string `yaml:"tls_client_ca"`
+		TLSClientAuthMode string `yaml:"tls_client_auth_mode"`
 
 		RBAC struct {
 			Methods map[string]string `yaml:"methods"`
@@ -1987,6 +2008,8 @@ func LoadDefaults() *Config {
 	config.Features.QdrantGRPCMaxVectorDim = 4096
 	config.Features.QdrantGRPCMaxBatchPoints = 1000
 	config.Features.QdrantGRPCMaxTopK = 1000
+	config.Features.QdrantGRPCTLSEnabled = false
+	config.Features.QdrantGRPCTLSClientAuthMode = "none"
 	config.Features.QdrantGRPCMethodPermissions = nil
 
 	return config
@@ -2863,6 +2886,21 @@ func applyEnvVars(config *Config) error {
 	if v := getEnvInt("NORNICDB_QDRANT_GRPC_MAX_TOP_K", 0); v > 0 {
 		config.Features.QdrantGRPCMaxTopK = v
 	}
+	if v := getEnv("NORNICDB_QDRANT_GRPC_TLS_ENABLED", ""); v != "" {
+		config.Features.QdrantGRPCTLSEnabled = v == "true" || v == "1"
+	}
+	if v := getEnv("NORNICDB_QDRANT_GRPC_TLS_CERT", ""); v != "" {
+		config.Features.QdrantGRPCTLSCert = v
+	}
+	if v := getEnv("NORNICDB_QDRANT_GRPC_TLS_KEY", ""); v != "" {
+		config.Features.QdrantGRPCTLSKey = v
+	}
+	if v := getEnv("NORNICDB_QDRANT_GRPC_TLS_CLIENT_CA", ""); v != "" {
+		config.Features.QdrantGRPCTLSClientCA = v
+	}
+	if v := getEnv("NORNICDB_QDRANT_GRPC_TLS_CLIENT_AUTH_MODE", ""); v != "" {
+		config.Features.QdrantGRPCTLSClientAuthMode = strings.TrimSpace(strings.ToLower(v))
+	}
 
 	return nil
 }
@@ -3417,6 +3455,21 @@ func LoadFromFile(configPath string) (*Config, error) {
 	if yamlCfg.Features.QdrantGRPCMaxTopK > 0 {
 		config.Features.QdrantGRPCMaxTopK = yamlCfg.Features.QdrantGRPCMaxTopK
 	}
+	if yamlCfg.Features.QdrantGRPCTLSEnabled {
+		config.Features.QdrantGRPCTLSEnabled = true
+	}
+	if yamlCfg.Features.QdrantGRPCTLSCert != "" {
+		config.Features.QdrantGRPCTLSCert = yamlCfg.Features.QdrantGRPCTLSCert
+	}
+	if yamlCfg.Features.QdrantGRPCTLSKey != "" {
+		config.Features.QdrantGRPCTLSKey = yamlCfg.Features.QdrantGRPCTLSKey
+	}
+	if yamlCfg.Features.QdrantGRPCTLSClientCA != "" {
+		config.Features.QdrantGRPCTLSClientCA = yamlCfg.Features.QdrantGRPCTLSClientCA
+	}
+	if yamlCfg.Features.QdrantGRPCTLSClientAuthMode != "" {
+		config.Features.QdrantGRPCTLSClientAuthMode = strings.TrimSpace(strings.ToLower(yamlCfg.Features.QdrantGRPCTLSClientAuthMode))
+	}
 	if yamlCfg.Features.QdrantGRPCRBAC.Methods != nil {
 		config.Features.QdrantGRPCMethodPermissions = yamlCfg.Features.QdrantGRPCRBAC.Methods
 	}
@@ -3531,6 +3584,21 @@ func LoadFromFile(configPath string) (*Config, error) {
 	}
 	if yamlCfg.QdrantGRPC.MaxTopK > 0 {
 		config.Features.QdrantGRPCMaxTopK = yamlCfg.QdrantGRPC.MaxTopK
+	}
+	if yamlCfg.QdrantGRPC.TLSEnabled {
+		config.Features.QdrantGRPCTLSEnabled = true
+	}
+	if yamlCfg.QdrantGRPC.TLSCert != "" {
+		config.Features.QdrantGRPCTLSCert = yamlCfg.QdrantGRPC.TLSCert
+	}
+	if yamlCfg.QdrantGRPC.TLSKey != "" {
+		config.Features.QdrantGRPCTLSKey = yamlCfg.QdrantGRPC.TLSKey
+	}
+	if yamlCfg.QdrantGRPC.TLSClientCA != "" {
+		config.Features.QdrantGRPCTLSClientCA = yamlCfg.QdrantGRPC.TLSClientCA
+	}
+	if yamlCfg.QdrantGRPC.TLSClientAuthMode != "" {
+		config.Features.QdrantGRPCTLSClientAuthMode = strings.TrimSpace(strings.ToLower(yamlCfg.QdrantGRPC.TLSClientAuthMode))
 	}
 	if yamlCfg.QdrantGRPC.RBAC.Methods != nil {
 		config.Features.QdrantGRPCMethodPermissions = yamlCfg.QdrantGRPC.RBAC.Methods
