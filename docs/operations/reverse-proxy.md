@@ -97,6 +97,65 @@ server {
 Use `$remote_addr`, not `$proxy_add_x_forwarded_for`, at this trust boundary so
 a client cannot prepend a false address that becomes the apparent client IP.
 
+## Bolt and the built-in interface
+
+The built-in interface uses Bolt over WebSocket on the Bolt port. When the
+interface is loaded over HTTPS, its Neo4j driver connects with `bolt+s://`,
+which produces a `wss://` connection on the wire.
+
+For Nginx and NornicDB in separate containers, use native Bolt TLS and TCP
+passthrough. Nginx forwards the encrypted bytes without terminating TLS:
+
+```bash
+NORNICDB_BOLT_ENABLED=true
+NORNICDB_BOLT_TLS_ENABLED=true
+NORNICDB_BOLT_TLS_REQUIRE=true
+NORNICDB_BOLT_TLS_CERT=/tls/server.crt
+NORNICDB_BOLT_TLS_KEY=/tls/server.key
+```
+
+```nginx
+stream {
+    upstream nornicdb_bolt {
+        server 172.20.0.20:7687;
+    }
+
+    server {
+        listen 7687;
+        proxy_pass nornicdb_bolt;
+    }
+}
+```
+
+The NornicDB certificate must be valid for the public hostname. TLS termination
+at Nginx with a plaintext Bolt backend is supported only when Nginx and
+NornicDB share a host and NornicDB binds Bolt to `127.0.0.1`. A separate
+container requires a non-loopback backend listener; use native Bolt TLS there.
+Bolt has no equivalent of trusted HTTP forwarding headers, so
+`NORNICDB_HTTP_TRUSTED_PROXIES` cannot authorize or secure that connection.
+
+Set `NORNICDB_BOLT_ENABLED=false` when Bolt is not needed. This removes the
+listener and Bolt discovery endpoints; the built-in interface will report that
+Bolt is disabled instead of attempting a connection.
+
+All Compose files shipped with NornicDB forward the proxy-facing authentication,
+HTTP, HTTPS, CORS, Bolt TLS/mTLS, and Bolt WebSocket variables from the host.
+Export values before invoking Compose, for example:
+
+```bash
+export NORNICDB_NO_AUTH=false
+export NORNICDB_AUTH='admin:replace-with-a-secret'
+export NORNICDB_HTTP_TRUSTED_PROXIES='172.20.0.0/16'
+export NORNICDB_CORS_ORIGINS='https://db.example.com'
+export NORNICDB_BOLT_ENABLED=false
+docker compose -f docker/docker-compose.cuda.yml up -d
+```
+
+Overridden HTTP, HTTPS, and Bolt ports are also reflected in Docker's published
+ports. When native TLS is enabled, mount the directory containing the referenced
+certificate, key, and optional client CA into the NornicDB container as a
+read-only volume; environment variables pass paths, not file contents.
+
 Verify the public endpoint:
 
 ```bash
@@ -172,4 +231,5 @@ enable native HTTPS.
 `security configuration: public Bolt listener must require TLS`
 
 : Disable Bolt when only HTTP is proxied, bind it to loopback, or configure Bolt
-TLS with `NORNICDB_BOLT_TLS_REQUIRE=true`.
+TLS with `NORNICDB_BOLT_TLS_ENABLED=true`, `NORNICDB_BOLT_TLS_REQUIRE=true`, and
+certificate and key paths.

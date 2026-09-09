@@ -1124,7 +1124,7 @@ var CatalogManifest = [...]CatalogManifestEntry{
 	{ID: "nornicdbcli.serve.embedding_url", Constructor: "NornicDBCLIEmbeddingURL", Fields: []string{"URL"}, PluralForms: []string{"other"}},
 	{ID: "nornicdbcli.serve.embeddings_disabled", Constructor: "NornicDBCLIEmbeddingsDisabled", Fields: []string{}, PluralForms: []string{"other"}},
 	{ID: "nornicdbcli.serve.embeddings_enabled", Constructor: "NornicDBCLIEmbeddingsEnabled", Fields: []string{"Dimensions", "Model", "Provider"}, PluralForms: []string{"other"}},
-	{ID: "nornicdbcli.serve.endpoints", Constructor: "NornicDBCLIEndpoints", Fields: []string{"Address", "BoltPort", "HTTPPort", "MCP", "Metrics", "Pprof"}, PluralForms: []string{"other"}},
+	{ID: "nornicdbcli.serve.endpoints", Constructor: "NornicDBCLIEndpoints", Fields: []string{"Address", "BoltEnabled", "BoltPort", "HTTPPort", "MCP", "Metrics", "Pprof"}, PluralForms: []string{"other"}},
 	{ID: "nornicdbcli.serve.gc_percent", Constructor: "NornicDBCLIGCPercent", Fields: []string{"Value"}, PluralForms: []string{"other"}},
 	{ID: "nornicdbcli.serve.gpu_detected_no_cuda", Constructor: "NornicDBCLIGPUDetectedNoCUDA", Fields: []string{"Memory", "Name"}, PluralForms: []string{"other"}},
 	{ID: "nornicdbcli.serve.gpu_disabled", Constructor: "NornicDBCLIGPUDisabled", Fields: []string{}, PluralForms: []string{"other"}},

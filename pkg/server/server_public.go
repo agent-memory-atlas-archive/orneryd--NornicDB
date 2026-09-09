@@ -44,16 +44,19 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	// clients use bolt:// (or bolt+s:// over HTTPS) — neo4j-driver's
 	// browser bundle picks the WebSocket transport internally; the
 	// driver itself rejects ws:// / wss:// schemes via its allowlist.
-	boltPort := s.config.BoltPort
-	if boltPort == 0 {
-		boltPort = 7687
-	}
 	response := map[string]interface{}{
-		"bolt_direct":   fmt.Sprintf("bolt://%s:%d", host, boltPort),
-		"bolt_routing":  fmt.Sprintf("neo4j://%s:%d", host, boltPort),
 		"transaction":   fmt.Sprintf("http://%s:%d/db/{databaseName}/tx", host, s.config.Port),
 		"neo4j_version": "5.0.0",
 		"neo4j_edition": "community",
+		"bolt_enabled":  s.config.BoltEnabled,
+	}
+	if s.config.BoltEnabled {
+		boltPort := s.config.BoltPort
+		if boltPort == 0 {
+			boltPort = 7687
+		}
+		response["bolt_direct"] = fmt.Sprintf("bolt://%s:%d", host, boltPort)
+		response["bolt_routing"] = fmt.Sprintf("neo4j://%s:%d", host, boltPort)
 	}
 
 	// Add default database name for UI compatibility (NornicDB extension)

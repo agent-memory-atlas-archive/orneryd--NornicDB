@@ -195,8 +195,8 @@
 - id: nornicdbcli.serve.endpoints
   other: |-
     [!! Éndpóínts:
-      • HTTP ÁPÍ: http://{{.Address}}:{{.HTTPPort}}
-      • Bólt: bolt://{{.Address}}:{{.BoltPort}}
+      • HTTP ÁPÍ: http://{{.Address}}:{{.HTTPPort}}{{if .BoltEnabled}}
+      • Bólt: bolt://{{.Address}}:{{.BoltPort}}{{end}}
       • Héálth: http://{{.Address}}:{{.HTTPPort}}/health
       • Séárch: POST http://{{.Address}}:{{.HTTPPort}}/nornicdb/search
       • Cýphér: POST http://{{.Address}}:{{.HTTPPort}}/db/nornicdb/tx/commit{{if .MCPEnabled}}

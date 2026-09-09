@@ -46,6 +46,75 @@ func TestContainerNoAuthDefaultsEmitWarning(t *testing.T) {
 	}
 }
 
+func TestComposeFilesForwardProxyEnvironment(t *testing.T) {
+	required := []string{
+		"NORNICDB_ADDRESS",
+		"NORNICDB_BASE_PATH",
+		"NORNICDB_AUTH",
+		"NORNICDB_AUTH_JWT_SECRET",
+		"NORNICDB_AUTH_PROVIDER",
+		"NORNICDB_AUTH_TOKEN_EXPIRY",
+		"NORNICDB_MIN_PASSWORD_LENGTH",
+		"NORNICDB_NO_AUTH",
+		"NORNICDB_OAUTH_ISSUER",
+		"NORNICDB_OAUTH_CLIENT_ID",
+		"NORNICDB_OAUTH_CLIENT_SECRET",
+		"NORNICDB_OAUTH_CALLBACK_URL",
+		"NORNICDB_CORS_ENABLED",
+		"NORNICDB_CORS_ORIGINS",
+		"NORNICDB_HTTP_ENABLED",
+		"NORNICDB_HTTP_PORT",
+		"NORNICDB_HTTP_ADDRESS",
+		"NORNICDB_HTTP_TRUSTED_PROXIES",
+		"NORNICDB_HTTPS_ENABLED",
+		"NORNICDB_HTTPS_PORT",
+		"NORNICDB_HTTP_TLS_CERT",
+		"NORNICDB_HTTP_TLS_KEY",
+		"NORNICDB_BOLT_ENABLED",
+		"NORNICDB_BOLT_PORT",
+		"NORNICDB_BOLT_ADDRESS",
+		"NORNICDB_BOLT_SERVER_ANNOUNCEMENT",
+		"NORNICDB_BOLT_TLS_ENABLED",
+		"NORNICDB_BOLT_TLS_REQUIRE",
+		"NORNICDB_BOLT_TLS_CERT",
+		"NORNICDB_BOLT_TLS_KEY",
+		"NORNICDB_BOLT_TLS_CLIENT_CA",
+		"NORNICDB_BOLT_TLS_CLIENT_AUTH_MODE",
+		"NORNICDB_BOLT_SNIFF_TIMEOUT",
+		"NORNICDB_BOLT_AUTH_TIMEOUT",
+		"NORNICDB_BOLT_STATEMENT_TIMEOUT",
+		"NORNICDB_BOLT_WEBSOCKET_ENABLED",
+		"NORNICDB_BOLT_WEBSOCKET_ALLOWED_ORIGINS",
+		"NORNICDB_BOLT_WEBSOCKET_MAX_MESSAGE_SIZE",
+		"NORNICDB_BOLT_WEBSOCKET_WRITE_BUFFER_SIZE",
+		"NORNICDB_BOLT_WEBSOCKET_PING_INTERVAL",
+		"NORNICDB_BOLT_WEBSOCKET_PONG_TIMEOUT",
+		"NORNICDB_TLS_DIR",
+	}
+
+	for _, path := range composeFiles(t) {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			content, err := os.ReadFile(path)
+			require.NoError(t, err)
+			for _, name := range required {
+				require.Contains(t, string(content), name+"=${"+name, "%s must forward %s", path, name)
+			}
+		})
+	}
+}
+
+func composeFiles(t *testing.T) []string {
+	t.Helper()
+	root := filepath.Clean("..")
+	composeFiles, err := filepath.Glob(filepath.Join(root, "docker-compose*.yml"))
+	require.NoError(t, err)
+	nested, err := filepath.Glob(filepath.Join(root, "docker", "docker-compose*.yml"))
+	require.NoError(t, err)
+	composeFiles = append(composeFiles, nested...)
+	require.NotEmpty(t, composeFiles)
+	return composeFiles
+}
+
 func hasNoAuthDefault(t *testing.T, path string, node *yaml.Node) bool {
 	t.Helper()
 	found := false

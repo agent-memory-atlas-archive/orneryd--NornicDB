@@ -359,6 +359,8 @@ type Config struct {
 	// neo4j-driver Bolt-over-WS sessions know where to connect.
 	// Default: 7687 when zero.
 	BoltPort int
+	// BoltEnabled controls whether discovery advertises Bolt endpoints.
+	BoltEnabled bool
 	// ReadTimeout for requests
 	ReadTimeout time.Duration
 	// WriteTimeout for responses
@@ -523,6 +525,7 @@ func DefaultConfig() *Config {
 		// Set Address to "0.0.0.0" for Docker/container deployments or external access
 		Address:        "127.0.0.1",
 		Port:           7474,
+		BoltEnabled:    true,
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   300 * time.Second, // Bifrost agentic loops (many tool calls) can run 1–2 min; avoid closing stream early
 		IdleTimeout:    120 * time.Second,

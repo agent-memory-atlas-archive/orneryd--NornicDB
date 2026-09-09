@@ -212,6 +212,7 @@ func TestEnglishEndpointSummaryRemainsExact(t *testing.T) {
 		"http://localhost:6060/debug/pprof/",
 		"http://localhost:7474/mcp",
 		true,
+		true,
 	)
 	require.Equal(t, `Endpoints:
   • HTTP API:     http://localhost:7474
@@ -222,4 +223,7 @@ func TestEnglishEndpointSummaryRemainsExact(t *testing.T) {
   • MCP:          http://localhost:7474/mcp
   • Telemetry:    http://localhost:9464/metrics
   • pprof:        http://localhost:6060/debug/pprof/`, commandText(manager, message))
+
+	message = localization.NornicDBCLIEndpoints("localhost", 7474, 7687, "metrics", "", "", false, false)
+	require.NotContains(t, commandText(manager, message), "Bolt:")
 }

@@ -420,6 +420,22 @@ func TestHandleDiscovery(t *testing.T) {
 	}
 }
 
+func TestHandleDiscoveryOmitsBoltEndpointsWhenDisabled(t *testing.T) {
+	server, _ := setupTestServerWithConfig(t, func(config *Config) {
+		config.BoltEnabled = false
+	})
+
+	resp := makeRequest(t, server, http.MethodGet, "/", nil, "")
+	require.Equal(t, http.StatusOK, resp.Code)
+
+	var discovery map[string]interface{}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&discovery))
+	require.NotContains(t, discovery, "bolt_direct")
+	require.NotContains(t, discovery, "bolt_routing")
+	require.Equal(t, false, discovery["bolt_enabled"])
+	require.Contains(t, discovery, "transaction")
+}
+
 // =============================================================================
 // Health Endpoint Tests
 // =============================================================================

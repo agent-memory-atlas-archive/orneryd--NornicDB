@@ -527,7 +527,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	commandPrintln(cmd, localization.NornicDBCLIStarting(buildinfo.DisplayVersion()))
 	commandPrintln(cmd, localization.NornicDBCLIDataDirectory(dataDir))
-	commandPrintln(cmd, localization.NornicDBCLIBoltEndpoint(boltPort))
+	if cfg.Server.BoltEnabled {
+		commandPrintln(cmd, localization.NornicDBCLIBoltEndpoint(boltPort))
+	}
 	commandPrintln(cmd, localization.NornicDBCLIHTTPEndpoint(httpPort))
 	if cfg.Memory.EmbeddingEnabled {
 		commandPrintln(cmd, localization.NornicDBCLIEmbeddingsEnabled(embeddingProvider, embeddingModel, embeddingDim))
@@ -779,6 +781,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	applyHTTPTransportConfig(serverConfig, cfg, httpPort, cmd.Flags().Changed("http-port"))
 	httpPort = serverConfig.Port
 	serverConfig.BoltPort = boltPort
+	serverConfig.BoltEnabled = cfg.Server.BoltEnabled
 	serverConfig.Address = resolvedAddress
 	// MCP server configuration
 	serverConfig.MCPEnabled = mcpEnabled
@@ -1253,7 +1256,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if replAuthWiring.peerGC != nil {
 		components = append(components, replAuthWiring.peerGC)
 	}
-	components = append(components, workersC, boltC, httpC)
+	components = appendProtocolComponents(components, workersC, boltC, httpC, cfg.Server.BoltEnabled)
 
 	cmd.Println()
 	commandPrintln(cmd, localization.NornicDBCLIReady())
@@ -1272,7 +1275,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		pprofEndpoint = fmt.Sprintf("http://%s/debug/pprof/", cfg.Observability.Pprof.Listen)
 	}
 	metricsEndpoint := fmt.Sprintf("http://%s%s/metrics", displayAddr, cfg.Observability.Metrics.Listen)
-	commandPrintln(cmd, localization.NornicDBCLIEndpoints(displayAddr, httpPort, boltPort, metricsEndpoint, pprofEndpoint, mcpEndpoint, pprof != nil))
+	commandPrintln(cmd, localization.NornicDBCLIEndpoints(displayAddr, httpPort, boltPort, metricsEndpoint, pprofEndpoint, mcpEndpoint, cfg.Server.BoltEnabled, pprof != nil))
 	cmd.Println()
 	if authEnabled {
 		adminUsername := cfg.Auth.InitialUsername
@@ -1302,6 +1305,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	commandPrintln(cmd, localization.NornicDBCLIServerStopped())
 	return nil
+}
+
+func appendProtocolComponents(
+	components []lifecycle.Component,
+	workers lifecycle.Component,
+	boltServer lifecycle.Component,
+	httpServer lifecycle.Component,
+	boltEnabled bool,
+) []lifecycle.Component {
+	components = append(components, workers)
+	if boltEnabled {
+		components = append(components, boltServer)
+	}
+	return append(components, httpServer)
 }
 
 func resolveBindAddress(cmd *cobra.Command, cfg *config.Config, cliAddress string, loadedConfigFile bool) string {

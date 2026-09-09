@@ -20,6 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against the request's database scope and authorized before storage routing.
   Reported by Sevban Dönmez (`jankesec`).
 
+- **Hardened authenticated reverse-proxy deployments.** Forwarded scheme,
+  host, prefix, and client-address metadata is now accepted only from explicit
+  `NORNICDB_HTTP_TRUSTED_PROXIES` IP/CIDR entries. Authenticated public HTTP can
+  run behind a trusted TLS terminator, native HTTP TLS settings now reach the
+  listener, and documented YAML HTTPS settings are decoded correctly.
+
+- **Bolt disablement now removes the listener.**
+  `NORNICDB_BOLT_ENABLED=false` no longer suppresses only the public-listener
+  security check while still starting Bolt. Disabled Bolt is also omitted from
+  discovery and startup endpoint output. Authenticated public Bolt listeners
+  must enable and require native TLS with a certificate and key. Shipped Docker
+  Compose variants now forward the complete proxy-facing environment surface,
+  including auth, CORS, trusted HTTP proxies, native HTTPS, Bolt TLS/mTLS, and
+  WebSocket controls; configured listener ports are published consistently.
+
 ### Added
 
 - **Editable knowledge-policy control plane.** Decay bindings and promotion

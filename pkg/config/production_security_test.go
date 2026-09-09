@@ -52,6 +52,17 @@ func TestValidateSecurityConfiguration(t *testing.T) {
 			c.Server.HTTPTLSKey = "/tls/server.key"
 		}, match: "HTTPS certificate and key"},
 		{name: "public bolt without required tls", mutate: func(c *Config) { c.Server.BoltAddress = "192.0.2.1" }, match: "must require TLS"},
+		{name: "public bolt requires configured tls", mutate: func(c *Config) {
+			c.Server.BoltAddress = "192.0.2.1"
+			c.Server.BoltTLSRequire = true
+		}, match: "Bolt TLS certificate and key"},
+		{name: "public bolt with native tls", mutate: func(c *Config) {
+			c.Server.BoltAddress = "192.0.2.1"
+			c.Server.BoltTLSEnabled = true
+			c.Server.BoltTLSRequire = true
+			c.Server.BoltTLSCert = "/tls/bolt.crt"
+			c.Server.BoltTLSKey = "/tls/bolt.key"
+		}},
 		{name: "public grpc", mutate: func(c *Config) { c.Features.QdrantGRPCEnabled = true; c.Features.QdrantGRPCListenAddr = ":6334" }, match: "plaintext gRPC"},
 	}
 	for _, test := range tests {

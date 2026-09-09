@@ -36,8 +36,13 @@ func ValidateSecurityConfiguration(config *Config) error {
 	if config.Server.HTTPEnabled && isPublicListener(config.Server.HTTPAddress) && !nativeHTTPS && len(config.Server.HTTPTrustedProxies) == 0 {
 		return fmt.Errorf("security configuration: public plaintext HTTP listener is not allowed")
 	}
-	if config.Server.BoltEnabled && isPublicListener(config.Server.BoltAddress) && !config.Server.BoltTLSRequire {
-		return fmt.Errorf("security configuration: public Bolt listener must require TLS")
+	if config.Server.BoltEnabled && isPublicListener(config.Server.BoltAddress) {
+		if !config.Server.BoltTLSRequire {
+			return fmt.Errorf("security configuration: public Bolt listener must require TLS")
+		}
+		if !config.Server.BoltTLSEnabled || strings.TrimSpace(config.Server.BoltTLSCert) == "" || strings.TrimSpace(config.Server.BoltTLSKey) == "" {
+			return fmt.Errorf("security configuration: Bolt TLS certificate and key are required for a public Bolt listener")
+		}
 	}
 	if config.Features.QdrantGRPCEnabled && isPublicListener(config.Features.QdrantGRPCListenAddr) {
 		return fmt.Errorf("security configuration: public plaintext gRPC listener is not allowed")

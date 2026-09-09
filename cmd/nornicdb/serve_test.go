@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -159,6 +160,36 @@ func TestServeAuthEnabledUsesLoadedConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := serveAuthEnabled(tt.cfg, tt.noAuth); got != tt.want {
 				t.Fatalf("serveAuthEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAppendProtocolComponentsHonorsBoltEnabled(t *testing.T) {
+	workers := &stubComponent{name: "embed-workers"}
+	bolt := &stubComponent{name: "bolt"}
+	httpServer := &stubComponent{name: "http"}
+
+	tests := []struct {
+		name        string
+		boltEnabled bool
+		wantNames   []string
+	}{
+		{name: "enabled", boltEnabled: true, wantNames: []string{"telemetry", "embed-workers", "bolt", "http"}},
+		{name: "disabled", boltEnabled: false, wantNames: []string{"telemetry", "embed-workers", "http"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			components := []lifecycle.Component{&stubComponent{name: "telemetry"}}
+			components = appendProtocolComponents(components, workers, bolt, httpServer, test.boltEnabled)
+
+			names := make([]string, len(components))
+			for i, component := range components {
+				names[i] = component.Name()
+			}
+			if !slices.Equal(names, test.wantNames) {
+				t.Fatalf("component names = %v, want %v", names, test.wantNames)
 			}
 		})
 	}

@@ -385,8 +385,9 @@ export interface KPDeindexStatusResponse {
 }
 
 interface DiscoveryResponse {
-  bolt_direct: string;
-  bolt_routing: string;
+  bolt_direct?: string;
+  bolt_routing?: string;
+  bolt_enabled?: boolean;
   transaction: string;
   neo4j_version: string;
   neo4j_edition: string;
@@ -733,6 +734,9 @@ class NornicDBClient {
     }
     this.boltDriverPromise = (async () => {
       await this.fetchDiscovery();
+      if (this.discovery?.bolt_enabled === false) {
+        throw new Error("Bolt is disabled on this NornicDB server");
+      }
       const url = this.resolveBoltURL();
       // Bolt scheme=none. The AuthToken type insists on a credentials
       // field; the wire-protocol scheme=none is just {scheme:"none"}

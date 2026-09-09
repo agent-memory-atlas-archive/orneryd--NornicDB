@@ -254,8 +254,8 @@
 - id: nornicdbcli.serve.endpoints
   other: |-
     Endpoints:
-      • HTTP API:     http://{{.Address}}:{{.HTTPPort}}
-      • Bolt:         bolt://{{.Address}}:{{.BoltPort}}
+      • HTTP API:     http://{{.Address}}:{{.HTTPPort}}{{if .BoltEnabled}}
+      • Bolt:         bolt://{{.Address}}:{{.BoltPort}}{{end}}
       • Health:       http://{{.Address}}:{{.HTTPPort}}/health
       • Search:       POST http://{{.Address}}:{{.HTTPPort}}/nornicdb/search
       • Cypher:       POST http://{{.Address}}:{{.HTTPPort}}/db/nornicdb/tx/commit{{if .MCPEnabled}}

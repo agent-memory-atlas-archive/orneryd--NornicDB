@@ -10,7 +10,8 @@ NornicDB speaks the Neo4j Bolt protocol on port `:7687`. Any official Neo4j driv
 4. [Driver Examples](#driver-examples)
 5. [Browser-Based Tools](#browser-based-tools)
 6. [Operator-Configurable Knobs](#operator-configurable-knobs)
-7. [Troubleshooting](#troubleshooting)
+7. [Reverse Proxies](#reverse-proxies)
+8. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -131,6 +132,18 @@ fmt.Println(record.Values[0])
 
 For TLS: use `bolt+s://` or `bolt+ssc://` (the latter when your CA isn't system-trusted, e.g. development with self-signed certs). The driver handles the TLS handshake; NornicDB's listener sniffs the TLS first byte and recurses on the decrypted stream.
 
+## Reverse Proxies
+
+The built-in interface uses Bolt over WebSocket and upgrades to `bolt+s://`
+when the page is served over HTTPS. For container deployments behind Nginx,
+enable and require native Bolt TLS, then use TCP passthrough on port 7687 so
+NornicDB terminates TLS. See [Reverse Proxy and TLS](../operations/reverse-proxy.md#bolt-and-the-built-in-interface).
+
+Nginx may terminate Bolt TLS to a plaintext backend only when that backend is
+bound to loopback on the same host. Plaintext Bolt to a separate container is
+not a trusted-proxy mode and is intentionally rejected for authenticated public
+listeners.
+
 ### Python
 
 ```python
@@ -186,20 +199,20 @@ For cross-origin browser clients (e.g. a UI on `https://app.example.com` connect
 
 ## Operator-Configurable Knobs
 
-| Setting                                    | Default | Effect                                                           |
-| ------------------------------------------ | ------- | ---------------------------------------------------------------- |
-| `NORNICDB_BOLT_TLS_ENABLED`                | `false` | Enables `bolt+s://` and `wss://`.                                |
-| `NORNICDB_BOLT_TLS_CERT` / `_KEY`          | (unset) | Cert and key paths; rotation re-reads every 5 s (atomic rename). |
-| `NORNICDB_BOLT_TLS_REQUIRE`                | `false` | Reject every plaintext connection (raw and ws).                  |
-| `NORNICDB_BOLT_TLS_CLIENT_CA`              | (unset) | mTLS: verify client certs against this CA.                       |
-| `NORNICDB_BOLT_TLS_CLIENT_AUTH_MODE`       | `none`  | `none` / `request` / `request_verify` / `require_verify`.        |
-| `NORNICDB_BOLT_WEBSOCKET_ENABLED`          | `true`  | `false` ⇒ `426 Upgrade Required` on real WS upgrades.            |
-| `NORNICDB_BOLT_WEBSOCKET_ALLOWED_ORIGINS`  | `*`     | Comma-separated origin allowlist for the WS upgrade.             |
-| `NORNICDB_BOLT_WEBSOCKET_MAX_MESSAGE_SIZE` | `65536` | Per-frame limit (Neo4j parity).                                  |
-| `NORNICDB_BOLT_WEBSOCKET_PING_INTERVAL`    | `30s`   | Server-side WS ping cadence (post-HELLO only).                   |
-| `NORNICDB_BOLT_WEBSOCKET_PONG_TIMEOUT`     | `60s`   | Pong arrival deadline.                                           |
-| `NORNICDB_BOLT_SNIFF_TIMEOUT`              | `5s`    | Bound on the transport-sniff peek.                               |
-| `NORNICDB_BOLT_AUTH_TIMEOUT`               | `30s`   | Bound on the pre-HELLO handshake/auth window.                    |
+| Setting                                    | Default  | Effect                                                                    |
+| ------------------------------------------ | -------- | ------------------------------------------------------------------------- |
+| `NORNICDB_BOLT_TLS_ENABLED`                | `false`  | Enables `bolt+s://` and `wss://`.                                         |
+| `NORNICDB_BOLT_TLS_CERT` / `_KEY`          | (unset)  | Cert and key paths; rotation re-reads every 5 s (atomic rename).          |
+| `NORNICDB_BOLT_TLS_REQUIRE`                | `false`  | Reject every plaintext connection (raw and ws).                           |
+| `NORNICDB_BOLT_TLS_CLIENT_CA`              | (unset)  | mTLS: verify client certs against this CA.                                |
+| `NORNICDB_BOLT_TLS_CLIENT_AUTH_MODE`       | `none`   | `none` / `request` / `request_verify` / `require_verify`.                 |
+| `NORNICDB_BOLT_WEBSOCKET_ENABLED`          | `true`   | `false` ⇒ `426 Upgrade Required` on real WS upgrades.                     |
+| `NORNICDB_BOLT_WEBSOCKET_ALLOWED_ORIGINS`  | `*`      | Comma-separated origin allowlist for the WS upgrade.                      |
+| `NORNICDB_BOLT_WEBSOCKET_MAX_MESSAGE_SIZE` | `65536`  | Per-frame limit (Neo4j parity).                                           |
+| `NORNICDB_BOLT_WEBSOCKET_PING_INTERVAL`    | `30s`    | Server-side WS ping cadence (post-HELLO only).                            |
+| `NORNICDB_BOLT_WEBSOCKET_PONG_TIMEOUT`     | `60s`    | Pong arrival deadline.                                                    |
+| `NORNICDB_BOLT_SNIFF_TIMEOUT`              | `5s`     | Bound on the transport-sniff peek.                                        |
+| `NORNICDB_BOLT_AUTH_TIMEOUT`               | `30s`    | Bound on the pre-HELLO handshake/auth window.                             |
 | `NORNICDB_BOLT_STATEMENT_TIMEOUT`          | disabled | Fallback server-side `RUN` timeout when the driver sends no `tx_timeout`. |
 
 See `docs/operations/configuration.md` for the YAML and CLI equivalents.

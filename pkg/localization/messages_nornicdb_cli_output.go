@@ -189,8 +189,8 @@ func NornicDBCLIAdminCreated(username string) Message {
 func NornicDBCLIReady() Message {
 	return cliOutput(MessageNornicDBCLIReady, "✅ NornicDB is ready!", nil)
 }
-func NornicDBCLIEndpoints(address string, httpPort, boltPort int, metrics, pprof, mcp string, hasPprof bool) Message {
-	return cliOutput(MessageNornicDBCLIEndpoints, "Endpoints:", map[string]any{"Address": address, "HTTPPort": httpPort, "BoltPort": boltPort, "Metrics": metrics, "Pprof": pprof, "MCP": mcp, "MCPEnabled": mcp != "", "PprofEnabled": hasPprof})
+func NornicDBCLIEndpoints(address string, httpPort, boltPort int, metrics, pprof, mcp string, boltEnabled, hasPprof bool) Message {
+	return cliOutput(MessageNornicDBCLIEndpoints, "Endpoints:", map[string]any{"Address": address, "HTTPPort": httpPort, "BoltPort": boltPort, "Metrics": metrics, "Pprof": pprof, "MCP": mcp, "BoltEnabled": boltEnabled, "MCPEnabled": mcp != "", "PprofEnabled": hasPprof})
 }
 func NornicDBCLIAuthentication(username string) Message {
 	return cliOutput(MessageNornicDBCLIAuthentication, "Authentication:\n  • Username: "+username+"\n  • Password: <redacted>", map[string]any{"Username": username})
