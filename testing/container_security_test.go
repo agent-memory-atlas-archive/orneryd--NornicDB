@@ -2,6 +2,7 @@ package testing
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,6 +44,111 @@ func TestContainerNoAuthDefaultsEmitWarning(t *testing.T) {
 		var document yaml.Node
 		require.NoError(t, yaml.Unmarshal(content, &document), path)
 		require.True(t, hasNoAuthDefault(t, path, &document), "%s must declare a no-auth compatibility default", path)
+	}
+}
+
+func TestRuntimeImagesPreserveIngressConfiguration(t *testing.T) {
+	root := filepath.Clean("..")
+	dockerfiles, err := filepath.Glob(filepath.Join(root, "docker", "Dockerfile*"))
+	require.NoError(t, err)
+
+	runtimeImages := 0
+	for _, path := range dockerfiles {
+		content, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		text := string(content)
+		if !strings.Contains(text, "ENTRYPOINT") {
+			continue
+		}
+		runtimeImages++
+		require.Contains(t, text, "NORNICDB_ADDRESS=0.0.0.0", path)
+		require.Contains(t, text, "COPY docker/healthcheck.sh", path)
+		require.Contains(t, text, "CMD /app/healthcheck.sh", path)
+		require.Contains(t, text, "EXPOSE 7473", path)
+		require.Contains(t, text, "6334", path)
+	}
+	require.Positive(t, runtimeImages)
+}
+
+func TestContainerEntrypointPreservesIngressEnvironment(t *testing.T) {
+	tempDir := t.TempDir()
+	capturePath := filepath.Join(tempDir, "capture.sh")
+	capture := `#!/bin/sh
+printf 'ARG=%s\n' "$@"
+printf 'HTTP_ADDRESS=%s\n' "$NORNICDB_HTTP_ADDRESS"
+printf 'HTTPS_PORT=%s\n' "$NORNICDB_HTTPS_PORT"
+printf 'BOLT_ENABLED=%s\n' "$NORNICDB_BOLT_ENABLED"
+printf 'GRPC_ADDRESS=%s\n' "$NORNICDB_QDRANT_GRPC_LISTEN_ADDR"
+printf 'TRACE_GRAPHQL=%s\n' "$NORNICDB_TRACE_GRAPHQL"
+`
+	require.NoError(t, os.WriteFile(capturePath, []byte(capture), 0o755))
+
+	entrypoint := filepath.Join("..", "docker", "entrypoint.sh")
+	command := exec.Command("sh", entrypoint)
+	command.Env = append(os.Environ(),
+		"NORNICDB_BIN="+capturePath,
+		"NORNICDB_NO_AUTH=false",
+		"NORNICDB_EMBEDDING_PROVIDER=openai",
+		"NORNICDB_HTTP_PORT=17474",
+		"NORNICDB_HTTP_ADDRESS=127.0.0.2",
+		"NORNICDB_HTTPS_PORT=17473",
+		"NORNICDB_BOLT_PORT=17687",
+		"NORNICDB_BOLT_ENABLED=false",
+		"NORNICDB_QDRANT_GRPC_LISTEN_ADDR=127.0.0.3:16334",
+		"NORNICDB_TRACE_GRAPHQL=1",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	text := string(output)
+	require.Contains(t, text, "ARG=serve")
+	require.NotContains(t, text, "ARG=--http-port=")
+	require.NotContains(t, text, "ARG=--bolt-port=")
+	require.NotContains(t, text, "ARG=--address=")
+	require.Contains(t, text, "HTTP_ADDRESS=127.0.0.2")
+	require.Contains(t, text, "HTTPS_PORT=17473")
+	require.Contains(t, text, "BOLT_ENABLED=false")
+	require.Contains(t, text, "GRPC_ADDRESS=127.0.0.3:16334")
+	require.Contains(t, text, "TRACE_GRAPHQL=1")
+}
+
+func TestContainerHealthcheckUsesEffectiveHTTPTransport(t *testing.T) {
+	tests := []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{
+			name: "HTTP address port and base path",
+			env: []string{
+				"NORNICDB_HTTP_ADDRESS=127.0.0.2",
+				"NORNICDB_HTTP_PORT=17474",
+				"NORNICDB_BASE_PATH=/graph/",
+			},
+			want: "--spider\n-q\nhttp://127.0.0.2:17474/graph/health\n",
+		},
+		{
+			name: "native HTTPS port",
+			env: []string{
+				"NORNICDB_ADDRESS=0.0.0.0",
+				"NORNICDB_HTTPS_ENABLED=true",
+				"NORNICDB_HTTPS_PORT=17473",
+			},
+			want: "--spider\n-q\n--no-check-certificate\nhttps://127.0.0.1:17473/health\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			wgetPath := filepath.Join(tempDir, "wget")
+			require.NoError(t, os.WriteFile(wgetPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o755))
+
+			command := exec.Command("sh", filepath.Join("..", "docker", "healthcheck.sh"))
+			command.Env = append([]string{"PATH=" + tempDir}, test.env...)
+			output, err := command.CombinedOutput()
+			require.NoError(t, err, string(output))
+			require.Equal(t, test.want, string(output))
+		})
 	}
 }
 
@@ -90,14 +196,25 @@ func TestComposeFilesForwardProxyEnvironment(t *testing.T) {
 		"NORNICDB_BOLT_WEBSOCKET_PING_INTERVAL",
 		"NORNICDB_BOLT_WEBSOCKET_PONG_TIMEOUT",
 		"NORNICDB_TLS_DIR",
+		"NORNICDB_QDRANT_GRPC_ENABLED",
+		"NORNICDB_QDRANT_GRPC_LISTEN_ADDR",
+		"NORNICDB_QDRANT_GRPC_MAX_VECTOR_DIM",
+		"NORNICDB_QDRANT_GRPC_MAX_BATCH_POINTS",
+		"NORNICDB_QDRANT_GRPC_MAX_TOP_K",
+		"NORNICDB_TRACE_GRAPHQL",
 	}
 
 	for _, path := range composeFiles(t) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			content, err := os.ReadFile(path)
 			require.NoError(t, err)
+			text := string(content)
 			for _, name := range required {
-				require.Contains(t, string(content), name+"=${"+name, "%s must forward %s", path, name)
+				require.Contains(t, text, name+"=${"+name, "%s must forward %s", path, name)
+			}
+			if strings.Contains(text, "healthcheck:") {
+				require.Contains(t, text, "/app/healthcheck.sh", "%s must use the image health check", path)
+				require.NotContains(t, text, "localhost:7474", "%s must not hard-code plaintext health transport", path)
 			}
 		})
 	}

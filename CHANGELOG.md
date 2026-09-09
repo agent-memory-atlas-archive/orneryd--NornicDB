@@ -33,7 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must enable and require native TLS with a certificate and key. Shipped Docker
   Compose variants now forward the complete proxy-facing environment surface,
   including auth, CORS, trusted HTTP proxies, native HTTPS, Bolt TLS/mTLS, and
-  WebSocket controls; configured listener ports are published consistently.
+  WebSocket controls, plus all Qdrant gRPC listener and request-limit settings;
+  configured listener ports are published consistently. Runtime images now
+  preserve `NORNICDB_*` settings without shadowing them with generated CLI
+  flags, and their health checks follow the effective address, base path,
+  HTTP/HTTPS mode, and port. GraphQL continues to share the hardened HTTP
+  ingress rather than exposing a separate listener.
 
 ### Added
 

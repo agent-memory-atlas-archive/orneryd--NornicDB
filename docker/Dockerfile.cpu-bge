@@ -88,7 +88,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /build/nornicdb /app/
 COPY --from=builder /build/apoc/built-plugins /app/plugins/
 COPY docker/entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+COPY docker/healthcheck.sh /app/
+RUN chmod +x /app/entrypoint.sh /app/healthcheck.sh
 
 # Always download and embed BGE + BGE-Reranker for this image variant.
 ARG HEADLESS=false
@@ -106,13 +107,14 @@ RUN \
     fi && \
     echo "✓ CPU-only build with local embeddings and reranker enabled"
 
-EXPOSE 7474 7687 9091
+EXPOSE 7473 7474 7687 6334 9091
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD wget --spider -q http://localhost:7474/health || exit 1
+    CMD /app/healthcheck.sh
 
 # Configure for local embeddings + search reranker (CPU-only)
 ENV NORNICDB_DATA_DIR=/data \
+  NORNICDB_ADDRESS=0.0.0.0 \
     NORNICDB_HTTP_PORT=7474 \
     NORNICDB_BOLT_PORT=7687 \
     NORNICDB_EMBEDDING_ENABLED=true \

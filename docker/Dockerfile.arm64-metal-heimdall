@@ -87,8 +87,9 @@ COPY --from=builder /build/nornicdb /app/
 COPY --from=builder /build/apoc/built-plugins /app/plugins/
 COPY --from=builder /build/plugins/heimdall/built-plugins /app/plugins/heimdall/
 COPY docker/entrypoint.sh /app/
+COPY docker/healthcheck.sh /app/
 COPY models/ /tmp/local-models/
-RUN chmod +x /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh /app/healthcheck.sh
 
 # Prefer local models from the build context and fall back to downloads when absent.
 ARG BGE_MODEL_URL=https://huggingface.co/gpustack/bge-m3-GGUF/resolve/main/bge-m3-Q4_K_M.gguf
@@ -123,13 +124,14 @@ RUN \
     echo "=== Model embedding complete ===" && \
     ls -lh /app/models/
 
-EXPOSE 7474 7687 9091
+EXPOSE 7473 7474 7687 6334 9091
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD wget --spider -q http://localhost:7474/health || exit 1
+    CMD /app/healthcheck.sh
 
 # Environment configuration for Heimdall-enabled deployment
 ENV NORNICDB_DATA_DIR=/data \
+    NORNICDB_ADDRESS=0.0.0.0 \
     NORNICDB_HTTP_PORT=7474 \
     NORNICDB_BOLT_PORT=7687 \
     # Embedding configuration

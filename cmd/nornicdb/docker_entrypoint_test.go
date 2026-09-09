@@ -10,22 +10,15 @@ import (
 	"testing"
 )
 
-// TestDockerEntrypoint_SearchFlagsPassthrough drives docker/entrypoint.sh
-// with NORNICDB_SEARCH_* env vars and verifies the four --search-*
-// flags reach the binary's argv.
-//
-// The Go binary already reads NORNICDB_SEARCH_* directly via
-// pkg/config.LoadFromEnv, so the strict correctness story is covered
-// without entrypoint involvement. But several CI/audit checks grep for
-// --search-* in container logs / `ps` output, and operators expect to
-// see overrides reflected in the running process — making the
-// passthrough a documented part of the contract. This test is the
-// regression guard for that contract.
+// TestDockerEntrypoint_SearchEnvironmentPassthrough drives docker/entrypoint.sh
+// with NORNICDB_SEARCH_* env vars and verifies they reach the binary unchanged.
+// The entrypoint must not translate them into explicit CLI flags because flags
+// outrank config files and protocol-specific environment settings.
 //
 // The test substitutes /app/nornicdb with a shell shim via the
 // NORNICDB_BIN escape hatch the entrypoint exposes; the shim records its
-// argv to a temp file the test then asserts against.
-func TestDockerEntrypoint_SearchFlagsPassthrough(t *testing.T) {
+// arguments and search environment to a temp file the test asserts against.
+func TestDockerEntrypoint_SearchEnvironmentPassthrough(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("entrypoint.sh is /bin/sh; not portable to Windows")
 	}
@@ -57,6 +50,7 @@ func TestDockerEntrypoint_SearchFlagsPassthrough(t *testing.T) {
   for a in "$@"; do
     echo "$a"
   done
+	env | grep '^NORNICDB_SEARCH_' | sort
 } > %q
 exit 0
 `, argvOut)
@@ -78,10 +72,10 @@ exit 0
 				"NORNICDB_SEARCH_VECTOR_WARMING": "lazy",
 			},
 			want: []string{
-				"--search-bm25-enabled=false",
-				"--search-bm25-warming=lazy",
-				"--search-vector-enabled=false",
-				"--search-vector-warming=lazy",
+				"NORNICDB_SEARCH_BM25_ENABLED=false",
+				"NORNICDB_SEARCH_BM25_WARMING=lazy",
+				"NORNICDB_SEARCH_VECTOR_ENABLED=false",
+				"NORNICDB_SEARCH_VECTOR_WARMING=lazy",
 			},
 		},
 		{
@@ -91,8 +85,8 @@ exit 0
 				"NORNICDB_SEARCH_BM25_WARMING": "startup",
 			},
 			want: []string{
-				"--search-bm25-enabled=true",
-				"--search-bm25-warming=startup",
+				"NORNICDB_SEARCH_BM25_ENABLED=true",
+				"NORNICDB_SEARCH_BM25_WARMING=startup",
 			},
 		},
 		{
@@ -102,8 +96,8 @@ exit 0
 				"NORNICDB_SEARCH_VECTOR_WARMING": "lazy",
 			},
 			want: []string{
-				"--search-vector-enabled=true",
-				"--search-vector-warming=lazy",
+				"NORNICDB_SEARCH_VECTOR_ENABLED=true",
+				"NORNICDB_SEARCH_VECTOR_WARMING=lazy",
 			},
 		},
 		{
@@ -165,19 +159,19 @@ exit 0
 				}
 			}
 
-			// When no NORNICDB_SEARCH_* env was set, none of the
-			// passthrough flags should appear at all.
+			// Explicit search flags would shadow config-file values, even though
+			// the environment is already inherited by the child process.
+			for _, a := range argv {
+				if strings.HasPrefix(a, "--search-") {
+					t.Errorf("expected no search CLI override, got %q", a)
+				}
+			}
+
+			// When no NORNICDB_SEARCH_* env was set, none should appear.
 			if tc.env == nil {
-				for _, prefix := range []string{
-					"--search-bm25-enabled",
-					"--search-bm25-warming",
-					"--search-vector-enabled",
-					"--search-vector-warming",
-				} {
-					for _, a := range argv {
-						if strings.HasPrefix(a, prefix+"=") {
-							t.Errorf("expected no %s flag when env unset, got %q", prefix, a)
-						}
+				for _, a := range argv {
+					if strings.HasPrefix(a, "NORNICDB_SEARCH_") {
+						t.Errorf("expected no search environment when unset, got %q", a)
 					}
 				}
 			}

@@ -42,9 +42,13 @@ ports:
   - "7687:7687" # Bolt
   - "6334:6334" # Qdrant gRPC
 environment:
-  - NORNICDB_QDRANT_GRPC_ENABLED=true
-  - NORNICDB_QDRANT_GRPC_LISTEN_ADDR=:6334
+  - NORNICDB_QDRANT_GRPC_ENABLED=${NORNICDB_QDRANT_GRPC_ENABLED:-false}
+  - NORNICDB_QDRANT_GRPC_LISTEN_ADDR=${NORNICDB_QDRANT_GRPC_LISTEN_ADDR:-0.0.0.0:6334}
 ```
+
+The shipped Compose files also forward the vector-dimension, batch-size, and
+top-k limits. For authenticated exposure through Nginx or another ingress, see
+[Qdrant gRPC reverse proxying](../operations/reverse-proxy.md#qdrant-grpc).
 
 ---
 

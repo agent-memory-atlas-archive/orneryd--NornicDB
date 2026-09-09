@@ -97,6 +97,47 @@ server {
 Use `$remote_addr`, not `$proxy_add_x_forwarded_for`, at this trust boundary so
 a client cannot prepend a false address that becomes the apparent client IP.
 
+## GraphQL
+
+GraphQL does not have a separate listener. `/graphql` and
+`/graphql/playground` use the same HTTP server, authentication middleware,
+trusted-proxy boundary, CORS policy, native HTTPS configuration, and base path
+as the REST API and built-in interface. The HTTP Nginx configuration above
+already proxies GraphQL; no GraphQL-specific ingress variables are required.
+
+## Qdrant gRPC
+
+Qdrant gRPC is a separate plaintext HTTP/2 listener. It does not consume HTTP
+forwarding headers and currently has no native TLS mode. For an authenticated
+deployment, terminate TLS at an HTTP/2-capable gRPC proxy and bind NornicDB's
+backend listener to loopback:
+
+```bash
+NORNICDB_QDRANT_GRPC_ENABLED=true
+NORNICDB_QDRANT_GRPC_LISTEN_ADDR=127.0.0.1:6334
+```
+
+```nginx
+server {
+    listen 8443 ssl http2;
+    server_name db.example.com;
+
+    ssl_certificate     /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+
+    location / {
+        grpc_pass grpc://127.0.0.1:6334;
+    }
+}
+```
+
+Nginx and NornicDB must run on the same host, or as sidecars sharing one network
+namespace, for the loopback boundary to hold. Plaintext gRPC to a separate
+container requires a public backend listener and is rejected when
+authentication is enabled. `NORNICDB_HTTP_TRUSTED_PROXIES` does not apply to
+gRPC. Client `authorization` and `x-api-key` metadata continue through the gRPC
+proxy and are validated by NornicDB.
+
 ## Bolt and the built-in interface
 
 The built-in interface uses Bolt over WebSocket on the Bolt port. When the
@@ -139,7 +180,8 @@ listener and Bolt discovery endpoints; the built-in interface will report that
 Bolt is disabled instead of attempting a connection.
 
 All Compose files shipped with NornicDB forward the proxy-facing authentication,
-HTTP, HTTPS, CORS, Bolt TLS/mTLS, and Bolt WebSocket variables from the host.
+HTTP, HTTPS, CORS, Bolt TLS/mTLS, Bolt WebSocket, and Qdrant gRPC variables from
+the host.
 Export values before invoking Compose, for example:
 
 ```bash
