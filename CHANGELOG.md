@@ -7,23 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [v1.3.1] - 9/8/2026
-
 ### Security
 
 - **Upgraded gRPC-Go to `v1.83.2`.** This includes the upstream HTTP/2
   transport fix that rejects requests missing both `:authority` and `Host`,
   preventing the crafted-request denial of service affecting xDS-enabled
   gRPC-Go servers.
-
-- **Fixed a GraphQL arbitrary-Cypher authorization bypass.** `Query.cypher`
-  previously allowed authenticated read-only users to execute data-changing
-  statements because write checks depended on the GraphQL operation type.
-  Top-level and nested Cypher execution now enforce canonical read, write,
-  schema, and admin requirements against the caller's effective access for the
-  selected database. Database aliases and `USE`/Fabric targets are resolved
-  against the request's database scope and authorized before storage routing.
-  Reported by Sevban Dönmez (`jankesec`).
 
 - **Hardened authenticated reverse-proxy deployments.** Forwarded scheme,
   host, prefix, and client-address metadata is now accepted only from explicit
@@ -35,15 +24,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NORNICDB_BOLT_ENABLED=false` no longer suppresses only the public-listener
   security check while still starting Bolt. Disabled Bolt is also omitted from
   discovery and startup endpoint output. Authenticated public Bolt listeners
-  must enable and require native TLS with a certificate and key. Shipped Docker
-  Compose variants now forward the complete proxy-facing environment surface,
-  including auth, CORS, trusted HTTP proxies, native HTTPS, Bolt TLS/mTLS, and
-  WebSocket controls, plus all Qdrant gRPC listener and request-limit settings;
-  configured listener ports are published consistently. Runtime images now
-  preserve `NORNICDB_*` settings without shadowing them with generated CLI
-  flags, and their health checks follow the effective address, base path,
-  HTTP/HTTPS mode, and port. GraphQL continues to share the hardened HTTP
-  ingress rather than exposing a separate listener.
+  must enable and require native TLS with a certificate and key.
+
+### Fixed
+
+- **Container ingress settings now reach NornicDB unchanged.** Shipped Docker
+  Compose variants forward auth, CORS, trusted HTTP proxies, native HTTPS, Bolt
+  TLS/mTLS and WebSocket controls, Qdrant gRPC listener and request limits, and
+  GraphQL tracing. Runtime images no longer shadow `NORNICDB_*` settings with
+  generated CLI flags, configured listener ports are published consistently,
+  and health checks follow the effective address, base path, HTTP/HTTPS mode,
+  and port. GraphQL continues to share the hardened HTTP ingress rather than
+  exposing a separate listener.
+
+## [v1.3.1] - 9/8/2026
+
+### Security
+
+- **Fixed a GraphQL arbitrary-Cypher authorization bypass.** `Query.cypher`
+  previously allowed authenticated read-only users to execute data-changing
+  statements because write checks depended on the GraphQL operation type.
+  Top-level and nested Cypher execution now enforce canonical read, write,
+  schema, and admin requirements against the caller's effective access for the
+  selected database. Database aliases and `USE`/Fabric targets are resolved
+  against the request's database scope and authorized before storage routing.
+  Reported by Sevban Dönmez (`jankesec`).
 
 ### Added
 
