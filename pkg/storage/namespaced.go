@@ -263,6 +263,23 @@ func (n *NamespacedEngine) GetNodeProjected(id NodeID, properties []string) (*No
 	return n.toUserNode(node), nil
 }
 
+// StreamNodesByLabelProjected iterates projected label matches in this namespace.
+func (n *NamespacedEngine) StreamNodesByLabelProjected(label string, properties []string, visit func(*Node) error) error {
+	if visit == nil {
+		return ErrInvalidData
+	}
+	reader, ok := n.inner.(ProjectedLabelNodeReader)
+	if !ok {
+		return ErrNotImplemented
+	}
+	return reader.StreamNodesByLabelProjected(label, properties, func(node *Node) error {
+		if node == nil || !n.hasNodePrefix(node.ID) {
+			return nil
+		}
+		return visit(n.toUserNode(node))
+	})
+}
+
 func (n *NamespacedEngine) UpdateNode(node *Node) error {
 	// Always prefix the ID (user-facing API always receives unprefixed IDs)
 	namespacedID := n.prefixNodeID(node.ID)

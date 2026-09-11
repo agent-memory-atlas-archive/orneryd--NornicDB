@@ -484,6 +484,17 @@ type ProjectedNodeReader interface {
 	GetNodeProjected(id NodeID, properties []string) (*Node, error)
 }
 
+// ProjectedLabelNodeReader is an optional extension interface for iterating
+// label-matching nodes while decoding only a caller-specified subset of user
+// properties. The callback runs against one consistent storage snapshot and
+// must treat the node as read-only.
+//
+// A nil properties slice requests the full node; an empty non-nil slice
+// requests no user properties.
+type ProjectedLabelNodeReader interface {
+	StreamNodesByLabelProjected(label string, properties []string, visit func(*Node) error) error
+}
+
 // NamespaceLister is an optional extension interface that reports the known
 // database namespaces stored in an engine.
 //

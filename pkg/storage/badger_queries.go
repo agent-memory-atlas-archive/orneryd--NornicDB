@@ -217,6 +217,95 @@ func (b *BadgerEngine) GetNodesByLabel(label string) ([]*Node, error) {
 	return nodes, nil
 }
 
+// StreamNodesByLabelProjected iterates label-matching nodes in a single read
+// transaction while decoding only the requested user properties.
+func (b *BadgerEngine) StreamNodesByLabelProjected(label string, properties []string, visit func(*Node) error) error {
+	if visit == nil {
+		return ErrInvalidData
+	}
+	start := time.Now()
+	defer b.observeStorageOp(start, b.opDurScan)
+	if err := b.ensureOpen(); err != nil {
+		return err
+	}
+
+	include := propertyProjectionSet(properties)
+	nowNanos := DecayScoringTime()
+	return b.withView(func(txn *badger.Txn) error {
+		prefix := labelIndexPrefix(label)
+		it := txn.NewIterator(badgerIterOptsKeyOnly(prefix))
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			indexKey := it.Item().KeyCopy(nil)
+			nodeNum, ok := extractNodeNumIDFromLabelIndex(indexKey, len(normalizeLabel(label)))
+			if !ok {
+				continue
+			}
+			nodeID, ok := b.idDict.lookupNodeIDByNum(nodeNum)
+			if !ok || nodeID == "" || (b.decayEnabled && !b.revealAll.Load() && hasIndexTombstone(txn, indexKey)) {
+				continue
+			}
+
+			b.nodeCacheMu.RLock()
+			cached, cachedOK := b.nodeCache[nodeID]
+			b.nodeCacheMu.RUnlock()
+			if cachedOK {
+				node := projectCachedNodeForRead(cached, properties)
+				if b.filterNodeByDecay(node, nowNanos) {
+					continue
+				}
+				if err := visit(node); err != nil {
+					return err
+				}
+				continue
+			}
+
+			item, err := txn.Get(nodeKey(nodeID))
+			if err != nil {
+				continue
+			}
+			var node *Node
+			if err := item.Value(func(value []byte) error {
+				if properties == nil {
+					var decodeErr error
+					node, decodeErr = b.decodeNodeWithEmbeddings(txn, value, nodeID)
+					return decodeErr
+				}
+				var decodeErr error
+				node, decodeErr = b.decodeNodeProjected(namespaceForNodeID(nodeID), value, include)
+				return decodeErr
+			}); err != nil {
+				continue
+			}
+			if b.filterNodeByDecay(node, nowNanos) {
+				continue
+			}
+			if err := visit(node); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func projectCachedNodeForRead(node *Node, properties []string) *Node {
+	if node == nil {
+		return nil
+	}
+	if properties == nil {
+		return copyNode(node)
+	}
+	projected := *node
+	projected.Properties = make(map[string]any, len(properties))
+	for _, property := range properties {
+		if value, ok := node.Properties[property]; ok {
+			projected.Properties[property] = value
+		}
+	}
+	return &projected
+}
+
 // GetAllNodes returns all nodes in the storage.
 func (b *BadgerEngine) GetAllNodes() []*Node {
 	nodes, _ := b.AllNodes()

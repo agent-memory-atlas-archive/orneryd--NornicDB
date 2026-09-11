@@ -50,3 +50,38 @@ func TestBadgerEngine_GetNodeProjectedEmptyPropertyList(t *testing.T) {
 	require.Equal(t, node.ID, projected.ID)
 	require.Empty(t, projected.Properties)
 }
+
+func TestNamespacedEngine_StreamNodesByLabelProjected(t *testing.T) {
+	engine := createTestBadgerEngine(t)
+	tenantA := NewNamespacedEngine(engine, "tenant_a")
+	tenantB := NewNamespacedEngine(engine, "tenant_b")
+
+	_, err := tenantA.CreateNode(&Node{
+		ID:     "one",
+		Labels: []string{"Evidence"},
+		Properties: map[string]any{
+			"asset_id":  "wanted",
+			"embedding": make([]float64, 1024),
+		},
+	})
+	require.NoError(t, err)
+	_, err = tenantB.CreateNode(&Node{
+		ID:     "two",
+		Labels: []string{"Evidence"},
+		Properties: map[string]any{
+			"asset_id": "other",
+		},
+	})
+	require.NoError(t, err)
+
+	var nodes []*Node
+	err = tenantA.StreamNodesByLabelProjected("Evidence", []string{"asset_id"}, func(node *Node) error {
+		nodes = append(nodes, node)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+	require.Equal(t, NodeID("one"), nodes[0].ID)
+	require.Equal(t, "wanted", nodes[0].Properties["asset_id"])
+	require.NotContains(t, nodes[0].Properties, "embedding")
+}

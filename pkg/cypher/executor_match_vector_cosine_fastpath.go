@@ -1,6 +1,7 @@
 package cypher
 
 import (
+	"container/heap"
 	"context"
 	"sort"
 	"strconv"
@@ -339,7 +340,11 @@ func (e *StorageExecutor) tryFastPathMatchWithVectorCosineProjection(ctx context
 	if needsExactCandidates {
 		if preWhereClause != "" && preWhereNotNullProp == "" {
 			preWhereFilter := e.compileNodeWhereFilter(ctx, varName, preWhereClause)
-			nodeScores, ok = e.fetchCosineNodeScoresNoIndexExactFiltered(ctx, label, vectorProp, queryExpr, orderDesc, preWhereFilter)
+			exactProjectedProps := projectedProps
+			if projectionOK {
+				exactProjectedProps = appendProjectedProperty(exactProjectedProps, vectorProp)
+			}
+			nodeScores, ok = e.fetchCosineNodeScoresNoIndexExactFiltered(ctx, label, vectorProp, limit, queryExpr, orderDesc, exactProjectedProps, preWhereFilter)
 		} else {
 			nodeScores, ok = e.fetchCosineNodeScoresNoIndexExact(ctx, label, vectorProp, int(^uint(0)>>1), queryExpr, orderDesc)
 		}
@@ -405,12 +410,48 @@ func (e *StorageExecutor) fetchCosineNodeScoresNoIndexExact(ctx context.Context,
 	return e.fetchCosineNodeScoresExact(ctx, label, property, "cosine", limit, queryVector, orderDesc, len(queryVector))
 }
 
-func (e *StorageExecutor) fetchCosineNodeScoresNoIndexExactFiltered(ctx context.Context, label string, property string, queryExpr string, orderDesc bool, filter func(*storage.Node) bool) ([]vectorNodeScore, bool) {
+func (e *StorageExecutor) fetchCosineNodeScoresNoIndexExactFiltered(ctx context.Context, label string, property string, limit int, queryExpr string, orderDesc bool, projectedProps []string, filter func(*storage.Node) bool) ([]vectorNodeScore, bool) {
 	queryVector, ok := e.resolveCosineQueryVector(ctx, queryExpr)
 	if !ok || len(queryVector) == 0 {
 		return nil, false
 	}
+	if reader, ok := e.storage.(storage.ProjectedLabelNodeReader); ok {
+		return e.fetchCosineNodeScoresProjectedLabel(ctx, reader, label, property, limit, queryVector, orderDesc, projectedProps, filter)
+	}
 	return e.fetchCosineNodeScoresExactFiltered(ctx, label, property, queryVector, orderDesc, filter)
+}
+
+func (e *StorageExecutor) fetchCosineNodeScoresProjectedLabel(ctx context.Context, reader storage.ProjectedLabelNodeReader, label string, property string, limit int, queryVector []float32, orderDesc bool, projectedProps []string, filter func(*storage.Node) bool) ([]vectorNodeScore, bool) {
+	if limit <= 0 {
+		return []vectorNodeScore{}, true
+	}
+	candidates := vectorNodeScoreHeap{orderDesc: orderDesc}
+	heap.Init(&candidates)
+	err := reader.StreamNodesByLabelProjected(label, projectedProps, func(node *storage.Node) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if !filter(node) {
+			return nil
+		}
+		score, ok := scoreNodeVectorForFastPath(node, property, "cosine", queryVector)
+		if !ok {
+			return nil
+		}
+		heap.Push(&candidates, vectorNodeScore{node: node, score: score})
+		if candidates.Len() > limit {
+			heap.Pop(&candidates)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false
+	}
+	out := candidates.scores
+	sort.Slice(out, func(i, j int) bool { return vectorNodeScoreBetter(out[i], out[j], orderDesc) })
+	return out, true
 }
 
 // tryFastPathMatchRelationshipVectorCosine handles relationship direct-return shape:
@@ -708,6 +749,40 @@ type vectorNodeScore struct {
 	score float64
 }
 
+type vectorNodeScoreHeap struct {
+	scores    []vectorNodeScore
+	orderDesc bool
+}
+
+func (h vectorNodeScoreHeap) Len() int { return len(h.scores) }
+
+func (h vectorNodeScoreHeap) Less(i, j int) bool {
+	return vectorNodeScoreBetter(h.scores[j], h.scores[i], h.orderDesc)
+}
+
+func (h vectorNodeScoreHeap) Swap(i, j int) { h.scores[i], h.scores[j] = h.scores[j], h.scores[i] }
+
+func (h *vectorNodeScoreHeap) Push(value any) {
+	h.scores = append(h.scores, value.(vectorNodeScore))
+}
+
+func (h *vectorNodeScoreHeap) Pop() any {
+	last := len(h.scores) - 1
+	value := h.scores[last]
+	h.scores = h.scores[:last]
+	return value
+}
+
+func vectorNodeScoreBetter(left, right vectorNodeScore, orderDesc bool) bool {
+	if left.score == right.score {
+		return string(left.node.ID) < string(right.node.ID)
+	}
+	if orderDesc {
+		return left.score > right.score
+	}
+	return left.score < right.score
+}
+
 type vectorEdgeScore struct {
 	edgeID storage.EdgeID
 	edge   *storage.Edge
@@ -832,6 +907,20 @@ func nodeProjectionPropertiesForVectorFastPath(varName string, vectorProp string
 	}
 	sort.Strings(out)
 	return out, true
+}
+
+func appendProjectedProperty(properties []string, property string) []string {
+	if property == "" {
+		return properties
+	}
+	for _, existing := range properties {
+		if existing == property {
+			return properties
+		}
+	}
+	properties = append(properties, property)
+	sort.Strings(properties)
+	return properties
 }
 
 func collectNodePropertyRefsForProjection(varName string, expr string, props map[string]struct{}) bool {
