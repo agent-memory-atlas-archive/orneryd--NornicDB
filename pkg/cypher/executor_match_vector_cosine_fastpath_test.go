@@ -232,6 +232,45 @@ ORDER BY score DESC LIMIT 10`, map[string]interface{}{
 	}
 }
 
+func BenchmarkMatchWithVectorCosineProjection_PreWhereFilterExactCandidates(b *testing.B) {
+	base := newTestMemoryEngine(b)
+	ns := storage.NewNamespacedEngine(base, "test")
+	exec := NewStorageExecutor(ns)
+	exec.cache = nil
+	ctx := context.Background()
+
+	_, err := exec.Execute(ctx, "CREATE VECTOR INDEX evidence_emb_idx FOR (n:Evidence) ON (n.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 3, `vector.similarity_function`: 'cosine'}}", nil)
+	require.NoError(b, err)
+	for index := 0; index < 2_000; index++ {
+		_, err = exec.Execute(ctx, fmt.Sprintf("CREATE (:Evidence {id:'other-%04d', asset_id:'other', embedding:[1.0,0.0,0.0]})", index), nil)
+		require.NoError(b, err)
+	}
+	for index := 0; index < 8; index++ {
+		score := 0.1 + float64(index)/100
+		_, err = exec.Execute(ctx, fmt.Sprintf("CREATE (:Evidence {id:'wanted-%03d', asset_id:'wanted', embedding:[%.2f,1.0,0.0]})", index, score), nil)
+		require.NoError(b, err)
+	}
+	searchService := search.NewServiceWithDimensions(ns, 3)
+	exec.SetSearchService(searchService)
+	require.NoError(b, searchService.BuildIndexes(ctx))
+
+	query := `
+MATCH (n:Evidence) WHERE n.asset_id = $asset
+WITH n, vector.similarity.cosine(n.embedding, $q) AS score
+RETURN n.id AS id, score
+ORDER BY score DESC LIMIT 10`
+	params := map[string]interface{}{"asset": "wanted", "q": []float64{1.0, 0.0, 0.0}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		result, err := exec.Execute(ctx, query, params)
+		require.NoError(b, err)
+		if len(result.Rows) != 8 {
+			b.Fatalf("got %d rows, want 8", len(result.Rows))
+		}
+	}
+}
+
 func TestMatchWithVectorCosineProjection_NoIndex_UsesExactFastPath(t *testing.T) {
 	base := newTestMemoryEngine(t)
 	ns := storage.NewNamespacedEngine(base, "test")

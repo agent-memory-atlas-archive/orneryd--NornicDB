@@ -619,10 +619,10 @@ func (v *VectorFileStore) Load() error {
 	}
 	v.nextOrdinal = meta.DataSlots
 	v.buildIndexedCount = meta.BuildIndexedCount
-	v.nodeLabels = cloneStringSlices(meta.NodeLabels)
-	v.nodeNamedVectors = cloneNestedStringMaps(meta.NodeNamedVectors)
-	v.nodePropertyVectors = cloneNestedStringMaps(meta.NodePropertyVectors)
-	v.nodeChunkVectors = cloneStringSlices(meta.NodeChunkVectors)
+	v.nodeLabels = meta.NodeLabels
+	v.nodeNamedVectors = meta.NodeNamedVectors
+	v.nodePropertyVectors = meta.NodePropertyVectors
+	v.nodeChunkVectors = meta.NodeChunkVectors
 	v.nodeMetadataPersisted = meta.NodeMetadataPersisted
 	v.obsoleteCount = meta.DataSlots - int64(len(v.idToOrdinal))
 	return nil

@@ -337,7 +337,12 @@ func (e *StorageExecutor) tryFastPathMatchWithVectorCosineProjection(ctx context
 	indexName, hasIndex := findCosineVectorIndexName(e.storage.GetSchema(), label, vectorProp, storage.ConstraintEntityNode)
 	var nodeScores []vectorNodeScore
 	if needsExactCandidates {
-		nodeScores, ok = e.fetchCosineNodeScoresNoIndexExact(ctx, label, vectorProp, int(^uint(0)>>1), queryExpr, orderDesc)
+		if preWhereClause != "" && preWhereNotNullProp == "" {
+			preWhereFilter := e.compileNodeWhereFilter(ctx, varName, preWhereClause)
+			nodeScores, ok = e.fetchCosineNodeScoresNoIndexExactFiltered(ctx, label, vectorProp, queryExpr, orderDesc, preWhereFilter)
+		} else {
+			nodeScores, ok = e.fetchCosineNodeScoresNoIndexExact(ctx, label, vectorProp, int(^uint(0)>>1), queryExpr, orderDesc)
+		}
 	} else if hasIndex {
 		nodeScores, ok = e.fetchCosineNodeScores(ctx, indexName, candidateLimit, queryExpr, orderDesc, projectedProps)
 	} else {
@@ -398,6 +403,14 @@ func (e *StorageExecutor) fetchCosineNodeScoresNoIndexExact(ctx context.Context,
 		return nil, false
 	}
 	return e.fetchCosineNodeScoresExact(ctx, label, property, "cosine", limit, queryVector, orderDesc, len(queryVector))
+}
+
+func (e *StorageExecutor) fetchCosineNodeScoresNoIndexExactFiltered(ctx context.Context, label string, property string, queryExpr string, orderDesc bool, filter func(*storage.Node) bool) ([]vectorNodeScore, bool) {
+	queryVector, ok := e.resolveCosineQueryVector(ctx, queryExpr)
+	if !ok || len(queryVector) == 0 {
+		return nil, false
+	}
+	return e.fetchCosineNodeScoresExactFiltered(ctx, label, property, queryVector, orderDesc, filter)
 }
 
 // tryFastPathMatchRelationshipVectorCosine handles relationship direct-return shape:
@@ -954,6 +967,45 @@ func (e *StorageExecutor) fetchCosineNodeScoresExact(ctx context.Context, label 
 	if len(out) > limit {
 		out = out[:limit]
 	}
+	return out, true
+}
+
+func (e *StorageExecutor) fetchCosineNodeScoresExactFiltered(ctx context.Context, label string, property string, queryVector []float32, orderDesc bool, filter func(*storage.Node) bool) ([]vectorNodeScore, bool) {
+	var nodes []*storage.Node
+	var err error
+	if label == "" {
+		nodes, err = e.storage.AllNodes()
+	} else {
+		nodes, err = e.storage.GetNodesByLabel(label)
+	}
+	if err != nil {
+		return nil, false
+	}
+	out := make([]vectorNodeScore, 0, util.SafePreallocCap(len(nodes)))
+	for _, node := range nodes {
+		select {
+		case <-ctx.Done():
+			return nil, false
+		default:
+		}
+		if !filter(node) {
+			continue
+		}
+		score, ok := scoreNodeVectorForFastPath(node, property, "cosine", queryVector)
+		if !ok {
+			continue
+		}
+		out = append(out, vectorNodeScore{node: node, score: score})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].score == out[j].score {
+			return string(out[i].node.ID) < string(out[j].node.ID)
+		}
+		if orderDesc {
+			return out[i].score > out[j].score
+		}
+		return out[i].score < out[j].score
+	})
 	return out, true
 }
 
