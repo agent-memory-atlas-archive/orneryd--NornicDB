@@ -45,17 +45,22 @@ type VectorFileStore struct {
 	vecPath    string
 	metaPath   string
 
-	mu                sync.RWMutex
-	appendMu          sync.Mutex
-	file              *security.RootedFile
-	syncFile          func(*os.File) error
-	writeRecord       func(*os.File, string, []float32) error
-	idToOrdinal       map[string]int64
-	nextOrdinal       int64
-	buildIndexedCount int64 // last checkpoint count; persisted in .meta for resume
-	obsoleteCount     int64 // approximate number of stale slots in .vec from updates/deletes
-	scoreScratchPool  sync.Pool
-	closed            bool
+	mu                    sync.RWMutex
+	appendMu              sync.Mutex
+	file                  *security.RootedFile
+	syncFile              func(*os.File) error
+	writeRecord           func(*os.File, string, []float32) error
+	idToOrdinal           map[string]int64
+	nodeLabels            map[string][]string
+	nodeNamedVectors      map[string]map[string]string
+	nodePropertyVectors   map[string]map[string]string
+	nodeChunkVectors      map[string][]string
+	nodeMetadataPersisted bool
+	nextOrdinal           int64
+	buildIndexedCount     int64 // last checkpoint count; persisted in .meta for resume
+	obsoleteCount         int64 // approximate number of stale slots in .vec from updates/deletes
+	scoreScratchPool      sync.Pool
+	closed                bool
 }
 
 type vfsCandidateOffset struct {
@@ -78,11 +83,16 @@ func (v *VectorFileStore) Has(id string) bool {
 
 // VectorFileStoreMeta is persisted to the .meta file (msgpack).
 type VectorFileStoreMeta struct {
-	Version           int              `msgpack:"v"`
-	Dimensions        int              `msgpack:"dim"`
-	IDToOrdinal       map[string]int64 `msgpack:"id2ord"`
-	DataSlots         int64            `msgpack:"slots"`
-	BuildIndexedCount int64            `msgpack:"build_count,omitempty"` // last checkpoint count during BuildIndexes; used for resume
+	Version               int                          `msgpack:"v"`
+	Dimensions            int                          `msgpack:"dim"`
+	IDToOrdinal           map[string]int64             `msgpack:"id2ord"`
+	DataSlots             int64                        `msgpack:"slots"`
+	BuildIndexedCount     int64                        `msgpack:"build_count,omitempty"` // last checkpoint count during BuildIndexes; used for resume
+	NodeLabels            map[string][]string          `msgpack:"node_labels,omitempty"`
+	NodeNamedVectors      map[string]map[string]string `msgpack:"node_named_vectors,omitempty"`
+	NodePropertyVectors   map[string]map[string]string `msgpack:"node_property_vectors,omitempty"`
+	NodeChunkVectors      map[string][]string          `msgpack:"node_chunk_vectors,omitempty"`
+	NodeMetadataPersisted bool                         `msgpack:"node_metadata_persisted,omitempty"`
 }
 
 // NewVectorFileStore creates a new file-backed store and opens the vector file for append.
@@ -96,10 +106,14 @@ func NewVectorFileStore(vecBasePath string, dimensions int) (*VectorFileStore, e
 	metaPath := vecBasePath + ".meta"
 
 	v := &VectorFileStore{
-		dimensions:  dimensions,
-		vecPath:     vecPath,
-		metaPath:    metaPath,
-		idToOrdinal: make(map[string]int64),
+		dimensions:          dimensions,
+		vecPath:             vecPath,
+		metaPath:            metaPath,
+		idToOrdinal:         make(map[string]int64),
+		nodeLabels:          make(map[string][]string),
+		nodeNamedVectors:    make(map[string]map[string]string),
+		nodePropertyVectors: make(map[string]map[string]string),
+		nodeChunkVectors:    make(map[string][]string),
 		syncFile: func(f *os.File) error {
 			return f.Sync()
 		},
@@ -509,6 +523,11 @@ func (v *VectorFileStore) Save() error {
 	for id, ordinal := range v.idToOrdinal {
 		idToOrdinalCopy[id] = ordinal
 	}
+	nodeLabels := cloneStringSlices(v.nodeLabels)
+	nodeNamedVectors := cloneNestedStringMaps(v.nodeNamedVectors)
+	nodePropertyVectors := cloneNestedStringMaps(v.nodePropertyVectors)
+	nodeChunkVectors := cloneStringSlices(v.nodeChunkVectors)
+	nodeMetadataPersisted := v.nodeMetadataPersisted
 	file := v.file
 	v.mu.RUnlock()
 	if err := file.Sync(); err != nil {
@@ -525,11 +544,16 @@ func (v *VectorFileStore) Save() error {
 	}
 	enc := msgpack.NewEncoder(f)
 	if err := enc.Encode(&VectorFileStoreMeta{
-		Version:           vecFileVersion,
-		Dimensions:        dim,
-		IDToOrdinal:       idToOrdinalCopy,
-		DataSlots:         dataSlots,
-		BuildIndexedCount: buildCount,
+		Version:               vecFileVersion,
+		Dimensions:            dim,
+		IDToOrdinal:           idToOrdinalCopy,
+		DataSlots:             dataSlots,
+		BuildIndexedCount:     buildCount,
+		NodeLabels:            nodeLabels,
+		NodeNamedVectors:      nodeNamedVectors,
+		NodePropertyVectors:   nodePropertyVectors,
+		NodeChunkVectors:      nodeChunkVectors,
+		NodeMetadataPersisted: nodeMetadataPersisted,
 	}); err != nil {
 		_ = f.Close()
 		_ = security.RemoveRootedPath(tmpPath)
@@ -595,8 +619,51 @@ func (v *VectorFileStore) Load() error {
 	}
 	v.nextOrdinal = meta.DataSlots
 	v.buildIndexedCount = meta.BuildIndexedCount
+	v.nodeLabels = cloneStringSlices(meta.NodeLabels)
+	v.nodeNamedVectors = cloneNestedStringMaps(meta.NodeNamedVectors)
+	v.nodePropertyVectors = cloneNestedStringMaps(meta.NodePropertyVectors)
+	v.nodeChunkVectors = cloneStringSlices(meta.NodeChunkVectors)
+	v.nodeMetadataPersisted = meta.NodeMetadataPersisted
 	v.obsoleteCount = meta.DataSlots - int64(len(v.idToOrdinal))
 	return nil
+}
+
+// SetNodeQueryMetadata stores node-to-vector associations in the sidecar.
+func (v *VectorFileStore) SetNodeQueryMetadata(labels map[string][]string, named, properties map[string]map[string]string, chunks map[string][]string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.nodeLabels = cloneStringSlices(labels)
+	v.nodeNamedVectors = cloneNestedStringMaps(named)
+	v.nodePropertyVectors = cloneNestedStringMaps(properties)
+	v.nodeChunkVectors = cloneStringSlices(chunks)
+	v.nodeMetadataPersisted = true
+}
+
+// NodeQueryMetadata returns durable node-to-vector associations, if available.
+func (v *VectorFileStore) NodeQueryMetadata() (map[string][]string, map[string]map[string]string, map[string]map[string]string, map[string][]string, bool) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return cloneStringSlices(v.nodeLabels), cloneNestedStringMaps(v.nodeNamedVectors), cloneNestedStringMaps(v.nodePropertyVectors), cloneStringSlices(v.nodeChunkVectors), v.nodeMetadataPersisted
+}
+
+func cloneStringSlices(source map[string][]string) map[string][]string {
+	copy := make(map[string][]string, len(source))
+	for key, values := range source {
+		copy[key] = append([]string(nil), values...)
+	}
+	return copy
+}
+
+func cloneNestedStringMaps(source map[string]map[string]string) map[string]map[string]string {
+	copy := make(map[string]map[string]string, len(source))
+	for key, values := range source {
+		valueCopy := make(map[string]string, len(values))
+		for valueKey, value := range values {
+			valueCopy[valueKey] = value
+		}
+		copy[key] = valueCopy
+	}
+	return copy
 }
 
 // SetBuildIndexedCount sets the last checkpoint count from BuildIndexes (for resume).

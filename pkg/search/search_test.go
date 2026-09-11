@@ -1054,7 +1054,10 @@ func TestSearchService_BuildIndexes_SkipIterationFromDisk(t *testing.T) {
 		ID:              "disk-1",
 		Labels:          []string{"Doc"},
 		ChunkEmbeddings: [][]float32{{1, 0, 0}},
-		Properties:      map[string]any{"content": "persisted"},
+		Properties: map[string]any{
+			"content":   "persisted",
+			"embedding": []float32{1, 0, 0},
+		},
 	})
 	require.NoError(t, err)
 
@@ -1081,6 +1084,14 @@ func TestSearchService_BuildIndexes_SkipIterationFromDisk(t *testing.T) {
 	require.NoError(t, svc2.BuildIndexes(context.Background()))
 	require.GreaterOrEqual(t, svc2.fulltextIndex.Count(), 1)
 	require.GreaterOrEqual(t, svc2.EmbeddingCount(), 1)
+	hits, err := svc2.VectorQueryNodes(context.Background(), []float32{1, 0, 0}, VectorQuerySpec{
+		Label:    "Doc",
+		Property: "embedding",
+		Limit:    1,
+	})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	require.Equal(t, "disk-1", hits[0].ID)
 }
 
 func TestSearchService_BuildIndexes_ForcedRebuildOnSettingsMismatch(t *testing.T) {

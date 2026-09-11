@@ -1876,6 +1876,7 @@ func (s *Service) persistBaseIndexes() {
 	}
 	if vPath != "" {
 		if vfs != nil {
+			s.persistVectorQueryMetadata(vfs)
 			if !s.buildInProgress.Load() {
 				compacted, compErr := vfs.CompactIfNeeded()
 				if compErr != nil {
@@ -2004,6 +2005,7 @@ func (s *Service) persistVectorStoreBackground(vectorPath string, vfs *VectorFil
 		s.logPrintf("⚠️ Persist: vector file store unavailable; skipping vector persist")
 		return
 	}
+	s.persistVectorQueryMetadata(vfs)
 	s.logPrintf("📇 Persist: syncing %s.vec and saving %s.meta...", vectorPath, vectorPath)
 	_ = vfs.Sync()
 	if err := vfs.Save(); err != nil {
@@ -2011,6 +2013,12 @@ func (s *Service) persistVectorStoreBackground(vectorPath string, vfs *VectorFil
 		return
 	}
 	s.logPrintf("📇 Background persist: vector file store synced; meta saved to %s.meta", vectorPath)
+}
+
+func (s *Service) persistVectorQueryMetadata(vfs *VectorFileStore) {
+	s.mu.RLock()
+	vfs.SetNodeQueryMetadata(s.nodeLabels, s.nodeNamedVector, s.nodePropVector, s.nodeChunkVectors)
+	s.mu.RUnlock()
 }
 
 func (s *Service) persistHNSWBackground(hnswPath string) {
@@ -3384,10 +3392,17 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 				if loadErr := vfs.Load(); loadErr != nil {
 					s.logPrintf("⚠️ VectorFileStore load failed; rebuilding from 0: %v", loadErr)
 					_ = vfs.Close()
-				} else {
+				} else if labels, named, properties, chunks, ok := vfs.NodeQueryMetadata(); ok {
 					s.mu.Lock()
 					s.vectorFileStore = vfs
+					s.nodeLabels = labels
+					s.nodeNamedVector = named
+					s.nodePropVector = properties
+					s.nodeChunkVectors = chunks
 					s.mu.Unlock()
+				} else {
+					s.logPrintf("BuildIndexes: vector metadata missing; rebuilding from storage")
+					_ = vfs.Close()
 				}
 			}
 		}
