@@ -232,6 +232,37 @@ ORDER BY score DESC LIMIT 10`, map[string]interface{}{
 	}
 }
 
+func TestMatchVectorCosineFastPath_FilteredDirectAndInlinePatternsApplyTopK(t *testing.T) {
+	base := newTestMemoryEngine(t)
+	ns := storage.NewNamespacedEngine(base, "test")
+	exec := NewStorageExecutor(ns)
+	ctx := context.Background()
+	_, err := exec.Execute(ctx, "CREATE VECTOR INDEX limit_probe_idx FOR (n:LimitProbe) ON (n.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'cosine'}}", nil)
+	require.NoError(t, err)
+	for index := 1; index <= 8; index++ {
+		_, err = exec.Execute(ctx, fmt.Sprintf("CREATE (:LimitProbe {id:'p%d', group:'selected', embedding:[%.1f,%.1f]})", index, float64(index)/10, 1-float64(index)/10), nil)
+		require.NoError(t, err)
+	}
+	searchService := search.NewServiceWithDimensions(ns, 2)
+	exec.SetSearchService(searchService)
+	require.NoError(t, searchService.BuildIndexes(ctx))
+
+	params := map[string]interface{}{"g": "selected", "v": []float64{0.95, 0.05}}
+	for _, query := range []string{
+		"MATCH (n:LimitProbe) WHERE n.group=$g RETURN n.id AS id, vector.similarity.cosine(n.embedding,$v) AS score ORDER BY score DESC LIMIT 3",
+		"MATCH (n:LimitProbe {group:$g}) RETURN n.id AS id, vector.similarity.cosine(n.embedding,$v) AS score ORDER BY score DESC LIMIT 3",
+		"MATCH (n:LimitProbe) WHERE n.group=$g WITH n, vector.similarity.cosine(n.embedding,$v) AS score ORDER BY score DESC LIMIT 3 RETURN n.id AS id, score",
+	} {
+		result, err := exec.Execute(ctx, query, params)
+		require.NoError(t, err)
+		require.True(t, exec.LastHotPathTrace().CosineVectorIndexFastPath)
+		require.Len(t, result.Rows, 3)
+		require.Equal(t, "p8", result.Rows[0][0])
+		require.Equal(t, "p7", result.Rows[1][0])
+		require.Equal(t, "p6", result.Rows[2][0])
+	}
+}
+
 func BenchmarkMatchWithVectorCosineProjection_PreWhereFilterExactCandidates(b *testing.B) {
 	base := newTestMemoryEngine(b)
 	ns := storage.NewNamespacedEngine(base, "test")

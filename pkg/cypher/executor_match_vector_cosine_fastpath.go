@@ -64,11 +64,25 @@ func (e *StorageExecutor) tryFastPathMatchVectorCosine(ctx context.Context, cyph
 			return nil, false
 		}
 	}
-	varName, labels, ok := parseSimpleMatchSingleNodePattern(matchPart)
-	if !ok || len(labels) != 1 || strings.Contains(matchPart, "{") {
-		return nil, false
+	var varName string
+	var label string
+	var matchProps map[string]interface{}
+	if strings.Contains(matchPart, "{") {
+		nodePattern := e.parseNodePattern(ctx, matchPart)
+		varName = strings.TrimSpace(nodePattern.variable)
+		if varName == "" || len(nodePattern.labels) != 1 {
+			return nil, false
+		}
+		label = nodePattern.labels[0]
+		matchProps = nodePattern.properties
+	} else {
+		parsedVar, labels, ok := parseSimpleMatchSingleNodePattern(matchPart)
+		if !ok || len(labels) != 1 {
+			return nil, false
+		}
+		varName = parsedVar
+		label = labels[0]
 	}
-	label := labels[0]
 
 	returnPart := strings.TrimSpace(trimmed[returnIdx+len("RETURN") : orderIdx])
 	returnItems := e.parseReturnItems(returnPart)
@@ -118,11 +132,11 @@ func (e *StorageExecutor) tryFastPathMatchVectorCosine(ctx context.Context, cyph
 
 	scoreExprIsAlias := make([]bool, len(returnItems))
 	scoreExprIsAlias[cosineIdx] = true
-	projectedProps, projectionOK := nodeProjectionPropertiesForVectorFastPath(varName, vectorProp, returnItems, scoreExprIsAlias, preWhereClause, preWhereNotNullProp, nil)
+	projectedProps, projectionOK := nodeProjectionPropertiesForVectorFastPath(varName, vectorProp, returnItems, scoreExprIsAlias, preWhereClause, preWhereNotNullProp, matchProps)
 	if !projectionOK {
 		projectedProps = nil
 	}
-	needsExactCandidates := preWhereClause != "" && preWhereNotNullProp != vectorProp
+	needsExactCandidates := len(matchProps) > 0 || (preWhereClause != "" && preWhereNotNullProp != vectorProp)
 	candidateLimit := chooseVectorCandidateLimit(limit, needsExactCandidates)
 	var nodeScores []vectorNodeScore
 	if needsExactCandidates {
@@ -145,11 +159,15 @@ func (e *StorageExecutor) tryFastPathMatchVectorCosine(ctx context.Context, cyph
 
 	rows := make([][]interface{}, 0, len(nodeScores))
 	nodeCtx := map[string]*storage.Node{varName: nil}
+	hasMatchProps := len(matchProps) > 0
 	var preWhereFilter func(*storage.Node) bool
 	if preWhereClause != "" && preWhereNotNullProp == "" {
 		preWhereFilter = e.compileNodeWhereFilter(ctx, varName, preWhereClause)
 	}
 	for _, hit := range nodeScores {
+		if hasMatchProps && !e.nodeMatchesProps(hit.node, matchProps) {
+			continue
+		}
 		if preWhereClause != "" {
 			if preWhereNotNullProp != "" {
 				if preWhereNotNullProp != vectorProp {
@@ -171,6 +189,9 @@ func (e *StorageExecutor) tryFastPathMatchVectorCosine(ctx context.Context, cyph
 			row[i] = e.evaluateExpressionWithContext(ctx, item.expr, nodeCtx, nil)
 		}
 		rows = append(rows, row)
+		if len(rows) >= limit {
+			break
+		}
 	}
 
 	e.markCosineVectorIndexFastPathUsed()
@@ -203,7 +224,11 @@ func (e *StorageExecutor) tryFastPathMatchWithVectorCosineProjection(ctx context
 	returnIdx := findKeywordIndex(trimmed, "RETURN")
 	orderIdx := findKeywordIndex(trimmed, "ORDER BY")
 	limitIdx := findKeywordIndex(trimmed, "LIMIT")
-	if withIdx <= 0 || returnIdx <= withIdx || orderIdx <= returnIdx || limitIdx <= orderIdx {
+	if withIdx <= 0 || returnIdx <= withIdx || orderIdx <= withIdx || limitIdx <= orderIdx {
+		return nil, false
+	}
+	orderBeforeReturn := orderIdx < returnIdx
+	if (!orderBeforeReturn && orderIdx <= returnIdx) || (orderBeforeReturn && limitIdx >= returnIdx) {
 		return nil, false
 	}
 	preWithSegment := strings.TrimSpace(trimmed[len("MATCH"):withIdx])
@@ -239,7 +264,11 @@ func (e *StorageExecutor) tryFastPathMatchWithVectorCosineProjection(ctx context
 		label = labels[0]
 	}
 
-	withToReturn := strings.TrimSpace(trimmed[withIdx+len("WITH") : returnIdx])
+	withEndIdx := returnIdx
+	if orderBeforeReturn {
+		withEndIdx = orderIdx
+	}
+	withToReturn := strings.TrimSpace(trimmed[withIdx+len("WITH") : withEndIdx])
 	postWhereClause := ""
 	withProjectionRaw := withToReturn
 	if postWhereIdx := findKeywordIndex(withToReturn, "WHERE"); postWhereIdx > 0 {
@@ -287,7 +316,11 @@ func (e *StorageExecutor) tryFastPathMatchWithVectorCosineProjection(ctx context
 		}
 	}
 
-	returnPart := strings.TrimSpace(trimmed[returnIdx+len("RETURN") : orderIdx])
+	returnEndIdx := orderIdx
+	if orderBeforeReturn {
+		returnEndIdx = len(trimmed)
+	}
+	returnPart := strings.TrimSpace(trimmed[returnIdx+len("RETURN") : returnEndIdx])
 	returnItems := e.parseReturnItems(returnPart)
 	if len(returnItems) == 0 {
 		return nil, false
