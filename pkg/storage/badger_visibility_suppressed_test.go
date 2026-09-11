@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/orneryd/nornicdb/pkg/knowledgepolicy"
+	"github.com/stretchr/testify/require"
 )
 
 func setupVisibilityTestEngine(t *testing.T) *BadgerEngine {
@@ -159,4 +160,53 @@ func TestVisibilitySuppressed_ScoringRunsBeforeStaleFlagForReverseFloor(t *testi
 	if eng.filterNodeByDecay(node, now.UnixNano()) {
 		t.Fatal("lightweight scoring must run before stale VisibilitySuppressed flag; scoreFloor clears the gate")
 	}
+}
+
+func TestStreamNodesByLabelProjected_ScoresBeforeStaleVisibility(t *testing.T) {
+	eng := newTestEngine(t)
+	eng.SetDecayEnabled(true)
+	bundles := map[string]*knowledgepolicy.DecayProfileBundle{
+		"reverse_floor": {
+			Name:                "reverse_floor",
+			Scope:               knowledgepolicy.ScopeNode,
+			Function:            knowledgepolicy.DecayFunctionExponential,
+			HalfLifeSeconds:     -3600,
+			VisibilityThreshold: 0.10,
+			ScoreFloor:          0.20,
+			ScoreFrom:           knowledgepolicy.ScoreFromCreated,
+			Enabled:             true,
+			DecayEnabled:        true,
+		},
+	}
+	bindings := map[string]*knowledgepolicy.DecayProfileBinding{
+		"bind_reverse_floor": {
+			Name:         "bind_reverse_floor",
+			ProfileRef:   "reverse_floor",
+			TargetLabels: []string{"ReverseMemory"},
+		},
+	}
+	bindingTable, err := knowledgepolicy.BuildBindingTable(bundles, bindings, nil, nil)
+	require.NoError(t, err)
+	eng.GetSchemaForNamespace("nornic").SetBindingTable(bindingTable)
+
+	now := time.Now()
+	node := &Node{
+		ID:                   "nornic:reverse-floor-stream",
+		Labels:               []string{"ReverseMemory"},
+		Properties:           map[string]interface{}{"name": "test"},
+		CreatedAt:            now,
+		UpdatedAt:            now,
+		VisibilitySuppressed: true,
+	}
+	_, err = eng.CreateNode(node)
+	require.NoError(t, err)
+	eng.cacheStoreNode(node)
+
+	var visited []NodeID
+	err = eng.StreamNodesByLabelProjected("ReverseMemory", []string{"name"}, func(projected *Node) error {
+		visited = append(visited, projected.ID)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []NodeID{node.ID}, visited, "decay scoring must clear a stale suppression flag before the stream hides the node")
 }
