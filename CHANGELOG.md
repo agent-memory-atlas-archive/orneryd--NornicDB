@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.3.2] - 9/11/2026
+
 ### Security
 
 - **Upgraded gRPC-Go to `v1.83.2`.** This includes the upstream HTTP/2
@@ -38,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   responses no longer expose upstream OAuth access or refresh tokens stored in
   account metadata.
 
+### Changed
+
+- **Selective exact cosine queries now stream projected candidates.** Badger
+  and namespaced storage support a projected label stream that preserves
+  knowledge-policy decay visibility. Filtered cosine queries apply eligible
+  pre-score predicates before scoring and retain only the exact top-k
+  candidates, reducing the local 2,008-candidate regression fixture from about
+  1.78 ms/op to 1.27 ms/op and from 28.2k to 24.3k allocations/op.
+
 ### Fixed
 
 - **Container ingress settings now reach NornicDB unchanged.** Shipped Docker
@@ -48,6 +59,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and health checks follow the effective address, base path, HTTP/HTTPS mode,
   and port. GraphQL continues to share the hardened HTTP ingress rather than
   exposing a separate listener.
+
+- **Persistent vector indexes retain query metadata after restart.** File-backed
+  vector sidecars now persist node labels and named, property, and chunk vector
+  associations. Restarted services can resolve property-vector queries without
+  rebuilding from storage; legacy sidecars without this metadata rebuild once.
+
+- **Filtered cosine query forms now preserve exact Cypher semantics.** Selective
+  pre-`WITH` predicates and inline property patterns evaluate the complete
+  candidate population when a bounded vector shortlist cannot prove exactness,
+  then apply score ordering and `LIMIT`. Direct `RETURN` cosine queries now
+  also honor `ORDER BY` on the computed score alias. Unfiltered, complete-small,
+  and pre-warmup live-ingestion paths retain indexed execution.
 
 ## [v1.3.1] - 9/8/2026
 
