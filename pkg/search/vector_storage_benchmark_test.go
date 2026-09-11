@@ -122,6 +122,52 @@ func BenchmarkVectorStorageLoad10K(b *testing.B) {
 	}
 }
 
+func BenchmarkVectorStorageLoad10KWithNodeMetadata(b *testing.B) {
+	base := filepath.Join(b.TempDir(), "vectors")
+	store, err := NewVectorFileStore(base, vectorStorageBenchmarkDimensions)
+	if err != nil {
+		b.Fatal(err)
+	}
+	labels := make(map[string][]string, vectorStorageBenchmarkCount)
+	properties := make(map[string]map[string]string, vectorStorageBenchmarkCount)
+	for indexValue := 0; indexValue < vectorStorageBenchmarkCount; indexValue++ {
+		id := fmt.Sprintf("vector-%08d", indexValue)
+		if err := store.Add(id, benchmarkStorageVector(vectorStorageBenchmarkDimensions, int64(indexValue+1))); err != nil {
+			b.Fatal(err)
+		}
+		labels[id] = []string{"Evidence"}
+		properties[id] = map[string]string{"embedding": id}
+	}
+	store.SetNodeQueryMetadata(labels, nil, properties, nil)
+	if err := store.Save(); err != nil {
+		b.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for indexValue := 0; indexValue < b.N; indexValue++ {
+		loaded, err := NewVectorFileStore(base, vectorStorageBenchmarkDimensions)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := loaded.Load(); err != nil {
+			_ = loaded.Close()
+			b.Fatal(err)
+		}
+		loadedLabels, _, loadedProperties, _, ok := loaded.NodeQueryMetadata()
+		if !ok || len(loadedLabels) != vectorStorageBenchmarkCount || len(loadedProperties) != vectorStorageBenchmarkCount {
+			_ = loaded.Close()
+			b.Fatal("node query metadata was not restored")
+		}
+		if err := loaded.Close(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func benchmarkVectorStores(tb testing.TB, count, dimensions int) (*VectorIndex, *VectorFileStore, []string, []Candidate) {
 	tb.Helper()
 	memory := NewVectorIndex(dimensions)

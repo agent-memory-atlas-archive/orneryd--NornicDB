@@ -39,7 +39,7 @@ func (e *StorageExecutor) tryFastPathMatchVectorCosine(ctx context.Context, cyph
 
 	// Keep this shape intentionally narrow to avoid semantic drift.
 	for _, kw := range []string{
-		"WHERE", "SKIP", "WITH", "UNWIND", "OPTIONAL MATCH", "CALL",
+		"SKIP", "WITH", "UNWIND", "OPTIONAL MATCH", "CALL",
 		"CREATE", "MERGE", "DELETE", "DETACH DELETE", "SET", "REMOVE", "UNION",
 	} {
 		if findKeywordIndex(trimmed, kw) > 0 {
@@ -55,8 +55,16 @@ func (e *StorageExecutor) tryFastPathMatchVectorCosine(ctx context.Context, cyph
 	}
 
 	matchPart := strings.TrimSpace(trimmed[len("MATCH"):returnIdx])
+	preWhereClause := ""
+	if preWhereIdx := findKeywordIndex(matchPart, "WHERE"); preWhereIdx > 0 {
+		preWhereClause = strings.TrimSpace(matchPart[preWhereIdx+len("WHERE"):])
+		matchPart = strings.TrimSpace(matchPart[:preWhereIdx])
+		if preWhereClause == "" {
+			return nil, false
+		}
+	}
 	varName, labels, ok := parseSimpleMatchSingleNodePattern(matchPart)
-	if !ok || len(labels) != 1 {
+	if !ok || len(labels) != 1 || strings.Contains(matchPart, "{") {
 		return nil, false
 	}
 	label := labels[0]
@@ -70,6 +78,12 @@ func (e *StorageExecutor) tryFastPathMatchVectorCosine(ctx context.Context, cyph
 	cosineIdx, vectorProp, queryExpr, scoreRef, ok := parseCosineReturnShape(returnItems, varName)
 	if !ok {
 		return nil, false
+	}
+	preWhereNotNullProp := ""
+	if preWhereClause != "" {
+		if prop, ok := parseFastPathPropertyNotNullPredicate(preWhereClause, varName); ok {
+			preWhereNotNullProp = prop
+		}
 	}
 
 	orderPart := strings.TrimSpace(trimmed[orderIdx+len("ORDER BY") : limitIdx])
@@ -103,11 +117,18 @@ func (e *StorageExecutor) tryFastPathMatchVectorCosine(ctx context.Context, cyph
 
 	scoreExprIsAlias := make([]bool, len(returnItems))
 	scoreExprIsAlias[cosineIdx] = true
-	projectedProps, projectionOK := nodeProjectionPropertiesForVectorFastPath(varName, vectorProp, returnItems, scoreExprIsAlias, "", "", nil)
+	projectedProps, projectionOK := nodeProjectionPropertiesForVectorFastPath(varName, vectorProp, returnItems, scoreExprIsAlias, preWhereClause, preWhereNotNullProp, nil)
 	if !projectionOK {
 		projectedProps = nil
 	}
-	nodeScores, ok := e.fetchCosineNodeScores(ctx, indexName, limit, queryExpr, orderDesc, projectedProps)
+	needsExactCandidates := preWhereClause != "" && preWhereNotNullProp != vectorProp
+	candidateLimit := chooseVectorCandidateLimit(limit, needsExactCandidates)
+	var nodeScores []vectorNodeScore
+	if needsExactCandidates {
+		nodeScores, ok = e.fetchCosineNodeScoresNoIndexExact(ctx, label, vectorProp, int(^uint(0)>>1), queryExpr, orderDesc)
+	} else {
+		nodeScores, ok = e.fetchCosineNodeScores(ctx, indexName, candidateLimit, queryExpr, orderDesc, projectedProps)
+	}
 	if !ok {
 		return nil, false
 	}
@@ -123,7 +144,22 @@ func (e *StorageExecutor) tryFastPathMatchVectorCosine(ctx context.Context, cyph
 
 	rows := make([][]interface{}, 0, len(nodeScores))
 	nodeCtx := map[string]*storage.Node{varName: nil}
+	var preWhereFilter func(*storage.Node) bool
+	if preWhereClause != "" && preWhereNotNullProp == "" {
+		preWhereFilter = e.compileNodeWhereFilter(ctx, varName, preWhereClause)
+	}
 	for _, hit := range nodeScores {
+		if preWhereClause != "" {
+			if preWhereNotNullProp != "" {
+				if preWhereNotNullProp != vectorProp {
+					if value, exists := hit.node.Properties[preWhereNotNullProp]; !exists || value == nil {
+						continue
+					}
+				}
+			} else if !preWhereFilter(hit.node) {
+				continue
+			}
+		}
 		nodeCtx[varName] = hit.node
 		row := make([]interface{}, len(returnItems))
 		for i, item := range returnItems {
@@ -281,7 +317,14 @@ func (e *StorageExecutor) tryFastPathMatchWithVectorCosineProjection(ctx context
 		return &ExecuteResult{Columns: columns, Rows: [][]interface{}{}, Stats: &QueryStats{}}, true
 	}
 
+	needsExactCandidates := (e.searchService == nil || e.searchService.IsReady()) &&
+		(len(matchProps) > 0 ||
+			(preWhereClause != "" && preWhereNotNullProp != vectorProp) ||
+			scorePredicateRejectsLeadingResults(orderDesc, scoreOp))
 	candidateLimit := chooseVectorCandidateLimit(limit, preWhereClause != "" || len(matchProps) > 0 || scoreOp != "")
+	if needsExactCandidates && e.searchService != nil && candidateLimit >= e.searchService.CountPropertyVectorEntries(vectorProp) {
+		needsExactCandidates = false
+	}
 	scoreExprIsAlias := make([]bool, len(returnItems))
 	hasMatchProps := len(matchProps) > 0
 	for i := range returnItems {
@@ -293,7 +336,9 @@ func (e *StorageExecutor) tryFastPathMatchWithVectorCosineProjection(ctx context
 	}
 	indexName, hasIndex := findCosineVectorIndexName(e.storage.GetSchema(), label, vectorProp, storage.ConstraintEntityNode)
 	var nodeScores []vectorNodeScore
-	if hasIndex {
+	if needsExactCandidates {
+		nodeScores, ok = e.fetchCosineNodeScoresNoIndexExact(ctx, label, vectorProp, int(^uint(0)>>1), queryExpr, orderDesc)
+	} else if hasIndex {
 		nodeScores, ok = e.fetchCosineNodeScores(ctx, indexName, candidateLimit, queryExpr, orderDesc, projectedProps)
 	} else {
 		nodeScores, ok = e.fetchCosineNodeScoresNoIndexExact(ctx, label, vectorProp, candidateLimit, queryExpr, orderDesc)

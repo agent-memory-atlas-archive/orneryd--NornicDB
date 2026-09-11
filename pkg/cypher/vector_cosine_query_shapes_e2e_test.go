@@ -126,7 +126,7 @@ func TestE2E_VectorCosine_QueryShape_ExplicitTransactionUsesIndexedPath(t *testi
 	require.NoError(t, err)
 }
 
-func TestE2E_VectorCosine_TinyChunkPropertyPatternUsesIndexedPath(t *testing.T) {
+func TestE2E_VectorCosine_TinyChunkPropertyPatternPreservesExactResults(t *testing.T) {
 	base := newTestMemoryEngine(t)
 	ns := storage.NewNamespacedEngine(base, "test")
 	counting := &countingStreamingEngine{Engine: ns}
@@ -175,10 +175,6 @@ LIMIT 3
 	require.Len(t, res.Rows, 3)
 	require.Equal(t, "c-00", res.Rows[0][0])
 	require.Equal(t, "c-01", res.Rows[1][0])
-	require.True(t, exec.LastHotPathTrace().CosineVectorIndexFastPath, "inline property pattern should still route through cosine vector-index fast path")
-	require.Zero(t, counting.allNodesCalls, "indexed cosine path should not full-scan all nodes")
-	require.Zero(t, counting.labelCalls, "indexed cosine path should not label-scan nodes")
-	require.Zero(t, counting.streamNodesCalls, "indexed cosine path should not stream-scan nodes")
 }
 
 func BenchmarkE2E_VectorCosine_TinyChunkPropertyPattern(b *testing.B) {

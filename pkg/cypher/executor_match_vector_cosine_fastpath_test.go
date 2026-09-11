@@ -181,6 +181,57 @@ func TestMatchVectorCosineFastPath_RequiresMatchingIndex(t *testing.T) {
 	require.Greater(t, counting.labelCalls, 0, "fallback path should use normal MATCH scanning")
 }
 
+func TestMatchWithVectorCosineProjection_PreWhereFilterUsesExactCandidateSet(t *testing.T) {
+	base := newTestMemoryEngine(t)
+	ns := storage.NewNamespacedEngine(base, "test")
+	exec := NewStorageExecutor(ns)
+	ctx := context.Background()
+
+	_, err := exec.Execute(ctx, "CREATE VECTOR INDEX evidence_emb_idx FOR (n:Evidence) ON (n.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 3, `vector.similarity_function`: 'cosine'}}", nil)
+	require.NoError(t, err)
+
+	for index := 0; index < 200; index++ {
+		_, err = exec.Execute(ctx, fmt.Sprintf("CREATE (:Evidence {id:'other-%03d', asset_id:'other', embedding:[1.0,0.0,0.0]})", index), nil)
+		require.NoError(t, err)
+	}
+	for index := 0; index < 8; index++ {
+		score := 0.1 + float64(index)/100
+		_, err = exec.Execute(ctx, fmt.Sprintf("CREATE (:Evidence {id:'wanted-%03d', asset_id:'wanted', embedding:[%.2f,1.0,0.0]})", index, score), nil)
+		require.NoError(t, err)
+	}
+
+	searchService := search.NewServiceWithDimensions(ns, 3)
+	exec.SetSearchService(searchService)
+	require.NoError(t, searchService.BuildIndexes(ctx))
+
+	result, err := exec.Execute(ctx, `
+MATCH (n:Evidence) WHERE n.asset_id = $asset
+WITH n, vector.similarity.cosine(n.embedding, $q) AS score
+RETURN n.id AS id, score
+ORDER BY score DESC LIMIT 10`, map[string]interface{}{
+		"asset": "wanted",
+		"q":     []float64{1.0, 0.0, 0.0},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Rows, 8)
+	for index, row := range result.Rows {
+		require.Equal(t, fmt.Sprintf("wanted-%03d", 7-index), row[0])
+	}
+
+	directResult, err := exec.Execute(ctx, `
+MATCH (n:Evidence) WHERE n.asset_id = $asset
+RETURN n.id AS id, vector.similarity.cosine(n.embedding, $q) AS score
+ORDER BY score DESC LIMIT 10`, map[string]interface{}{
+		"asset": "wanted",
+		"q":     []float64{1.0, 0.0, 0.0},
+	})
+	require.NoError(t, err)
+	require.Len(t, directResult.Rows, 8)
+	for index, row := range directResult.Rows {
+		require.Equal(t, fmt.Sprintf("wanted-%03d", 7-index), row[0])
+	}
+}
+
 func TestMatchWithVectorCosineProjection_NoIndex_UsesExactFastPath(t *testing.T) {
 	base := newTestMemoryEngine(t)
 	ns := storage.NewNamespacedEngine(base, "test")
