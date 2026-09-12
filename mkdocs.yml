@@ -334,6 +334,7 @@ nav:
           - Chat Modes: ai-agents/chat-modes.md
           - Agent Preamble: ai-agents/agent-preamble.md
       - Plans & RFCs:
+          - BM25 Snowball Stemmer Plugin RFC: plans/bm25-snowball-stemmer-plugin-rfc.md
           - Neo4j-Compatible Streaming Driver Plan: plans/neo4j-compatible-streaming-driver-and-server-plan.md
           - GPU HNSW Construction Plan: plans/gpu-hnsw-construction-plan.md
           - Native Package Distribution Plan: plans/native-package-distribution-plan.md

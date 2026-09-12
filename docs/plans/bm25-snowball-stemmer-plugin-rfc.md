@@ -19,7 +19,7 @@ Ukrainian text is the default integration-test scenario. The test plugin exists 
 
 ## Motivation
 
-The current analyzer in [`pkg/search/fulltext_index.go`](../../pkg/search/fulltext_index.go) performs NFKC normalization, Unicode case folding, and Unicode-aware token splitting. This intentionally language-neutral behavior is the correct default, but inflected forms remain distinct BM25 terms.
+The current analyzer in [`pkg/search/fulltext_index.go`](https://github.com/orneryd/nornicdb/blob/main/pkg/search/fulltext_index.go) performs NFKC normalization, Unicode case folding, and Unicode-aware token splitting. This intentionally language-neutral behavior is the correct default, but inflected forms remain distinct BM25 terms.
 
 For example, an application may want a query containing `України` to retrieve a document containing `Україною`. That requires language-specific stemming. The language rules should not become part of NornicDB core.
 
@@ -76,12 +76,12 @@ Plugin authors can consume generated Snowball output without writing wrappers, w
 
 Both BM25 implementations call the package-level `tokenize` function for document indexing, update removal, and querying:
 
-- [`pkg/search/fulltext_index.go`](../../pkg/search/fulltext_index.go)
-- [`pkg/search/fulltext_index_v2.go`](../../pkg/search/fulltext_index_v2.go)
+- [`pkg/search/fulltext_index.go`](https://github.com/orneryd/nornicdb/blob/main/pkg/search/fulltext_index.go)
+- [`pkg/search/fulltext_index_v2.go`](https://github.com/orneryd/nornicdb/blob/main/pkg/search/fulltext_index_v2.go)
 
-Persisted build compatibility already records an analyzer value through [`pkg/search/build_settings.go`](../../pkg/search/build_settings.go). Today that value is the constant `unicode-nfkc-casefold-v1`.
+Persisted build compatibility already records an analyzer value through [`pkg/search/build_settings.go`](https://github.com/orneryd/nornicdb/blob/main/pkg/search/build_settings.go). Today that value is the constant `unicode-nfkc-casefold-v1`.
 
-NornicDB already loads trusted Go `.so` plugins at startup through [`pkg/nornicdb/plugins.go`](../../pkg/nornicdb/plugins.go). The stemmer loader should follow the same platform and trust model while using a dedicated directory and registry.
+NornicDB already loads trusted Go `.so` plugins at startup through [`pkg/nornicdb/plugins.go`](https://github.com/orneryd/nornicdb/blob/main/pkg/nornicdb/plugins.go). The stemmer loader should follow the same platform and trust model while using a dedicated directory and registry.
 
 ## Proposed Analysis Pipeline
 
