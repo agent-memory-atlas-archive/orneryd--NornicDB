@@ -53,13 +53,14 @@ type AsyncEngine struct {
 	// Event callbacks (optional): used to keep external services in sync when
 	// operations are satisfied purely from the async cache (i.e., no inner engine
 	// callback will fire because the data never hit persistent storage).
-	onNodeCreated NodeEventCallback
-	onNodeUpdated NodeEventCallback
-	onNodeDeleted NodeDeleteCallback
-	onEdgeCreated EdgeEventCallback
-	onEdgeUpdated EdgeEventCallback
-	onEdgeDeleted EdgeDeleteCallback
-	callbackMu    sync.RWMutex
+	onNodeCreated         NodeEventCallback
+	onNodeUpdated         NodeEventCallback
+	onNodeDeleted         NodeDeleteCallback
+	onEdgeCreated         EdgeEventCallback
+	onEdgeUpdated         EdgeEventCallback
+	onEdgeDeleted         EdgeDeleteCallback
+	callbackMu            sync.RWMutex
+	graphMutationVersions graphMutationVersions
 
 	// In-flight tracking: nodes/edges being written but not yet cleared from cache
 	// This prevents double-counting in NodeCount/EdgeCount during flush
@@ -901,6 +902,7 @@ func (ae *AsyncEngine) CreateNode(node *Node) (NodeID, error) {
 	ae.syncNodeLabelIndexLocked(node)
 
 	ae.pendingWrites++
+	ae.graphMutationVersions.changed(namespaceForNodeID(node.ID))
 	return node.ID, nil
 }
 
@@ -939,15 +941,21 @@ func (ae *AsyncEngine) UpdateNode(node *Node) error {
 	ae.nodeCache[node.ID] = node
 	ae.syncNodeLabelIndexLocked(node)
 	ae.pendingWrites++
+	ae.graphMutationVersions.changed(namespaceForNodeID(node.ID))
 	return nil
 }
 
 // UpdateNodeEmbedding updates an existing node with its embedding.
 // Unlike UpdateNode, this MUST NOT create a new node; it returns ErrNotFound
 // if the node does not exist (in cache, in-flight, or in the underlying engine).
-func (ae *AsyncEngine) UpdateNodeEmbedding(node *Node) error {
+func (ae *AsyncEngine) UpdateNodeEmbedding(node *Node) (err error) {
 	ae.mu.Lock()
 	defer ae.mu.Unlock()
+	defer func() {
+		if err == nil {
+			ae.graphMutationVersions.changed(namespaceForNodeID(node.ID))
+		}
+	}()
 
 	if ae.deleteNodes[node.ID] {
 		return ErrNotFound
@@ -990,7 +998,13 @@ func (ae *AsyncEngine) UpdateNodeEmbedding(node *Node) error {
 // just remove it from cache - no need to delete from underlying engine.
 // CRITICAL: If node is in-flight (being flushed), we must also mark for deletion
 // because the flush will write it to the underlying engine.
-func (ae *AsyncEngine) DeleteNode(id NodeID) error {
+func (ae *AsyncEngine) DeleteNode(id NodeID) (err error) {
+	changed := false
+	defer func() {
+		if changed {
+			ae.graphMutationVersions.changed(namespaceForNodeID(id))
+		}
+	}()
 	for {
 		ae.mu.Lock()
 
@@ -1014,6 +1028,7 @@ func (ae *AsyncEngine) DeleteNode(id NodeID) error {
 			ae.removeNodeIDFromLabelIndexLocked(id)
 			// Remove from cache
 			delete(ae.nodeCache, id)
+			changed = true
 			delete(ae.nodeUpdateBaseline, id)
 
 			// CRITICAL FIX: If node is in-flight, the flush will still write it
@@ -1034,6 +1049,7 @@ func (ae *AsyncEngine) DeleteNode(id NodeID) error {
 		// If in-flight, it will exist in underlying engine after flush - mark for deletion
 		if isInFlight {
 			ae.deleteNodes[id] = true
+			changed = true
 			ae.pendingWrites++
 			ae.mu.Unlock()
 			ae.MarkNodeEmbedded(id)
@@ -1061,6 +1077,7 @@ func (ae *AsyncEngine) DeleteNode(id NodeID) error {
 		}
 		if ae.inFlightNodes[id] {
 			ae.deleteNodes[id] = true
+			changed = true
 			ae.pendingWrites++
 			ae.mu.Unlock()
 			ae.MarkNodeEmbedded(id)
@@ -1068,6 +1085,7 @@ func (ae *AsyncEngine) DeleteNode(id NodeID) error {
 		}
 
 		ae.deleteNodes[id] = true
+		changed = true
 		ae.pendingWrites++
 		ae.mu.Unlock()
 		ae.MarkNodeEmbedded(id)
@@ -1114,6 +1132,7 @@ func (ae *AsyncEngine) CreateEdge(edge *Edge) error {
 
 	ae.putCacheEdgeLocked(edge)
 	ae.pendingWrites++
+	ae.graphMutationVersions.changed(namespaceForEdgeID(edge.ID))
 	return nil
 }
 
@@ -1130,6 +1149,7 @@ func (ae *AsyncEngine) UpdateEdge(edge *Edge) error {
 
 	ae.putCacheEdgeLocked(edge)
 	ae.pendingWrites++
+	ae.graphMutationVersions.changed(namespaceForEdgeID(edge.ID))
 	return nil
 }
 
@@ -1141,6 +1161,12 @@ func (ae *AsyncEngine) UpdateEdge(edge *Edge) error {
 func (ae *AsyncEngine) DeleteEdge(id EdgeID) error {
 	ae.mu.Lock()
 	defer ae.mu.Unlock()
+	changed := false
+	defer func() {
+		if changed {
+			ae.graphMutationVersions.changed(namespaceForEdgeID(id))
+		}
+	}()
 
 	// Check if already marked for deletion (idempotent)
 	if ae.deleteEdges[id] {
@@ -1154,6 +1180,7 @@ func (ae *AsyncEngine) DeleteEdge(id EdgeID) error {
 	if _, existsInCache := ae.edgeCache[id]; existsInCache {
 		// Edge was created but not flushed - just remove from cache
 		ae.deleteCacheEdgeLocked(id)
+		changed = true
 
 		// CRITICAL FIX: If edge is in-flight, the flush will still write it
 		// to the underlying engine, so we must also mark it for deletion
@@ -1167,6 +1194,7 @@ func (ae *AsyncEngine) DeleteEdge(id EdgeID) error {
 	// If in-flight, it will exist in underlying engine after flush - mark for deletion
 	if isInFlight {
 		ae.deleteEdges[id] = true
+		changed = true
 		ae.pendingWrites++
 		return nil
 	}
@@ -1180,6 +1208,7 @@ func (ae *AsyncEngine) DeleteEdge(id EdgeID) error {
 
 	// Edge exists in underlying engine - mark for deletion
 	ae.deleteEdges[id] = true
+	changed = true
 	ae.pendingWrites++
 	return nil
 }
@@ -2286,6 +2315,7 @@ func (ae *AsyncEngine) BulkCreateNodes(nodes []*Node) error {
 		delete(ae.nodeUpdateBaseline, node.ID)
 		ae.nodeCache[node.ID] = node
 		ae.syncNodeLabelIndexLocked(node)
+		ae.graphMutationVersions.changed(namespaceForNodeID(node.ID))
 	}
 	ae.pendingWrites += int64(len(nodes))
 	return nil
@@ -2620,6 +2650,7 @@ func (ae *AsyncEngine) BulkCreateEdges(edges []*Edge) error {
 		delete(ae.deleteEdges, edge.ID)
 		delete(ae.updateEdges, edge.ID)
 		ae.putCacheEdgeLocked(edge)
+		ae.graphMutationVersions.changed(namespaceForEdgeID(edge.ID))
 	}
 	ae.pendingWrites += int64(len(edges))
 	return nil
@@ -2641,6 +2672,7 @@ func (ae *AsyncEngine) BulkDeleteNodes(ids []NodeID) error {
 		delete(ae.updateNodes, id)
 		delete(ae.nodeUpdateBaseline, id)
 		ae.deleteNodes[id] = true
+		ae.graphMutationVersions.changed(namespaceForNodeID(id))
 	}
 	ae.pendingWrites += int64(len(ids))
 	ae.mu.Unlock()
@@ -2659,6 +2691,7 @@ func (ae *AsyncEngine) BulkDeleteEdges(ids []EdgeID) error {
 	for _, id := range ids {
 		ae.deleteCacheEdgeLocked(id)
 		ae.deleteEdges[id] = true
+		ae.graphMutationVersions.changed(namespaceForEdgeID(id))
 	}
 	ae.pendingWrites += int64(len(ids))
 	return nil

@@ -558,8 +558,10 @@ func (sc *SmartQueryCache) observeEviction(reason string) {
 
 // Get retrieves a cached result (same as QueryCache).
 func (sc *SmartQueryCache) Get(cypher string, params map[string]interface{}) (*ExecuteResult, bool) {
-	key := cacheKeyFNV(cypher, params)
+	return sc.get(cacheKeyFNV(cypher, params))
+}
 
+func (sc *SmartQueryCache) get(key string) (*ExecuteResult, bool) {
 	sc.mu.RLock()
 	cached, exists := sc.cache[key]
 	sc.mu.RUnlock()
@@ -602,8 +604,10 @@ func (sc *SmartQueryCache) Get(cypher string, params map[string]interface{}) (*E
 
 // PutWithLabels stores a result with associated labels for smart invalidation.
 func (sc *SmartQueryCache) PutWithLabels(cypher string, params map[string]interface{}, result *ExecuteResult, ttl time.Duration, labels []string) {
-	key := cacheKeyFNV(cypher, params)
+	sc.putWithLabels(cacheKeyFNV(cypher, params), result, ttl, labels)
+}
 
+func (sc *SmartQueryCache) putWithLabels(key string, result *ExecuteResult, ttl time.Duration, labels []string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 

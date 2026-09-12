@@ -29,6 +29,98 @@ func labelCountPrefix() []byte {
 	return []byte{prefixMVCCMeta, prefixMVCCMetaLabelCount}
 }
 
+func labelCountNamespacePrefix(namespace string) []byte {
+	key := make([]byte, 0, util.SafePreallocSum(3, len(namespace)))
+	key = append(key, prefixMVCCMeta, prefixMVCCMetaLabelCount)
+	key = append(key, namespace...)
+	return append(key, 0)
+}
+
+type namespaceLabel struct {
+	namespace string
+	label     string
+}
+
+type storedNodeLabels struct {
+	Labels []string
+}
+
+func decodeStoredNodeLabels(data []byte) ([]string, error) {
+	if len(data) < 1 || data[0] != nodeFormatTokenizedV1 {
+		return nil, fmt.Errorf("node body has unexpected format")
+	}
+	rest := data[1:]
+	propertiesLength, size := binary.Uvarint(rest)
+	if size <= 0 {
+		return nil, fmt.Errorf("node body: malformed properties length varint")
+	}
+	rest = rest[size:]
+	if uint64(len(rest)) < propertiesLength {
+		return nil, fmt.Errorf("node body: properties payload truncated")
+	}
+
+	var node storedNodeLabels
+	if err := decodeValue(rest[propertiesLength:], &node); err != nil {
+		return nil, err
+	}
+	return node.Labels, nil
+}
+
+func (b *BadgerEngine) collectNodeLabelCountsByPrefix(keyPrefix []byte) (int64, map[namespaceLabel]int64, error) {
+	counts := make(map[namespaceLabel]int64)
+	var nodes int64
+	err := b.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badgerIterOptsPrefetchValues(keyPrefix, 64))
+		defer it.Close()
+		for it.Rewind(); it.ValidForPrefix(keyPrefix); it.Next() {
+			nodes++
+			key := it.Item().Key()
+			namespace, _, ok := ParseDatabasePrefix(string(key[1:]))
+			if !ok {
+				continue
+			}
+			if err := it.Item().Value(func(value []byte) error {
+				labels, decodeErr := decodeStoredNodeLabels(value)
+				if decodeErr != nil {
+					return decodeErr
+				}
+				for index, label := range labels {
+					normalized := normalizeCountLabel(label)
+					if normalized == "" {
+						continue
+					}
+					duplicate := false
+					for previous := 0; previous < index; previous++ {
+						if strings.EqualFold(labels[previous], label) {
+							duplicate = true
+							break
+						}
+					}
+					if !duplicate {
+						counts[namespaceLabel{namespace: namespace, label: normalized}]++
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return nodes, counts, err
+}
+
+func (b *BadgerEngine) decrementLabelCounts(counts map[namespaceLabel]int64) error {
+	return b.withUpdate(func(txn *badger.Txn) error {
+		for key, count := range counts {
+			if err := b.adjustLabelCountInTxn(txn, key.namespace, key.label, -count); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func encodeLabelCount(count int64) []byte {
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, uint64(count))

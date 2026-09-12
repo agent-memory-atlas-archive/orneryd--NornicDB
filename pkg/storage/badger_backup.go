@@ -66,8 +66,12 @@ func (b *BadgerEngine) DeleteByPrefix(prefix string) (nodesDeleted int64, edgesD
 	if err := b.ensureOpen(); err != nil {
 		return 0, 0, err
 	}
+	b.labelCountWriteMu.Lock()
+	defer b.labelCountWriteMu.Unlock()
 
 	prefixBytes := []byte(prefix)
+	namespace, wholeNamespace := strings.CutSuffix(prefix, ":")
+	wholeNamespace = wholeNamespace && namespace != "" && !strings.Contains(namespace, ":")
 
 	countKeys := func(keyPrefix []byte) (int64, error) {
 		var count int64
@@ -88,7 +92,12 @@ func (b *BadgerEngine) DeleteByPrefix(prefix string) (nodesDeleted int64, edgesD
 	nodeKeyPrefix := append([]byte{prefixNode}, prefixBytes...)
 	edgeKeyPrefix := append([]byte{prefixEdge}, prefixBytes...)
 
-	nodesDeleted, err = countKeys(nodeKeyPrefix)
+	var deletedLabelCounts map[namespaceLabel]int64
+	if wholeNamespace {
+		nodesDeleted, err = countKeys(nodeKeyPrefix)
+	} else {
+		nodesDeleted, deletedLabelCounts, err = b.collectNodeLabelCountsByPrefix(nodeKeyPrefix)
+	}
 	if err != nil {
 		return 0, 0, err
 	}
@@ -108,10 +117,14 @@ func (b *BadgerEngine) DeleteByPrefix(prefix string) (nodesDeleted int64, edgesD
 		append([]byte{prefixPendingEmbed}, prefixBytes...),
 		append([]byte{prefixEmbedding}, prefixBytes...),
 	}
-	for _, p := range dropPrefixes {
-		if err := b.db.DropPrefix(p); err != nil {
-			return 0, 0, localizedError(localization.StorageClientDropPrefixFailed(p[0], err), err)
-		}
+	if wholeNamespace {
+		dropPrefixes = append(dropPrefixes, labelCountNamespacePrefix(namespace))
+	}
+	if err := b.db.DropPrefix(dropPrefixes...); err != nil {
+		return 0, 0, localizedError(localization.StorageClientDropPrefixFailed(prefixNode, err), err)
+	}
+	if nodesDeleted > 0 || edgesDeleted > 0 {
+		defer b.graphMutationVersions.changedPrefix(prefix)
 	}
 
 	deleteIndexEntriesBySuffixPrefix := func(indexPrefix byte) error {
@@ -171,6 +184,11 @@ func (b *BadgerEngine) DeleteByPrefix(prefix string) (nodesDeleted int64, edgesD
 	}
 	if err := deleteIndexEntriesBySuffixPrefix(prefixEdgeTypeIndex); err != nil {
 		return 0, 0, localizedError(localization.StorageClientCleanEdgeTypeIndexFailed(err), err)
+	}
+	if len(deletedLabelCounts) > 0 {
+		if err := b.decrementLabelCounts(deletedLabelCounts); err != nil {
+			return 0, 0, err
+		}
 	}
 
 	// Clear/adjust caches and cached counters.

@@ -201,6 +201,64 @@ type fabricPreparedExec struct {
 	hasRemote bool
 }
 
+func (e *StorageExecutor) fabricGraphMutationVersion(ctx context.Context, prepared *fabricPreparedExec, authToken string) (uint64, bool) {
+	if prepared == nil || prepared.catalog == nil || prepared.fragment == nil || e.dbManager == nil {
+		return 0, false
+	}
+
+	databases := make(map[string]struct{})
+	var collect func(fabric.Fragment) bool
+	collect = func(fragment fabric.Fragment) bool {
+		switch current := fragment.(type) {
+		case *fabric.FragmentExec:
+			location, err := prepared.catalog.Resolve(current.GraphName)
+			if err != nil {
+				return false
+			}
+			local, ok := location.(*fabric.LocationLocal)
+			if !ok {
+				return false
+			}
+			databases[local.DBName] = struct{}{}
+			return collect(current.Input)
+		case *fabric.FragmentApply:
+			return collect(current.Input) && collect(current.Inner)
+		case *fabric.FragmentUnion:
+			return collect(current.LHS) && collect(current.RHS)
+		case *fabric.FragmentLeaf:
+			return collect(current.Input)
+		case *fabric.FragmentInit:
+			return true
+		default:
+			return false
+		}
+	}
+	if !collect(prepared.fragment) || len(databases) == 0 {
+		return 0, false
+	}
+
+	var combined uint64
+	for database := range databases {
+		if err := authorizeDatabaseSelection(ctx, database); err != nil {
+			return 0, false
+		}
+		engine, err := e.dbManager.GetStorageForUse(database, authToken)
+		if err != nil {
+			return 0, false
+		}
+		provider, ok := engine.(storage.GraphMutationVersionProvider)
+		if !ok {
+			return 0, false
+		}
+		version, supported := provider.GraphMutationVersion()
+		if !supported {
+			return 0, false
+		}
+		combined += version
+	}
+	return combined, true
+}
+
 func (e *StorageExecutor) prepareFabricExecution(ctx context.Context, cypher string) (*fabricPreparedExec, error) {
 	catalog, err := e.buildFabricCatalog()
 	if err != nil {

@@ -689,7 +689,12 @@ func TestAsyncEngine_DeleteHelpers_CachedInflightAndIdempotent(t *testing.T) {
 		ae.mu.Lock()
 		ae.inFlightEdges[underID] = true
 		ae.mu.Unlock()
+		versionBefore, supported := ae.GraphMutationVersionInNamespace("test")
+		require.True(t, supported)
 		require.NoError(t, ae.DeleteEdge(underID))
+		versionAfter, supported := ae.GraphMutationVersionInNamespace("test")
+		require.True(t, supported)
+		assert.Greater(t, versionAfter, versionBefore)
 		ae.mu.RLock()
 		assert.True(t, ae.deleteEdges[underID])
 		ae.mu.RUnlock()

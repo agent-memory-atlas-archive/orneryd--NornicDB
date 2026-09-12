@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,7 @@ func BenchmarkBadgerEngine_DeleteByPrefix(b *testing.B) {
 	)
 
 	b.ReportAllocs()
+	b.StopTimer()
 
 	for i := 0; i < b.N; i++ {
 		engine := NewMemoryEngine()
@@ -52,6 +54,41 @@ func BenchmarkBadgerEngine_DeleteByPrefix(b *testing.B) {
 		}
 		b.StopTimer()
 
+		_ = engine.Close()
+	}
+}
+
+func BenchmarkBadgerEngine_DeleteByPartialPrefix(b *testing.B) {
+	const nodes = 5000
+	payload := strings.Repeat("content ", 128)
+	b.ReportAllocs()
+	b.StopTimer()
+
+	for i := 0; i < b.N; i++ {
+		engine := NewMemoryEngine()
+		for n := 0; n < nodes; n++ {
+			kind := "keep"
+			labels := []string{"Person", "Permanent"}
+			if n%2 == 0 {
+				kind = "delete"
+				labels = []string{"Person", "Temporary"}
+			}
+			_, err := engine.CreateNode(&Node{
+				ID:         NodeID(fmt.Sprintf("benchdb:%s-%d", kind, n)),
+				Labels:     labels,
+				Properties: map[string]any{"content": payload},
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+
+		b.StartTimer()
+		_, _, err := engine.DeleteByPrefix("benchdb:delete-")
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.StopTimer()
 		_ = engine.Close()
 	}
 }

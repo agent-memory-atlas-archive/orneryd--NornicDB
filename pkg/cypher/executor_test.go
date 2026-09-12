@@ -4,6 +4,7 @@ package cypher
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -47,7 +48,9 @@ func TestStorageExecutorCachesResultsWithDatabaseTTL(t *testing.T) {
 	_, err := exec.Execute(context.Background(), query, nil)
 	require.NoError(t, err)
 
-	key := cacheKeyFNV(query, nil)
+	version, supported := exec.storage.(storage.GraphMutationVersionProvider).GraphMutationVersion()
+	require.True(t, supported)
+	key := cacheKeyFNV(query, nil) + ":graph:" + strconv.FormatUint(version, 10)
 	exec.cache.mu.RLock()
 	entry := exec.cache.cache[key]
 	exec.cache.mu.RUnlock()

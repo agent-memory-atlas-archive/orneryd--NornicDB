@@ -35,6 +35,25 @@ func NewReplicatedEngine(inner storage.Engine, replicator Replicator, timeout ti
 	}
 }
 
+// GraphMutationVersion exposes graph mutations applied to the local engine.
+func (e *ReplicatedEngine) GraphMutationVersion() (uint64, bool) {
+	provider, ok := e.Engine.(storage.GraphMutationVersionProvider)
+	if !ok {
+		return 0, false
+	}
+	return provider.GraphMutationVersion()
+}
+
+// GraphMutationVersionInNamespace preserves database-scoped invalidation
+// through the replication wrapper.
+func (e *ReplicatedEngine) GraphMutationVersionInNamespace(namespace string) (uint64, bool) {
+	provider, ok := e.Engine.(storage.NamespaceGraphMutationVersionProvider)
+	if !ok {
+		return 0, false
+	}
+	return provider.GraphMutationVersionInNamespace(namespace)
+}
+
 // IsLeader reports whether this node can accept writes in the current replication mode.
 // This is a convenience for higher-level components (e.g. multidb startup) that need
 // to avoid performing metadata migrations on standby/followers.

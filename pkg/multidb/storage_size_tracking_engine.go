@@ -542,3 +542,12 @@ func (t *sizeTrackingEngine) checkWrite(operation string, node *storage.Node, ed
 	}
 	return t.checker.CheckStorageLimits(operation, node, edge)
 }
+
+// GraphMutationVersion preserves query-cache invalidation through this wrapper.
+func (t *sizeTrackingEngine) GraphMutationVersion() (uint64, bool) {
+	provider, ok := t.Engine.(storage.GraphMutationVersionProvider)
+	if !ok {
+		return 0, false
+	}
+	return provider.GraphMutationVersion()
+}
