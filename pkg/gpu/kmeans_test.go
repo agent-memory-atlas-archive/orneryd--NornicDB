@@ -418,6 +418,27 @@ func TestClusterIndex_SearchWithClusters(t *testing.T) {
 	})
 }
 
+func TestClusterIndex_SearchWithClusters_SkipsEmptyNearestClusters(t *testing.T) {
+	ci := NewClusterIndex(nil, embConfig(2), nil)
+	if err := ci.Add("node-1", []float32{0, 1}); err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if err := ci.RestoreClusteringState(
+		[][]float32{{1, 0}, {0, 1}},
+		map[string]int{"node-1": 1},
+	); err != nil {
+		t.Fatalf("RestoreClusteringState() error = %v", err)
+	}
+
+	results, err := ci.SearchWithClusters([]float32{1, 0}, 1, 1)
+	if err != nil {
+		t.Fatalf("SearchWithClusters() error = %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "node-1" {
+		t.Fatalf("SearchWithClusters() = %v, want node-1 from nearest populated cluster", results)
+	}
+}
+
 func TestClusterIndex_OnNodeUpdate(t *testing.T) {
 	ci := NewClusterIndex(testManager(), embConfig(testDims), &KMeansConfig{
 		NumClusters:   3,

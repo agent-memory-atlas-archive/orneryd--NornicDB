@@ -210,6 +210,7 @@ func TestKMeansCandidateGen_Integration(t *testing.T) {
 	// Enable clustering
 	manager, _ := gpu.NewManager(nil)
 	svc.EnableClustering(manager, 10) // 10 clusters for small test
+	svc.SetMinEmbeddingsForClustering(1)
 
 	// Add test nodes
 	for i := 0; i < 100; i++ {

@@ -3400,6 +3400,11 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 					s.nodePropVector = properties
 					s.nodeChunkVectors = chunks
 					s.mu.Unlock()
+				} else if storageNodeCount == 0 {
+					s.logPrintf("BuildIndexes: vector metadata missing and storage empty; loading legacy vectors without query metadata")
+					s.mu.Lock()
+					s.vectorFileStore = vfs
+					s.mu.Unlock()
 				} else {
 					s.logPrintf("BuildIndexes: vector metadata missing; rebuilding from storage")
 					_ = vfs.Close()

@@ -1077,22 +1077,28 @@ func (ci *ClusterIndex) FindNearestClusters(embedding []float32, k int) []int {
 		return nil
 	}
 
-	if k > len(ci.centroids) {
-		k = len(ci.centroids)
-	}
-
-	// Compute distances to all centroids
+	// Compute distances only to populated centroids. Duplicate inputs can leave
+	// centroids empty, and routing to those clusters would return no candidates.
 	type distIdx struct {
 		dist float64
 		idx  int
 	}
 
-	distances := make([]distIdx, len(ci.centroids))
+	distances := make([]distIdx, 0, len(ci.clusterMap))
 	for c, centroid := range ci.centroids {
-		distances[c] = distIdx{
+		if len(ci.clusterMap[c]) == 0 {
+			continue
+		}
+		distances = append(distances, distIdx{
 			dist: squaredEuclidean(embedding, centroid),
 			idx:  c,
-		}
+		})
+	}
+	if k > len(distances) {
+		k = len(distances)
+	}
+	if k == 0 {
+		return nil
 	}
 
 	// Partial sort to find k nearest
