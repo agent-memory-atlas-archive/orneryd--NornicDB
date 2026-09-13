@@ -7,14 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.3.3] - 9/13/2026
+
+### Added
+
+- Publish a design RFC for pluggable Snowball stemming in BM25 indexes.
+
 ### Fixed
 
+- Preserve exact cosine-vector fast-path semantics for inline node properties, filtered top-k queries, exact LIMIT results, and WITH projections ordered before RETURN.
+- Skip empty k-means clusters during vector routing and load legacy vector files without query metadata when storage is empty.
+- Invalidate local and Fabric query-cache entries after direct, asynchronous, replicated, edge, and bulk-prefix graph mutations while keeping Badger label counts coherent.
+- Deduplicate concurrent property-free relationship MERGE operations by deriving a shared deterministic relationship identity across managed transactions.
+- Execute CREATE clauses that follow one or more MERGE clauses, including multiple and comma-separated CREATE patterns, without misclassifying ON CREATE SET.
 - Apply every sort key before indexed pagination, including complete primary-key ties and filtered candidates beyond the initial index window.
+- Restore row bindings across mixed relationship/node MATCH products, chained and multi-hop OPTIONAL MATCH, MATCH-UNWIND-MATCH-MERGE pipelines, and null property projections.
+- Correct DISTINCT aggregation for nodes, relationships, and scalars across chained MATCH clauses, including nested expressions such as `size(collect(DISTINCT ...))`.
+- Apply WHERE after an aggregating WITH in chained MATCH pipelines, preserve subsequent WITH expressions and RETURN ordering, and accelerate bound-start expansion from about 80.7 ms to 0.97 ms per benchmark operation.
+- Bind every intermediate node in bound-anchor multi-hop MATCH patterns in either traversal direction, reject conflicting prior bindings, and parse each chained relationship pattern once per clause; benchmark median latency fell about 19%, bytes about 24%, and allocations about 29%.
 - Honor explicitly supplied embedding CLI flags in the loaded configuration; omitted flags preserve environment/YAML values.
 - Pass embedding GPU-layer choices through local model initialization and distinguish CPU-only `0` from automatic `-1` when reusing embedders.
 - Preserve async node update classification across flush cleanup, retain pending-create counts after failed first writes, and report persistence-lookup failures.
 - Restore persisted vector-store reloads on Windows while preserving committed-tail recovery and append semantics.
 - Repair persisted HNSW warmup, localized model-path, and vector-store error fixtures for Windows and Linux.
+- Restore documentation-site builds after dependency and configuration changes.
 
 ## [v1.3.2] - 9/11/2026
 

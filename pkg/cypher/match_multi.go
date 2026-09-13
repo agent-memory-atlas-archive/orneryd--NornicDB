@@ -717,12 +717,10 @@ func (e *StorageExecutor) executeFirstMatch(ctx context.Context, pattern string)
 			if len(path.Nodes) < 2 {
 				continue
 			}
-			b := make(binding)
-			if matches.StartNode.variable != "" {
-				b[matches.StartNode.variable] = path.Nodes[0]
-			}
-			if matches.EndNode.variable != "" {
-				b[matches.EndNode.variable] = path.Nodes[len(path.Nodes)-1]
+			pathContext := e.buildPathContext(path, matches)
+			b := make(binding, len(pathContext.nodes))
+			for name, node := range pathContext.nodes {
+				b[name] = node
 			}
 			bindings = append(bindings, b)
 			// BUG FIX: a relationship variable bound by this clause (e.g.
@@ -731,7 +729,7 @@ func (e *StorageExecutor) executeFirstMatch(ctx context.Context, pattern string)
 			// knows how to map a PathResult's relationships onto the
 			// pattern's relationship variable(s) (including chained
 			// segments); reuse it instead of duplicating that logic.
-			relBindings = append(relBindings, e.buildPathContext(path, matches).rels)
+			relBindings = append(relBindings, pathContext.rels)
 		}
 	} else {
 		// Simple node pattern
@@ -759,6 +757,14 @@ func (e *StorageExecutor) executeFirstMatch(ctx context.Context, pattern string)
 func (e *StorageExecutor) executeChainedMatch(ctx context.Context, pattern string, existingBindings []binding, existingRelBindings []map[string]*storage.Edge) ([]binding, []map[string]*storage.Edge) {
 	var newBindings []binding
 	var newRelBindings []map[string]*storage.Edge
+	isRelationshipPattern := strings.Contains(pattern, "-[") || strings.Contains(pattern, "]-")
+	var matches *TraversalMatch
+	if isRelationshipPattern {
+		matches = e.parseTraversalPattern(ctx, pattern)
+		if matches == nil {
+			return newBindings, newRelBindings
+		}
+	}
 
 	for idx, existing := range existingBindings {
 		var existingRels map[string]*storage.Edge
@@ -767,12 +773,7 @@ func (e *StorageExecutor) executeChainedMatch(ctx context.Context, pattern strin
 		}
 
 		// Check for relationship pattern
-		if strings.Contains(pattern, "-[") || strings.Contains(pattern, "]-") {
-			matches := e.parseTraversalPattern(ctx, pattern)
-			if matches == nil {
-				continue
-			}
-
+		if isRelationshipPattern {
 			// Check if any bound variables are referenced
 			boundStartNode := existing[matches.StartNode.variable]
 			boundEndNode := existing[matches.EndNode.variable]
@@ -799,19 +800,12 @@ func (e *StorageExecutor) executeChainedMatch(ctx context.Context, pattern strin
 				endMatches := boundEndNode == nil || endNode.ID == boundEndNode.ID
 
 				if startMatches && endMatches {
-					// Create new binding combining existing and new
-					b := make(binding)
-					for k, v := range existing {
-						b[k] = v
+					pathContext := e.buildPathContext(path, matches)
+					b, ok := mergeNodeBindingsChecked(existing, pathContext.nodes)
+					if !ok {
+						continue
 					}
-					if matches.StartNode.variable != "" {
-						b[matches.StartNode.variable] = startNode
-					}
-					if matches.EndNode.variable != "" {
-						b[matches.EndNode.variable] = endNode
-					}
-					pathRels := e.buildPathContext(path, matches).rels
-					mergedRels, ok := mergeRelBindingsChecked(existingRels, pathRels)
+					mergedRels, ok := mergeRelBindingsChecked(existingRels, pathContext.rels)
 					if !ok {
 						continue
 					}
@@ -860,6 +854,22 @@ func (e *StorageExecutor) executeChainedMatch(ctx context.Context, pattern strin
 	}
 
 	return newBindings, newRelBindings
+}
+
+func mergeNodeBindingsChecked(existing binding, current map[string]*storage.Node) (binding, bool) {
+	merged := make(binding, len(existing)+len(current))
+	for name, node := range existing {
+		merged[name] = node
+	}
+	for name, node := range current {
+		if previous := merged[name]; previous != nil && node != nil && previous.ID != node.ID {
+			return nil, false
+		}
+		if merged[name] == nil {
+			merged[name] = node
+		}
+	}
+	return merged, true
 }
 
 // mergeRelBindingsChecked merges two relationship-binding maps (e.g. one
