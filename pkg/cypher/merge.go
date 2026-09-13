@@ -3308,7 +3308,7 @@ func (e *StorageExecutor) executeMergeRelSegment(ctx context.Context, pattern st
 	return nil
 }
 
-// executeMultipleMerges handles queries with multiple MERGE statements without WITH:
+// executeMultipleMerges handles MERGE-led queries with multiple mutation clauses:
 //
 //	MERGE (e:Entry {key: 'x'})
 //	MERGE (f:Category {name: 'y'})
@@ -3375,6 +3375,26 @@ func (e *StorageExecutor) executeMultipleMerges(ctx context.Context, cypher stri
 				}
 				if node != nil && varName != "" {
 					nodeContext[varName] = node
+				}
+			}
+		} else if strings.HasPrefix(upperSeg, "CREATE") {
+			if chainBroken {
+				continue
+			}
+			for _, pattern := range e.splitCreatePatterns(strings.TrimSpace(segment[6:])) {
+				pattern = strings.TrimSpace(pattern)
+				if pattern == "" {
+					continue
+				}
+				createSegment := "CREATE " + pattern
+				if containsOutsideStrings(pattern, "->") || containsOutsideStrings(pattern, "<-") || containsOutsideStrings(pattern, "-[") {
+					if err := e.executeCreateRelSegment(ctx, createSegment, nodeContext, relContext, result); err != nil {
+						return nil, localizedError(localization.CypherMutationsRelationshipCreateFailed(err), err)
+					}
+					continue
+				}
+				if err := e.processCreateNode(ctx, pattern, nodeContext, result, e.getStorage(ctx)); err != nil {
+					return nil, localizedError(localization.CypherMutationsNodeCreateFailed(err), err)
 				}
 			}
 		} else if strings.HasPrefix(upperSeg, "OPTIONAL MATCH") {
@@ -3461,7 +3481,7 @@ func (e *StorageExecutor) executeMultipleMerges(ctx context.Context, cypher stri
 	return result, nil
 }
 
-// splitMultipleMerges splits a query into MERGE/MATCH/RETURN segments.
+// splitMultipleMerges splits a query into mutation and row-processing clauses.
 func (e *StorageExecutor) splitMultipleMerges(cypher string) []string {
 	var segments []string
 	boundaries := collectTopLevelMergeClauseBoundaries(cypher, []string{
@@ -3469,6 +3489,7 @@ func (e *StorageExecutor) splitMultipleMerges(cypher string) []string {
 		"FOREACH",
 		"MERGE",
 		"MATCH",
+		"CREATE",
 		"WITH",
 		"WHERE",
 		"RETURN",
@@ -3589,6 +3610,11 @@ func collectTopLevelMergeClauseBoundaries(cypher string, keywords []string) []me
 			}
 			end := i + len(kw)
 			if (i == 0 || !isIdentByte(upper[i-1])) && (end >= len(upper) || !isIdentByte(upper[end])) {
+				// A CREATE pattern starts with '('. This excludes ON CREATE SET
+				// modifiers and identifiers such as n.create.
+				if kw == "CREATE" && !isCreatePatternClause(cypher, end) {
+					break
+				}
 				// Skip ON MATCH SET modifier inside MERGE clauses.
 				if kw == "MATCH" && (isOnMatchModifier(cypher, i) || isOptionalMatchModifier(cypher, i)) {
 					break
@@ -3600,6 +3626,10 @@ func collectTopLevelMergeClauseBoundaries(cypher string, keywords []string) []me
 		}
 	}
 	return out
+}
+
+func isCreatePatternClause(cypher string, afterCreate int) bool {
+	return strings.HasPrefix(strings.TrimSpace(cypher[afterCreate:]), "(")
 }
 
 func isOnMatchModifier(cypher string, matchPos int) bool {

@@ -235,7 +235,8 @@ skipMatchCallRoute:
 	if startsWithMerge {
 		if findKeywordIndexInContext(cypher, "OPTIONAL MATCH") > 0 ||
 			findKeywordIndexInContext(cypher, "WITH") > 0 ||
-			findKeywordIndexInContext(cypher, "WHERE") > 0 {
+			findKeywordIndexInContext(cypher, "WHERE") > 0 ||
+			len(collectTopLevelMergeClauseBoundaries(cypher, []string{"CREATE"})) > 0 {
 			return e.executeMultipleMerges(ctx, cypher)
 		}
 		firstMergeEnd := findKeywordIndex(cypher[5:], ")")

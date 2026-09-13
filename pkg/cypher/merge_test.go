@@ -1110,6 +1110,113 @@ MERGE (c)-[:TOUCHED]->(ck)
 	}, segments)
 }
 
+func TestSplitMultipleMerges_CreateRelationshipTail(t *testing.T) {
+	e := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
+	segments := e.splitMultipleMerges(strings.TrimSpace(`
+MERGE (s:Workload {id: 's1'})
+MERGE (t:Workload {id: 't1'})
+CREATE (s)-[:DEPENDS_ON]->(t)
+`))
+	require.Equal(t, []string{
+		"MERGE (s:Workload {id: 's1'})",
+		"MERGE (t:Workload {id: 't1'})",
+		"CREATE (s)-[:DEPENDS_ON]->(t)",
+	}, segments)
+
+	segments = e.splitMultipleMerges("MERGE (n:Workload {id: 'n1'}) ON CREATE SET n.created = true RETURN n")
+	require.Equal(t, []string{
+		"MERGE (n:Workload {id: 'n1'}) ON CREATE SET n.created = true",
+		"RETURN n",
+	}, segments)
+}
+
+func TestIssue359_MergeNodesThenCreateRelationship(t *testing.T) {
+	baseStore := newTestMemoryEngine(t)
+	store := storage.NewNamespacedEngine(baseStore, "test")
+	exec := NewStorageExecutor(store)
+	ctx := context.Background()
+
+	result, err := exec.Execute(ctx, `
+MERGE (s:Workload {id: $s})
+MERGE (t:Workload {id: $t})
+CREATE (s)-[:DEPENDS_ON]->(t)`, map[string]interface{}{"s": "s1", "t": "t1"})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Stats.RelationshipsCreated)
+
+	nodes := mustCountRows(t, exec, ctx, "MATCH (n:Workload) RETURN count(n)", nil)
+	require.Equal(t, int64(2), nodes)
+	rels := mustCountRows(t, exec, ctx, "MATCH (:Workload)-[r:DEPENDS_ON]->(:Workload) RETURN count(r)", nil)
+	require.Equal(t, int64(1), rels)
+}
+
+func TestIssue359_SingleMergeThenCreate(t *testing.T) {
+	baseStore := newTestMemoryEngine(t)
+	store := storage.NewNamespacedEngine(baseStore, "test")
+	exec := NewStorageExecutor(store)
+	ctx := context.Background()
+
+	_, err := exec.Execute(ctx, `
+MERGE (s:Workload {id: 's1'})
+CREATE (t:Workload {id: 't1'})
+CREATE (s)-[:DEPENDS_ON]->(t)`, nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), mustCountRows(t, exec, ctx, "MATCH (n:Workload) RETURN count(n)", nil))
+	require.Equal(t, int64(1), mustCountRows(t, exec, ctx, "MATCH (:Workload)-[r:DEPENDS_ON]->(:Workload) RETURN count(r)", nil))
+}
+
+func TestIssue359_MergeNodesThenCreateRelationshipVariants(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		wantRels   int64
+		wantRepoID interface{}
+	}{
+		{
+			name: "set between node merges",
+			query: `MERGE (s:Workload {id: 's1'})
+SET s.repo_id = 'repo1'
+MERGE (t:Workload {id: 't1'})
+CREATE (s)-[:DEPENDS_ON]->(t)`,
+			wantRels:   1,
+			wantRepoID: "repo1",
+		},
+		{
+			name: "two create clauses",
+			query: `MERGE (s:Workload {id: 's1'})
+MERGE (t:Workload {id: 't1'})
+CREATE (s)-[:A]->(t)
+CREATE (s)-[:B]->(t)`,
+			wantRels: 2,
+		},
+		{
+			name: "comma separated create patterns",
+			query: `MERGE (s:Workload {id: 's1'})
+MERGE (t:Workload {id: 't1'})
+CREATE (s)-[:A]->(t), (s)-[:B]->(t)`,
+			wantRels: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseStore := newTestMemoryEngine(t)
+			store := storage.NewNamespacedEngine(baseStore, "test")
+			exec := NewStorageExecutor(store)
+			ctx := context.Background()
+
+			_, err := exec.Execute(ctx, tt.query, nil)
+			require.NoError(t, err)
+			require.Equal(t, int64(2), mustCountRows(t, exec, ctx, "MATCH (n:Workload) RETURN count(n)", nil))
+			require.Equal(t, tt.wantRels, mustCountRows(t, exec, ctx, "MATCH (:Workload)-[r]->(:Workload) RETURN count(r)", nil))
+			if tt.wantRepoID != nil {
+				result, err := exec.Execute(ctx, "MATCH (s:Workload {id: 's1'}) RETURN s.repo_id", nil)
+				require.NoError(t, err)
+				require.Equal(t, [][]interface{}{{tt.wantRepoID}}, result.Rows)
+			}
+		})
+	}
+}
+
 func TestSplitMultipleMerges_FullFallbackRowShape(t *testing.T) {
 	e := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
 	segments := e.splitMultipleMerges(strings.TrimSpace(`
