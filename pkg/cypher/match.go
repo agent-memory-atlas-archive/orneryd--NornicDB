@@ -416,6 +416,14 @@ func (e *StorageExecutor) executeMatch(ctx context.Context, cypher string) (*Exe
 		findKeywordIndex(matchPart, "OPTIONAL MATCH") >= 0 {
 		return e.executeCompoundMatchOptionalMatch(ctx, originalCypher)
 	}
+	patternComponents := splitTopLevelComma(matchPart)
+	if len(patternComponents) > 1 && hasRelationshipPattern(patternComponents) {
+		whereClause := ""
+		if whereIdx > 0 {
+			whereClause = extractMatchWhereClause(cypher, whereIdx, returnIdx)
+		}
+		return e.executeMixedPatternMatch(ctx, cypher, patternComponents, whereClause, returnClause, distinct)
+	}
 
 	// Check for relationship pattern: (a)-[r:TYPE]->(b) or (a)<-[r]-(b)
 	if strings.Contains(matchPart, "-[") || strings.Contains(matchPart, "]-") {

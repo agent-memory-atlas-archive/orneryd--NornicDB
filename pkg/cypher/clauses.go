@@ -3645,7 +3645,9 @@ func (e *StorageExecutor) executeCompoundMatchOptionalMatch(ctx context.Context,
 	hasTraversal := strings.Contains(nodePatternStr, "->") ||
 		strings.Contains(nodePatternStr, "<-") ||
 		strings.Contains(nodePatternStr, "-[")
-	if hasTraversal {
+	optionalNodeGroups, optionalBrackets := scanOptionalPatternShape(optMatchPattern)
+	hasChainedOptional := findKeywordIndex(optMatchPattern, "OPTIONAL MATCH") > 0
+	if hasTraversal || hasChainedOptional || optionalNodeGroups > 2 || optionalBrackets > 1 {
 		// Traversal-seeded OPTIONAL MATCH: execute the initial MATCH (binding
 		// node AND relationship variables), left-outer join every chained
 		// OPTIONAL MATCH clause, then project through the real expression
@@ -3907,6 +3909,9 @@ func (e *StorageExecutor) resolveReturnExprFromVarMap(
 				}
 				return nil
 			}
+		}
+		if isSimpleIdentifier(strings.TrimSpace(varName)) && isSimpleIdentifier(strings.TrimSpace(propName)) {
+			return nil
 		}
 	}
 

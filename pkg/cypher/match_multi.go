@@ -391,7 +391,7 @@ func (e *StorageExecutor) executeMultiMatch(ctx context.Context, cypher string) 
 	hasAggregation := false
 	isAggFlags := make([]bool, len(returnItems))
 	for i, item := range returnItems {
-		isAggFlags[i] = isAggregateFunc(item.expr)
+		isAggFlags[i] = len(findAggregateSpans(item.expr)) > 0
 		if isAggFlags[i] {
 			hasAggregation = true
 		}
@@ -405,6 +405,34 @@ func (e *StorageExecutor) executeMultiMatch(ctx context.Context, cypher string) 
 			return relBindings[idx]
 		}
 		return nil
+	}
+	if hasAggregation {
+		aggregateRows := make([]traversalOptRow, 0, len(bindings))
+		for idx, nodeBindings := range bindings {
+			aggregateRows = append(aggregateRows, traversalOptRow{
+				nodes: map[string]*storage.Node(nodeBindings),
+				rels:  relAt(idx),
+			})
+		}
+		aggregated, err := e.aggregateTraversalOptionalRows(ctx, aggregateRows, returnItems)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range aggregated {
+			for itemIdx, item := range returnItems {
+				if isAggregateFuncName(item.expr, "sum") {
+					if sum, ok := toFloat64(row[itemIdx]); ok {
+						row[itemIdx] = sum
+					}
+				}
+			}
+		}
+		result.Rows = aggregated
+		modifiers := strings.TrimSpace(returnPart[returnEndIdx:])
+		if modifiers == "" {
+			return result, nil
+		}
+		return e.applyResultModifiers(result, modifiers)
 	}
 
 	if hasAggregation {
@@ -1868,112 +1896,15 @@ func (e *StorageExecutor) executeCartesianAggregation(
 	returnItems []returnItem,
 	result *ExecuteResult,
 ) (*ExecuteResult, error) {
-	// Check if we have grouping columns (non-aggregated expressions)
-	hasGrouping := false
-	for _, item := range returnItems {
-		upper := strings.ToUpper(item.expr)
-		if !strings.HasPrefix(upper, "COUNT(") &&
-			!strings.HasPrefix(upper, "SUM(") &&
-			!strings.HasPrefix(upper, "AVG(") &&
-			!strings.HasPrefix(upper, "MIN(") &&
-			!strings.HasPrefix(upper, "MAX(") &&
-			!strings.HasPrefix(upper, "COLLECT(") {
-			hasGrouping = true
-			break
-		}
-	}
-
-	if !hasGrouping {
-		// Simple aggregation without grouping
-		row := make([]interface{}, len(returnItems))
-		for i, item := range returnItems {
-			upper := strings.ToUpper(item.expr)
-			switch {
-			case strings.HasPrefix(upper, "COUNT("):
-				row[i] = int64(len(allMatches))
-			case strings.HasPrefix(upper, "COLLECT("):
-				inner := item.expr[8 : len(item.expr)-1]
-				collected := make([]interface{}, 0, len(allMatches))
-				for _, match := range allMatches {
-					val := e.evaluateExpressionWithContext(ctx, inner, match, nil)
-					collected = append(collected, val)
-				}
-				row[i] = collected
-			default:
-				if len(allMatches) > 0 {
-					row[i] = e.evaluateExpressionWithContext(ctx, item.expr, allMatches[0], nil)
-				}
-			}
-		}
-		result.Rows = append(result.Rows, row)
-		return result, nil
-	}
-
-	// GROUP BY: group by non-aggregation columns
-	groups := make(map[string][]map[string]*storage.Node)
-	groupKeys := make(map[string][]interface{})
-
+	rows := make([]traversalOptRow, 0, len(allMatches))
 	for _, match := range allMatches {
-		keyParts := make([]interface{}, 0)
-		for _, item := range returnItems {
-			upper := strings.ToUpper(item.expr)
-			if !strings.HasPrefix(upper, "COUNT(") &&
-				!strings.HasPrefix(upper, "SUM(") &&
-				!strings.HasPrefix(upper, "AVG(") &&
-				!strings.HasPrefix(upper, "MIN(") &&
-				!strings.HasPrefix(upper, "MAX(") &&
-				!strings.HasPrefix(upper, "COLLECT(") {
-				val := e.evaluateExpressionWithContext(ctx, item.expr, match, nil)
-				keyParts = append(keyParts, val)
-			}
-		}
-		key := fmt.Sprintf("%v", keyParts)
-		groups[key] = append(groups[key], match)
-		if _, exists := groupKeys[key]; !exists {
-			groupKeys[key] = keyParts
-		}
+		rows = append(rows, traversalOptRow{nodes: match, rels: nil})
 	}
-
-	// Build result rows for each group
-	for key, groupMatches := range groups {
-		row := make([]interface{}, len(returnItems))
-		keyIdx := 0
-
-		for i, item := range returnItems {
-			upper := strings.ToUpper(item.expr)
-			if !strings.HasPrefix(upper, "COUNT(") &&
-				!strings.HasPrefix(upper, "SUM(") &&
-				!strings.HasPrefix(upper, "AVG(") &&
-				!strings.HasPrefix(upper, "MIN(") &&
-				!strings.HasPrefix(upper, "MAX(") &&
-				!strings.HasPrefix(upper, "COLLECT(") {
-				// Non-aggregated column
-				row[i] = groupKeys[key][keyIdx]
-				keyIdx++
-				continue
-			}
-
-			// Aggregation
-			switch {
-			case strings.HasPrefix(upper, "COUNT("):
-				row[i] = int64(len(groupMatches))
-			case strings.HasPrefix(upper, "COLLECT("):
-				inner := item.expr[8 : len(item.expr)-1]
-				collected := make([]interface{}, 0, len(groupMatches))
-				for _, match := range groupMatches {
-					val := e.evaluateExpressionWithContext(ctx, inner, match, nil)
-					collected = append(collected, val)
-				}
-				row[i] = collected
-			default:
-				if len(groupMatches) > 0 {
-					row[i] = e.evaluateExpressionWithContext(ctx, item.expr, groupMatches[0], nil)
-				}
-			}
-		}
-		result.Rows = append(result.Rows, row)
+	aggregated, err := e.aggregateTraversalOptionalRows(ctx, rows, returnItems)
+	if err != nil {
+		return nil, err
 	}
-
+	result.Rows = aggregated
 	return result, nil
 }
 

@@ -15,6 +15,7 @@ import (
 	nerrors "github.com/orneryd/nornicdb/pkg/errors"
 	"github.com/orneryd/nornicdb/pkg/localization"
 	"github.com/orneryd/nornicdb/pkg/storage"
+	"github.com/orneryd/nornicdb/pkg/util"
 )
 
 func mergeNodeHasLabels(node *storage.Node, labels []string) bool {
@@ -833,7 +834,13 @@ func (e *StorageExecutor) executeCompoundMatchUnwindMerge(ctx context.Context, c
 		return nil, localizedError(localization.CypherMergeUnwindASRequired(), nil)
 	}
 	listExpr := strings.TrimSpace(unwindPart[:asIdx])
-	unwindVar := strings.TrimSpace(unwindPart[asIdx+4:])
+	unwindTail := strings.TrimSpace(unwindPart[asIdx+4:])
+	unwindVar := unwindTail
+	trailingMatch := ""
+	if matchIdx := findKeywordIndexInContext(unwindTail, "MATCH"); matchIdx > 0 {
+		unwindVar = strings.TrimSpace(unwindTail[:matchIdx])
+		trailingMatch = strings.TrimSpace(unwindTail[matchIdx:])
+	}
 
 	// Resolve the list to unwind.
 	var listVal interface{}
@@ -880,10 +887,56 @@ func (e *StorageExecutor) executeCompoundMatchUnwindMerge(ctx context.Context, c
 		Stats:   &QueryStats{},
 	}
 
+	var trailingCandidates []*storage.Node
+	preparedTrailingMatch := false
+	if trailingMatch != "" {
+		trailingCandidates, preparedTrailingMatch, err = e.prepareRepeatedSimpleNodeMatch(ctx, trailingMatch)
+		if err != nil {
+			return nil, localizedError(localization.CypherMergeMatchExecutionFailed(err), err)
+		}
+	}
+
 	// For each matched node context × each unwind item, substitute the variable
 	// and execute the MERGE.
 	for _, nodeContext := range matchedNodes {
 		for _, item := range items {
+			nodeContexts := []map[string]*storage.Node{nodeContext}
+			relContexts := []map[string]*storage.Edge{matchedRels}
+			if trailingMatch != "" {
+				substitutedMatch := replaceIdentifierOutsideQuotes(trailingMatch, unwindVar, valueToCypherLiteral(item))
+				var trailingNodes []map[string]*storage.Node
+				var trailingRels map[string]*storage.Edge
+				if preparedTrailingMatch {
+					trailingNodes = e.matchRepeatedSimpleNode(ctx, substitutedMatch, trailingCandidates)
+					trailingRels = map[string]*storage.Edge{}
+				} else {
+					trailingNodes, trailingRels, err = e.executeMatchForContext(ctx, substitutedMatch)
+					if err != nil {
+						return nil, localizedError(localization.CypherMergeMatchExecutionFailed(err), nil)
+					}
+				}
+				nodeContexts = nodeContexts[:0]
+				relContexts = relContexts[:0]
+				for _, trailingContext := range trailingNodes {
+					combinedNodes := make(map[string]*storage.Node, util.SafePreallocSum(len(nodeContext), len(trailingContext)))
+					for name, node := range nodeContext {
+						combinedNodes[name] = node
+					}
+					for name, node := range trailingContext {
+						combinedNodes[name] = node
+					}
+					combinedRels := make(map[string]*storage.Edge, util.SafePreallocSum(len(matchedRels), len(trailingRels)))
+					for name, edge := range matchedRels {
+						combinedRels[name] = edge
+					}
+					for name, edge := range trailingRels {
+						combinedRels[name] = edge
+					}
+					nodeContexts = append(nodeContexts, combinedNodes)
+					relContexts = append(relContexts, combinedRels)
+				}
+			}
+
 			// Substitute the unwind variable in the merge clause with the concrete value.
 			substitutedMerge := e.replaceVariableInMutationQuery(mergeMutationPart, unwindVar, item)
 			fullMerge := substitutedMerge
@@ -891,21 +944,23 @@ func (e *StorageExecutor) executeCompoundMatchUnwindMerge(ctx context.Context, c
 				fullMerge = substitutedMerge + " " + returnPart
 			}
 
-			mergeResult, err := e.executeMergeWithContext(ctx, fullMerge, nodeContext, matchedRels)
-			if err != nil {
-				return nil, err
-			}
+			for contextIdx, mergeContext := range nodeContexts {
+				mergeResult, err := e.executeMergeWithContext(ctx, fullMerge, mergeContext, relContexts[contextIdx])
+				if err != nil {
+					return nil, err
+				}
 
-			if mergeResult.Stats != nil {
-				result.Stats.NodesCreated += mergeResult.Stats.NodesCreated
-				result.Stats.RelationshipsCreated += mergeResult.Stats.RelationshipsCreated
-				result.Stats.PropertiesSet += mergeResult.Stats.PropertiesSet
-			}
+				if mergeResult.Stats != nil {
+					result.Stats.NodesCreated += mergeResult.Stats.NodesCreated
+					result.Stats.RelationshipsCreated += mergeResult.Stats.RelationshipsCreated
+					result.Stats.PropertiesSet += mergeResult.Stats.PropertiesSet
+				}
 
-			if len(mergeResult.Columns) > 0 && len(result.Columns) == 0 {
-				result.Columns = mergeResult.Columns
+				if len(mergeResult.Columns) > 0 && len(result.Columns) == 0 {
+					result.Columns = mergeResult.Columns
+				}
+				result.Rows = append(result.Rows, mergeResult.Rows...)
 			}
-			result.Rows = append(result.Rows, mergeResult.Rows...)
 		}
 	}
 
@@ -979,6 +1034,47 @@ func applyContextWindow(contexts []map[string]*storage.Node, variable string, sk
 		end = len(filtered)
 	}
 	return filtered[skip:end]
+}
+
+func (e *StorageExecutor) prepareRepeatedSimpleNodeMatch(ctx context.Context, matchClause string) ([]*storage.Node, bool, error) {
+	if findKeywordIndex(matchClause, "WHERE") > 0 {
+		return nil, false, nil
+	}
+	patternPart := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(matchClause), "MATCH"))
+	if strings.Contains(patternPart, "->") || strings.Contains(patternPart, "<-") || strings.Contains(patternPart, "]-") {
+		return nil, false, nil
+	}
+	nodePatterns := e.splitNodePatterns(patternPart)
+	if len(nodePatterns) != 1 {
+		return nil, false, nil
+	}
+
+	nodeInfo := e.parseNodePattern(ctx, nodePatterns[0])
+	store := e.getStorage(ctx)
+	if len(nodeInfo.labels) > 0 {
+		candidates, err := store.GetNodesByLabel(nodeInfo.labels[0])
+		if err != nil {
+			return nil, false, localizedError(localization.CypherMergeMatchLabelLookupFailed(nodeInfo.labels[0], err), err)
+		}
+		return candidates, true, nil
+	}
+	candidates, err := store.AllNodes()
+	if err != nil {
+		return nil, false, localizedError(localization.CypherMergeMatchAllNodesFailed(err), err)
+	}
+	return candidates, true, nil
+}
+
+func (e *StorageExecutor) matchRepeatedSimpleNode(ctx context.Context, matchClause string, candidates []*storage.Node) []map[string]*storage.Node {
+	patternPart := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(matchClause), "MATCH"))
+	nodeInfo := e.parseNodePattern(ctx, patternPart)
+	matches := make([]map[string]*storage.Node, 0, 1)
+	for _, node := range candidates {
+		if e.nodeMatchesProps(node, nodeInfo.properties) {
+			matches = append(matches, map[string]*storage.Node{nodeInfo.variable: node})
+		}
+	}
+	return matches
 }
 
 // executeMatchForContext executes a MATCH clause and returns matched nodes by variable name.
@@ -2036,9 +2132,11 @@ func (e *StorageExecutor) executeMergeRelationshipWithContext(ctx context.Contex
 	startNode := nodeContext[startVar]
 	endNode := nodeContext[endVar]
 
-	if startNode == nil || endNode == nil {
-		// Nodes not in context - can't create relationship
-		return result, nil
+	if startNode == nil {
+		return nil, localizedError(localization.CypherMergeStartVariableNotBound(startVar, getKeys(nodeContext)), nil)
+	}
+	if endNode == nil {
+		return nil, localizedError(localization.CypherMergeEndVariableNotBound(endVar, getKeys(nodeContext)), nil)
 	}
 
 	// Cypher relationship properties inside the MERGE pattern are identity

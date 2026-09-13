@@ -338,6 +338,21 @@ func (e *StorageExecutor) executeMatchWithRelationshipsWithPath(ctx context.Cont
 		}
 		paths = filtered
 	}
+	for _, item := range returnItems {
+		if !isAggregateFunc(item.expr) && containsAggregateFunc(item.expr) {
+			rows := make([]traversalOptRow, 0, len(paths))
+			for _, path := range paths {
+				pathContext := e.buildPathContext(path, matches)
+				rows = append(rows, traversalOptRow{nodes: pathContext.nodes, rels: pathContext.rels})
+			}
+			aggregated, err := e.aggregateTraversalOptionalRows(ctx, rows, returnItems)
+			if err != nil {
+				return nil, err
+			}
+			result.Rows = aggregated
+			return result, nil
+		}
+	}
 
 	// Pre-compute upper-case expressions and aggregation flags ONCE for all items
 	// This avoids repeated strings.ToUpper() calls in loops (major performance win)

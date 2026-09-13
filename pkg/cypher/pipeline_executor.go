@@ -483,6 +483,11 @@ func (e *StorageExecutor) executeCreateWithRefsOrCompound(ctx context.Context, q
 func (e *StorageExecutor) pipelineApplyWith(rows []pipelineRow, clause string) ([]pipelineRow, bool) {
 	body := strings.TrimSpace(strings.TrimPrefix(clause, "WITH"))
 	body = strings.TrimPrefix(body, "with")
+	withDistinct := false
+	if strings.HasPrefix(strings.ToUpper(body), "DISTINCT ") {
+		withDistinct = true
+		body = strings.TrimSpace(body[len("DISTINCT "):])
+	}
 	items := splitTopLevelComma(body)
 	if len(items) == 0 {
 		return rows, true
@@ -497,6 +502,7 @@ func (e *StorageExecutor) pipelineApplyWith(rows []pipelineRow, clause string) (
 		collectExpr string
 	}
 	projections := make([]withProjection, 0, len(items))
+	projectionAliases := make([]string, 0, len(items))
 	hasAggregate := false
 	for _, rawItem := range items {
 		item := strings.TrimSpace(rawItem)
@@ -533,6 +539,7 @@ func (e *StorageExecutor) pipelineApplyWith(rows []pipelineRow, clause string) (
 			hasAggregate = true
 		}
 		projections = append(projections, projection)
+		projectionAliases = append(projectionAliases, alias)
 	}
 	if hasAggregate {
 		type aggregateGroup struct {
@@ -599,6 +606,9 @@ func (e *StorageExecutor) pipelineApplyWith(rows []pipelineRow, clause string) (
 				newRow[projection.alias] = values
 			}
 			out = append(out, newRow)
+		}
+		if withDistinct {
+			out = deduplicatePipelineRows(out, projectionAliases)
 		}
 		return out, true
 	}
@@ -670,7 +680,28 @@ func (e *StorageExecutor) pipelineApplyWith(rows []pipelineRow, clause string) (
 		}
 		out = append(out, newRow)
 	}
+	if withDistinct {
+		out = deduplicatePipelineRows(out, projectionAliases)
+	}
 	return out, true
+}
+
+func deduplicatePipelineRows(rows []pipelineRow, columns []string) []pipelineRow {
+	seen := make(map[string]struct{}, len(rows))
+	unique := make([]pipelineRow, 0, len(rows))
+	keys := make([]string, len(columns))
+	for _, row := range rows {
+		for i, column := range columns {
+			keys[i] = pipelineValueKey(row[column])
+		}
+		key := strings.Join(keys, "\x1f")
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, row)
+	}
+	return unique
 }
 
 // pipelineApplyUnwind evaluates the list expression (which may be a literal,
@@ -731,9 +762,11 @@ func (e *StorageExecutor) pipelineApplyReturn(rows []pipelineRow, clause string)
 	}
 
 	type proj struct {
-		expr   string
-		alias  string
-		isAggr bool // count(*) / count(var)
+		expr          string
+		alias         string
+		isAggr        bool
+		aggregateExpr string
+		distinct      bool
 	}
 	var projs []proj
 	aggregateOnly := true
@@ -755,7 +788,15 @@ func (e *StorageExecutor) pipelineApplyReturn(rows []pipelineRow, clause string)
 		if !isAggr {
 			aggregateOnly = false
 		}
-		projs = append(projs, proj{expr: expr, alias: alias, isAggr: isAggr})
+		projection := proj{expr: expr, alias: alias, isAggr: isAggr}
+		if isAggr {
+			projection.aggregateExpr = strings.TrimSpace(extractFuncInner(expr))
+			if strings.HasPrefix(strings.ToUpper(projection.aggregateExpr), "DISTINCT ") {
+				projection.distinct = true
+				projection.aggregateExpr = strings.TrimSpace(projection.aggregateExpr[len("DISTINCT "):])
+			}
+		}
+		projs = append(projs, projection)
 	}
 
 	result := &ExecuteResult{}
@@ -766,8 +807,28 @@ func (e *StorageExecutor) pipelineApplyReturn(rows []pipelineRow, clause string)
 	// All aggregates → collapse to a single result row.
 	if aggregateOnly {
 		row := make([]interface{}, 0, len(projs))
-		for range projs {
-			row = append(row, int64(len(rows)))
+		for _, projection := range projs {
+			if projection.aggregateExpr == "*" {
+				row = append(row, int64(len(rows)))
+				continue
+			}
+			var count int64
+			seen := make(map[string]struct{})
+			for _, inputRow := range rows {
+				value, ok := projectFromRow(inputRow, projection.aggregateExpr)
+				if !ok || value == nil {
+					continue
+				}
+				if projection.distinct {
+					key := pipelineValueKey(value)
+					if _, exists := seen[key]; exists {
+						continue
+					}
+					seen[key] = struct{}{}
+				}
+				count++
+			}
+			row = append(row, count)
 		}
 		result.Rows = [][]interface{}{row}
 		return result, true
