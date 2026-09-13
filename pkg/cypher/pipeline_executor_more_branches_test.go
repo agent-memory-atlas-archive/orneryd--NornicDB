@@ -1,6 +1,7 @@
 package cypher
 
 import (
+	"context"
 	"testing"
 
 	"github.com/orneryd/nornicdb/pkg/storage"
@@ -16,18 +17,18 @@ func TestPipelineApplyWith_AdditionalBranches(t *testing.T) {
 		},
 	}
 
-	out, ok := exec.pipelineApplyWith(rows, "WITH")
+	out, ok := exec.pipelineApplyWith(context.Background(), rows, "WITH")
 	require.True(t, ok)
 	require.Equal(t, rows, out)
 
 	// Aggregate with alias collapses rows.
-	aggOut, ok := exec.pipelineApplyWith([]pipelineRow{{"x": 1}, {"x": 2}}, "WITH count(*) AS c")
+	aggOut, ok := exec.pipelineApplyWith(context.Background(), []pipelineRow{{"x": 1}, {"x": 2}}, "WITH count(*) AS c")
 	require.True(t, ok)
 	require.Len(t, aggOut, 1)
 	require.EqualValues(t, int64(2), aggOut[0]["c"])
 
 	// Property projection from node and map plus literal scalar.
-	out, ok = exec.pipelineApplyWith(rows, "WITH n.name AS name, m.score AS score, 42 AS answer")
+	out, ok = exec.pipelineApplyWith(context.Background(), rows, "WITH n.name AS name, m.score AS score, 42 AS answer")
 	require.True(t, ok)
 	require.Len(t, out, 1)
 	require.Equal(t, "alice", out[0]["name"])
@@ -35,12 +36,12 @@ func TestPipelineApplyWith_AdditionalBranches(t *testing.T) {
 	require.EqualValues(t, int64(42), out[0]["answer"])
 
 	// COUNT without alias is unsupported in WITH projection and must fall back.
-	out, ok = exec.pipelineApplyWith(rows, "WITH count(*)")
+	out, ok = exec.pipelineApplyWith(context.Background(), rows, "WITH count(*)")
 	require.False(t, ok)
 	require.Nil(t, out)
 
 	// Unknown expression also falls back.
-	out, ok = exec.pipelineApplyWith(rows, "WITH unknownExpr AS x")
+	out, ok = exec.pipelineApplyWith(context.Background(), rows, "WITH unknownExpr AS x")
 	require.False(t, ok)
 	require.Nil(t, out)
 }

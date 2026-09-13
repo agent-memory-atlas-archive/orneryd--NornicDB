@@ -233,7 +233,7 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 				result.Stats.RelationshipsCreated += stats.RelationshipsCreated
 			}
 		case pipelineClauseWith:
-			newRows, ok := e.pipelineApplyWith(rows, clause.text)
+			newRows, ok := e.pipelineApplyWith(ctx, rows, clause.text)
 			if !ok {
 				return nil, false, nil
 			}
@@ -267,6 +267,10 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 // MATCH in the middle of a pipeline binds zero rows, it does NOT fail — it
 // just zeros out the pipeline (matches Neo4j semantics for chained MATCH).
 func (e *StorageExecutor) pipelineApplyMatch(ctx context.Context, rows []pipelineRow, clause string) ([]pipelineRow, bool, error) {
+	if expanded, ok, err := e.pipelineApplyBoundTraversalMatch(ctx, rows, clause); ok || err != nil {
+		return expanded, ok, err
+	}
+
 	// If the MATCH has scalar references to already-bound variables (e.g.
 	// `MATCH (p:Product {productID: prodRef.productID})`), substitute them
 	// per-row and re-seed referenced node variables by ID before invoking the
@@ -356,6 +360,97 @@ func (e *StorageExecutor) pipelineApplyMatch(ctx context.Context, rows []pipelin
 	}
 	// No matches → empty pipeline (legal).
 	return out, true, nil
+}
+
+func (e *StorageExecutor) pipelineApplyBoundTraversalMatch(ctx context.Context, rows []pipelineRow, clause string) ([]pipelineRow, bool, error) {
+	if len(rows) == 0 {
+		return rows, true, nil
+	}
+	pattern := strings.TrimSpace(clause[len("MATCH"):])
+	if findKeywordIndexInContext(pattern, "WHERE") >= 0 || strings.Contains(pattern, "*") || strings.Contains(pattern, "{") {
+		return nil, false, nil
+	}
+	nodeGroups, brackets := scanOptionalPatternShape(pattern)
+	if nodeGroups != 2 || brackets != 1 {
+		return nil, false, nil
+	}
+	endpoints, err := e.parseOptionalClauseEndpoints(ctx, pattern)
+	if err != nil || endpoints.source.variable == "" || endpoints.target.variable == "" {
+		return nil, false, nil
+	}
+	if _, sourceBound := rows[0][endpoints.source.variable]; !sourceBound {
+		return nil, false, nil
+	}
+	if _, targetBound := rows[0][endpoints.target.variable]; targetBound {
+		return nil, false, nil
+	}
+
+	store := e.getStorage(ctx)
+	out := make([]pipelineRow, 0, len(rows))
+	for _, row := range rows {
+		source, ok := row[endpoints.source.variable].(*storage.Node)
+		if !ok || source == nil || !pipelineNodeMatchesPattern(source, endpoints.source) {
+			continue
+		}
+
+		var edges []*storage.Edge
+		switch endpoints.direction {
+		case "out":
+			edges, err = store.GetOutgoingEdges(source.ID)
+		case "in":
+			edges, err = store.GetIncomingEdges(source.ID)
+		default:
+			var incoming []*storage.Edge
+			edges, err = store.GetOutgoingEdges(source.ID)
+			if err == nil {
+				incoming, err = store.GetIncomingEdges(source.ID)
+				edges = append(edges, incoming...)
+			}
+		}
+		if err != nil {
+			return nil, true, err
+		}
+
+		for _, edge := range edges {
+			if endpoints.relType != "" && edge.Type != endpoints.relType {
+				continue
+			}
+			targetID := edge.EndNode
+			if edge.StartNode != source.ID {
+				targetID = edge.StartNode
+			}
+			target, getErr := store.GetNode(targetID)
+			if getErr != nil {
+				return nil, true, getErr
+			}
+			if target == nil || !pipelineNodeMatchesPattern(target, endpoints.target) {
+				continue
+			}
+
+			expanded := make(pipelineRow, util.SafePreallocSum(len(row), 2))
+			for name, value := range row {
+				expanded[name] = value
+			}
+			expanded[endpoints.target.variable] = target
+			if endpoints.relVar != "" {
+				expanded[endpoints.relVar] = edge
+			}
+			out = append(out, expanded)
+		}
+	}
+	return out, true, nil
+}
+
+func pipelineNodeMatchesPattern(node *storage.Node, pattern nodePatternInfo) bool {
+	if !mergeNodeHasLabels(node, pattern.labels) {
+		return false
+	}
+	for property, expected := range pattern.properties {
+		if actual, exists := node.Properties[property]; !exists || !reflect.DeepEqual(actual, expected) {
+			return false
+		}
+	}
+	return true
 }
 
 // pipelineApplyCreate runs CREATE for each binding row, threading pre-bound
@@ -480,9 +575,14 @@ func (e *StorageExecutor) executeCreateWithRefsOrCompound(ctx context.Context, q
 //   - aggregate pass-thru: `WITH count(*) AS c`   counts current rows
 //
 // Anything else returns ok=false so the caller can fall back.
-func (e *StorageExecutor) pipelineApplyWith(rows []pipelineRow, clause string) ([]pipelineRow, bool) {
+func (e *StorageExecutor) pipelineApplyWith(ctx context.Context, rows []pipelineRow, clause string) ([]pipelineRow, bool) {
 	body := strings.TrimSpace(strings.TrimPrefix(clause, "WITH"))
 	body = strings.TrimPrefix(body, "with")
+	postWithWhere := ""
+	if whereIdx := findKeywordIndexInContext(body, "WHERE"); whereIdx >= 0 {
+		postWithWhere = strings.TrimSpace(body[whereIdx+len("WHERE"):])
+		body = strings.TrimSpace(body[:whereIdx])
+	}
 	withDistinct := false
 	if strings.HasPrefix(strings.ToUpper(body), "DISTINCT ") {
 		withDistinct = true
@@ -610,7 +710,7 @@ func (e *StorageExecutor) pipelineApplyWith(rows []pipelineRow, clause string) (
 		if withDistinct {
 			out = deduplicatePipelineRows(out, projectionAliases)
 		}
-		return out, true
+		return e.filterPipelineRows(ctx, out, postWithWhere), true
 	}
 
 	out := make([]pipelineRow, 0, len(rows))
@@ -643,6 +743,11 @@ func (e *StorageExecutor) pipelineApplyWith(rows []pipelineRow, clause string) (
 				if !ok {
 					return nil, false
 				}
+				newRow[alias] = value
+				continue
+			}
+
+			if value, projected := projectFromRow(row, expr); projected {
 				newRow[alias] = value
 				continue
 			}
@@ -683,7 +788,20 @@ func (e *StorageExecutor) pipelineApplyWith(rows []pipelineRow, clause string) (
 	if withDistinct {
 		out = deduplicatePipelineRows(out, projectionAliases)
 	}
-	return out, true
+	return e.filterPipelineRows(ctx, out, postWithWhere), true
+}
+
+func (e *StorageExecutor) filterPipelineRows(ctx context.Context, rows []pipelineRow, whereClause string) []pipelineRow {
+	if whereClause == "" {
+		return rows
+	}
+	filtered := rows[:0]
+	for _, row := range rows {
+		if e.evaluateWithWhereCondition(ctx, whereClause, map[string]interface{}(row)) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
 }
 
 func deduplicatePipelineRows(rows []pipelineRow, columns []string) []pipelineRow {
@@ -750,15 +868,19 @@ func (e *StorageExecutor) pipelineApplyUnwind(rows []pipelineRow, clause string)
 func (e *StorageExecutor) pipelineApplyReturn(rows []pipelineRow, clause string) (*ExecuteResult, bool) {
 	body := strings.TrimSpace(strings.TrimPrefix(clause, "RETURN"))
 	body = strings.TrimPrefix(body, "return")
+	modifierStart := len(body)
 	for _, keyword := range []string{"ORDER BY", "SKIP", "LIMIT"} {
-		if idx := findKeywordIndex(body, keyword); idx >= 0 {
-			body = strings.TrimSpace(body[:idx])
-			break
+		if idx := findKeywordIndex(body, keyword); idx >= 0 && idx < modifierStart {
+			modifierStart = idx
 		}
 	}
+	modifiers := strings.TrimSpace(body[modifierStart:])
+	body = strings.TrimSpace(body[:modifierStart])
 	items := splitTopLevelComma(body)
 	if len(items) == 0 {
-		return &ExecuteResult{Columns: []string{"n"}, Rows: [][]interface{}{{int64(len(rows))}}}, true
+		result := &ExecuteResult{Columns: []string{"n"}, Rows: [][]interface{}{{int64(len(rows))}}}
+		result, err := e.applyResultModifiers(result, modifiers)
+		return result, err == nil
 	}
 
 	type proj struct {
@@ -831,7 +953,8 @@ func (e *StorageExecutor) pipelineApplyReturn(rows []pipelineRow, clause string)
 			row = append(row, count)
 		}
 		result.Rows = [][]interface{}{row}
-		return result, true
+		result, err := e.applyResultModifiers(result, modifiers)
+		return result, err == nil
 	}
 
 	for _, row := range rows {
@@ -850,7 +973,8 @@ func (e *StorageExecutor) pipelineApplyReturn(rows []pipelineRow, clause string)
 		}
 		result.Rows = append(result.Rows, outRow)
 	}
-	return result, true
+	result, err := e.applyResultModifiers(result, modifiers)
+	return result, err == nil
 }
 
 // projectFromRow resolves a RETURN / WITH expression against a single

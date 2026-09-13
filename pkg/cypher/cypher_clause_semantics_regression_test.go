@@ -304,3 +304,64 @@ func TestNullPropertyProjectionReturnsNull(t *testing.T) {
 	value := exec.resolveReturnExprFromVarMap(ctx, "r.id", map[string]interface{}{}, "", "", nil, nil)
 	require.Nil(t, value)
 }
+
+func seedGroupedWorkloadRows(t *testing.T, exec *StorageExecutor, ctx context.Context) {
+	t.Helper()
+	executeClauseQueries(t, exec, ctx,
+		`CREATE (:CloudAction {id: 'b-act', action: 's3:PutObject'})`,
+		`CREATE (:Workload {id: 'b-w1'})`,
+		`CREATE (:Workload {id: 'b-w2'})`,
+		`CREATE (:Function {id: 'b-fn-one', uid: 'b-fn-one'})`,
+		`CREATE (:Function {id: 'b-fn-dup', uid: 'b-fn-dup'})`,
+		`CREATE (:Function {id: 'b-fn-amb', uid: 'b-fn-amb'})`,
+		`MATCH (a:Function), (b:CloudAction {id: 'b-act'}) CREATE (a)-[:INVOKES_CLOUD_ACTION]->(b)`,
+		`MATCH (a:Function {id: 'b-fn-one'}), (b:Workload {id: 'b-w1'}) CREATE (a)-[:RUNS_IN]->(b)`,
+		`MATCH (a:Function {id: 'b-fn-dup'}), (b:Workload {id: 'b-w1'}) CREATE (a)-[:RUNS_IN]->(b) CREATE (a)-[:RUNS_IN]->(b)`,
+		`MATCH (a:Function {id: 'b-fn-amb'}), (b:Workload) CREATE (a)-[:RUNS_IN]->(b)`,
+	)
+}
+
+// Regression: initially reported in #371.
+func TestAggregatedWithWhereFiltersChainedMatchRows(t *testing.T) {
+	exec, ctx := newClauseSemanticsExecutor(t)
+	seedGroupedWorkloadRows(t, exec, ctx)
+	params := map[string]interface{}{
+		"function_uids": []string{"b-fn-one", "b-fn-dup", "b-fn-amb"},
+	}
+	prefix := `
+		MATCH (fn:Function)-[:INVOKES_CLOUD_ACTION]->(action:CloudAction)
+		WHERE fn.uid IN $function_uids
+		MATCH (fn)-[:RUNS_IN]->(workload:Workload)
+		WITH fn, action, collect(DISTINCT workload) AS workloads
+	`
+
+	tests := []struct {
+		name string
+		tail string
+		rows [][]interface{}
+	}{
+		{
+			name: "filter by aggregate expression",
+			tail: `WHERE size(workloads) = 1 RETURN fn.uid AS f, size(workloads) AS n ORDER BY f`,
+			rows: [][]interface{}{{"b-fn-dup", int64(1)}, {"b-fn-one", int64(1)}},
+		},
+		{
+			name: "filter by projected aggregate scalar",
+			tail: `WITH fn, action, workloads, size(workloads) AS n WHERE n = 1 RETURN fn.uid AS f, n ORDER BY f`,
+			rows: [][]interface{}{{"b-fn-dup", int64(1)}, {"b-fn-one", int64(1)}},
+		},
+		{
+			name: "filter remains independent of return projection",
+			tail: `WHERE size(workloads) > 1 RETURN fn.uid AS f ORDER BY f`,
+			rows: [][]interface{}{{"b-fn-amb"}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := exec.Execute(ctx, prefix+test.tail, params)
+			require.NoError(t, err)
+			require.Equal(t, test.rows, result.Rows)
+		})
+	}
+}

@@ -162,3 +162,42 @@ func BenchmarkDistinctAndNestedAggregation(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkChainedMatchAggregatedWithFilter(b *testing.B) {
+	exec, store := newClauseSemanticsBenchmarkExecutor(b)
+	ctx := context.Background()
+	action := createBenchmarkNode(b, store, "with-filter-action", "BenchWithFilterAction")
+	functionIDs := make([]string, 100)
+	for i := range functionIDs {
+		functionIDs[i] = fmt.Sprintf("with-filter-function-%d", i)
+		function := createBenchmarkNode(b, store, functionIDs[i], "BenchWithFilterFunction")
+		createBenchmarkEdge(b, store, fmt.Sprintf("with-filter-action-edge-%d", i), "BENCH_INVOKES", function, action)
+		workload := createBenchmarkNode(b, store, fmt.Sprintf("with-filter-workload-%d-0", i), "BenchWithFilterWorkload")
+		createBenchmarkEdge(b, store, fmt.Sprintf("with-filter-workload-edge-%d-0", i), "BENCH_RUNS_IN", function, workload)
+		if i%2 == 0 {
+			second := createBenchmarkNode(b, store, fmt.Sprintf("with-filter-workload-%d-1", i), "BenchWithFilterWorkload")
+			createBenchmarkEdge(b, store, fmt.Sprintf("with-filter-workload-edge-%d-1", i), "BENCH_RUNS_IN", function, second)
+		}
+	}
+
+	const query = `
+		MATCH (fn:BenchWithFilterFunction)-[:BENCH_INVOKES]->(:BenchWithFilterAction)
+		WHERE fn.id IN $function_ids
+		MATCH (fn)-[:BENCH_RUNS_IN]->(workload:BenchWithFilterWorkload)
+		WITH fn, collect(DISTINCT workload) AS workloads
+		WHERE size(workloads) = 1
+		RETURN fn.id AS functionID, size(workloads) AS workloadCount
+		ORDER BY functionID`
+	params := map[string]interface{}{"function_ids": functionIDs}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		result, err := exec.Execute(ctx, query, params)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(result.Rows) != 50 {
+			b.Fatalf("unexpected row count: %d", len(result.Rows))
+		}
+	}
+}
