@@ -125,6 +125,69 @@ func BenchmarkReverseOptionalTwoHopProjection(b *testing.B) {
 	}
 }
 
+func BenchmarkBoundEndIncomingPatternExpressions(b *testing.B) {
+	exec, store := newClauseSemanticsBenchmarkExecutor(b)
+	ctx := context.Background()
+	target := createBenchmarkNode(b, store, "bound-end-target", "BenchBoundEnd")
+	for i := 0; i < 100; i++ {
+		source := createBenchmarkNode(b, store, fmt.Sprintf("bound-end-source-%d", i), "BenchBoundEnd")
+		createBenchmarkEdge(b, store, fmt.Sprintf("bound-end-incoming-%d", i), "BENCH_CALLS", source, target)
+	}
+	for i := 0; i < 25; i++ {
+		destination := createBenchmarkNode(b, store, fmt.Sprintf("bound-end-destination-%d", i), "BenchBoundEnd")
+		createBenchmarkEdge(b, store, fmt.Sprintf("bound-end-outgoing-%d", i), "BENCH_CALLS", target, destination)
+	}
+
+	tests := []struct {
+		name     string
+		query    string
+		expected interface{}
+	}{
+		{
+			name: "optional after aggregating with",
+			query: `MATCH (e:BenchBoundEnd {id: 'bound-end-target'})
+				OPTIONAL MATCH (e)-[o:BENCH_CALLS]->()
+				WITH e, count(DISTINCT o) AS outgoing
+				OPTIONAL MATCH ()-[i:BENCH_CALLS]->(e)
+				RETURN outgoing, count(DISTINCT i) AS incoming`,
+			expected: int64(100),
+		},
+		{
+			name:     "pattern comprehension",
+			query:    `MATCH (e:BenchBoundEnd {id: 'bound-end-target'}) RETURN [()-[:BENCH_CALLS]->(e) | e.id] AS callers`,
+			expected: 100,
+		},
+		{
+			name:     "count subquery",
+			query:    `MATCH (e:BenchBoundEnd {id: 'bound-end-target'}) RETURN COUNT { ()-[:BENCH_CALLS]->(e) } AS incoming`,
+			expected: int64(100),
+		},
+	}
+
+	for _, test := range tests {
+		b.Run(test.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				result, err := exec.Execute(ctx, test.query, nil)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(result.Rows) != 1 {
+					b.Fatalf("unexpected row count: %d", len(result.Rows))
+				}
+				if expectedLen, ok := test.expected.(int); ok {
+					values, ok := result.Rows[0][0].([]interface{})
+					if !ok || len(values) != expectedLen {
+						b.Fatalf("unexpected result: %v", result.Rows)
+					}
+				} else if result.Rows[0][len(result.Rows[0])-1] != test.expected {
+					b.Fatalf("unexpected result: %v", result.Rows)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkDistinctAndNestedAggregation(b *testing.B) {
 	exec, store := newClauseSemanticsBenchmarkExecutor(b)
 	ctx := context.Background()

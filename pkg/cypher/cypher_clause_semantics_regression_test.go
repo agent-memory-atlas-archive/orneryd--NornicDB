@@ -137,6 +137,78 @@ func TestAnonymousStartOptionalMatchBindsIncomingRelationship(t *testing.T) {
 	}
 }
 
+// Regression: initially reported in #374.
+func TestBoundEndIncomingPatternsExpandInDeclaredDirection(t *testing.T) {
+	exec, ctx := newClauseSemanticsExecutor(t)
+	executeClauseQueries(t, exec, ctx,
+		`CREATE (:Function {id: 'pom-fn'})`,
+		`CREATE (:Function {id: 'pom-o1'})`,
+		`CREATE (:Function {id: 'pom-o2'})`,
+		`CREATE (:Function {id: 'pom-c1'})`,
+		`CREATE (:Function {id: 'pom-c2'})`,
+		`CREATE (:Function {id: 'pom-c3'})`,
+		`MATCH (a:Function {id: 'pom-fn'}), (b:Function) WHERE b.id IN ['pom-o1', 'pom-o2'] CREATE (a)-[:CALLS]->(b)`,
+		`MATCH (a:Function), (b:Function {id: 'pom-fn'}) WHERE a.id IN ['pom-c1', 'pom-c2', 'pom-c3'] CREATE (a)-[:CALLS]->(b)`,
+	)
+
+	t.Run("optional match binds named start and relationship", func(t *testing.T) {
+		result, err := exec.Execute(ctx, `
+			MATCH (e:Function {id: 'pom-fn'})
+			OPTIONAL MATCH (c)-[i:CALLS]->(e)
+			RETURN c.id AS source, elementId(i) AS edge
+			ORDER BY source
+		`, nil)
+		require.NoError(t, err)
+		require.Len(t, result.Rows, 3)
+		require.Equal(t, []string{"pom-c1", "pom-c2", "pom-c3"}, []string{
+			result.Rows[0][0].(string), result.Rows[1][0].(string), result.Rows[2][0].(string),
+		})
+		for _, row := range result.Rows {
+			require.NotNil(t, row[1])
+		}
+	})
+
+	t.Run("optional match after aggregating with preserves values", func(t *testing.T) {
+		result, err := exec.Execute(ctx, `
+			MATCH (e:Function {id: 'pom-fn'})
+			OPTIONAL MATCH (e)-[o:CALLS]->()
+			WITH e, count(DISTINCT o) AS outgoing
+			OPTIONAL MATCH (c)-[i:CALLS]->(e)
+			RETURN outgoing, count(DISTINCT i) AS incoming
+		`, nil)
+		require.NoError(t, err)
+		require.Equal(t, [][]interface{}{{int64(2), int64(3)}}, result.Rows)
+	})
+
+	t.Run("pattern comprehension returns incoming bindings", func(t *testing.T) {
+		result, err := exec.Execute(ctx, `
+			MATCH (e:Function {id: 'pom-fn'})
+			RETURN [(c)-[i:CALLS]->(e) | c.id] AS sources
+		`, nil)
+		require.NoError(t, err)
+		require.Equal(t, [][]interface{}{{[]interface{}{"pom-c1", "pom-c2", "pom-c3"}}}, result.Rows)
+	})
+
+	t.Run("count subquery counts incoming bindings", func(t *testing.T) {
+		result, err := exec.Execute(ctx, `
+			MATCH (e:Function {id: 'pom-fn'})
+			RETURN COUNT { ()-[:CALLS]->(e) } AS incoming
+		`, nil)
+		require.NoError(t, err)
+		require.Equal(t, [][]interface{}{{int64(3)}}, result.Rows)
+	})
+
+	t.Run("pattern expressions discard optional null rows", func(t *testing.T) {
+		result, err := exec.Execute(ctx, `
+			MATCH (e:Function {id: 'pom-c1'})
+			RETURN [(c)-[:CALLS]->(e) | c.id] AS sources,
+			       COUNT { ()-[:CALLS]->(e) } AS incoming
+		`, nil)
+		require.NoError(t, err)
+		require.Equal(t, [][]interface{}{{[]interface{}{}, int64(0)}}, result.Rows)
+	})
+}
+
 // Regression: initially reported in #365.
 func TestMixedRelationshipAndNodePatternsCrossProduct(t *testing.T) {
 	exec, ctx := newClauseSemanticsExecutor(t)

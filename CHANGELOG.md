@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Execute CREATE clauses that follow one or more MERGE clauses, including multiple and comma-separated CREATE patterns, without misclassifying ON CREATE SET.
 - Apply every sort key before indexed pagination, including complete primary-key ties and filtered candidates beyond the initial index window.
 - Restore row bindings across mixed relationship/node MATCH products, chained and multi-hop OPTIONAL MATCH, MATCH-UNWIND-MATCH-MERGE pipelines, and null property projections.
+- Expand incoming bound-end patterns in their declared direction across OPTIONAL MATCH horizons, pattern comprehensions, and COUNT subqueries while preserving node, relationship, and scalar bindings.
 - Correct DISTINCT aggregation for nodes, relationships, and scalars across chained MATCH clauses, including nested expressions such as `size(collect(DISTINCT ...))`.
 - Apply WHERE after an aggregating WITH in chained MATCH pipelines, preserve subsequent WITH expressions and RETURN ordering, and accelerate bound-start expansion from about 80.7 ms to 0.97 ms per benchmark operation.
 - Bind every intermediate node in bound-anchor multi-hop MATCH patterns in either traversal direction, reject conflicting prior bindings, and parse each chained relationship pattern once per clause; benchmark median latency fell about 19%, bytes about 24%, and allocations about 29%.

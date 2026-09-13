@@ -3647,7 +3647,19 @@ func (e *StorageExecutor) executeCompoundMatchOptionalMatch(ctx context.Context,
 		strings.Contains(nodePatternStr, "-[")
 	optionalNodeGroups, optionalBrackets := scanOptionalPatternShape(optMatchPattern)
 	hasChainedOptional := findKeywordIndex(optMatchPattern, "OPTIONAL MATCH") > 0
-	if hasTraversal || hasChainedOptional || optionalNodeGroups > 2 || optionalBrackets > 1 {
+	requiresBoundEndExpansion := false
+	if optionalNodeGroups == 2 && optionalBrackets == 1 && withIdx < 0 {
+		if endpoints, err := e.parseOptionalClauseEndpoints(ctx, optMatchPattern); err == nil {
+			initialVars := make(map[string]struct{})
+			for _, variable := range extractNodeVariables(nodePatternStr) {
+				initialVars[variable] = struct{}{}
+			}
+			_, sourceBound := initialVars[endpoints.source.variable]
+			_, targetBound := initialVars[endpoints.target.variable]
+			requiresBoundEndExpansion = targetBound && !sourceBound
+		}
+	}
+	if hasTraversal || hasChainedOptional || optionalNodeGroups > 2 || requiresBoundEndExpansion {
 		// Traversal-seeded OPTIONAL MATCH: execute the initial MATCH (binding
 		// node AND relationship variables), left-outer join every chained
 		// OPTIONAL MATCH clause, then project through the real expression

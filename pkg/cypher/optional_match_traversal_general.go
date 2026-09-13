@@ -155,6 +155,7 @@ func (e *StorageExecutor) applySingleNodeOptionalClause(ctx context.Context, row
 					continue
 				}
 			}
+			cand.optionalMatched = true
 			out = append(out, cand)
 			matched = true
 		}
@@ -257,6 +258,7 @@ func (e *StorageExecutor) applyGeneralOptionalClause(ctx context.Context, rows [
 					continue
 				}
 			}
+			merged.optionalMatched = true
 			out = append(out, merged)
 			matched = true
 		}

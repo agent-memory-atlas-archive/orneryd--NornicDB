@@ -331,6 +331,9 @@ skipMatchCallRoute:
 	}
 
 	if startsWithMatch && optionalMatchIdx > 0 {
+		if result, ok, err := e.executePipeline(ctx, cypher); ok || err != nil {
+			return result, err
+		}
 		withBeforeOptional := findKeywordIndex(cypher[:optionalMatchIdx], "WITH")
 		if withBeforeOptional > 0 {
 			return e.executeMatchWithOptionalMatch(ctx, cypher)

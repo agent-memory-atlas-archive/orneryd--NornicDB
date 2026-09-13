@@ -33,8 +33,9 @@ import (
 // bound to nil records an OPTIONAL MATCH that found no counterpart (Cypher
 // null), which downstream projection must distinguish from "never bound".
 type traversalOptRow struct {
-	nodes map[string]*storage.Node
-	rels  map[string]*storage.Edge
+	nodes           map[string]*storage.Node
+	rels            map[string]*storage.Edge
+	optionalMatched bool
 }
 
 // optionalMatchClause is a single OPTIONAL MATCH clause: its relationship
@@ -353,6 +354,7 @@ func (e *StorageExecutor) applyTraversalOptionalClause(ctx context.Context, rows
 					continue
 				}
 			}
+			cand.optionalMatched = true
 			out = append(out, cand)
 			matched = true
 		}

@@ -35,11 +35,13 @@ import (
 
 // pipelineClauseKind enumerates the clause types the pipeline executor
 // understands. Anything else causes us to bail and return false so callers
-// fall back to the legacy handlers.
+// fall back to the legacy handlers. OPTIONAL MATCH is supported for bounded,
+// single-hop clauses after a WITH horizon.
 type pipelineClauseKind int
 
 const (
 	pipelineClauseMatch pipelineClauseKind = iota
+	pipelineClauseOptionalMatch
 	pipelineClauseCreate
 	pipelineClauseWith
 	pipelineClauseUnwind
@@ -63,9 +65,20 @@ type pipelineRow map[string]interface{}
 // MATCH, MERGE, FOREACH, CALL subquery, etc.) causes a false return so the
 // caller can fall back to the legacy path.
 func canExecuteAsPipeline(cypher string) ([]pipelineClause, bool) {
+	if optionalIdx := findMultiWordKeywordIndex(cypher, "OPTIONAL", "MATCH"); optionalIdx >= 0 {
+		withIdx := findKeywordIndex(cypher, "WITH")
+		if withIdx < 0 || findMultiWordKeywordIndex(cypher[withIdx+len("WITH"):], "OPTIONAL", "MATCH") < 0 {
+			return nil, false
+		}
+	}
 	clauses, ok := splitPipelineClauses(cypher)
 	if !ok {
 		return nil, false
+	}
+	for _, clause := range clauses {
+		if clause.kind == pipelineClauseOptionalMatch && strings.Contains(clause.text, "*") {
+			return nil, false
+		}
 	}
 	// Must contain at least one of the clause kinds that distinguishes this
 	// from a single-clause query the legacy handler already covers.
@@ -89,7 +102,7 @@ func canExecuteAsPipeline(cypher string) ([]pipelineClause, bool) {
 
 // splitPipelineClauses walks the query from left to right and slices it on
 // top-level MATCH/CREATE/WITH/UNWIND/RETURN keywords. Returns (clauses, true)
-// on success. On anything unsupported (e.g. nested MERGE, OPTIONAL MATCH)
+// on success. On anything unsupported (e.g. nested MERGE or CALL subquery)
 // returns (nil, false) so the caller falls back.
 func splitPipelineClauses(cypher string) ([]pipelineClause, bool) {
 	type kw struct {
@@ -99,6 +112,7 @@ func splitPipelineClauses(cypher string) ([]pipelineClause, bool) {
 	// Order matters for multi-word lookups but we only care about single-word
 	// keywords here; OPTIONAL MATCH and MERGE kick us out via detection below.
 	keywords := []kw{
+		{"OPTIONAL MATCH", pipelineClauseOptionalMatch},
 		{"MATCH", pipelineClauseMatch},
 		{"CREATE", pipelineClauseCreate},
 		{"WITH", pipelineClauseWith},
@@ -110,7 +124,7 @@ func splitPipelineClauses(cypher string) ([]pipelineClause, bool) {
 	// is handled by the per-clause appliers below, which substitute params
 	// from context and respect node bindings supplied by the caller.
 	upper := strings.ToUpper(cypher)
-	for _, bad := range []string{"OPTIONAL MATCH", "MERGE ", "FOREACH", "CALL ", "DELETE", "REMOVE ", "SET "} {
+	for _, bad := range []string{"MERGE ", "FOREACH", "CALL ", "DELETE", "REMOVE ", "SET "} {
 		if findKeywordIndex(upper, strings.TrimRight(bad, " ")) >= 0 {
 			return nil, false
 		}
@@ -120,6 +134,12 @@ func splitPipelineClauses(cypher string) ([]pipelineClause, bool) {
 	var boundaries []pipelineBoundary
 	for _, k := range keywords {
 		for _, p := range findAllKeywordPositions(cypher, k.name) {
+			if k.kind == pipelineClauseMatch {
+				preceding := strings.TrimRight(strings.ToUpper(cypher[:p]), " \t\n\r")
+				if strings.HasSuffix(preceding, "OPTIONAL") {
+					continue
+				}
+			}
 			// Skip "STARTS WITH" / "ENDS WITH".
 			if k.name == "WITH" {
 				preceding := strings.TrimRight(strings.ToUpper(cypher[:p]), " \t\n\r")
@@ -219,6 +239,12 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 				return nil, false, nil
 			}
 			rows = newRows
+		case pipelineClauseOptionalMatch:
+			newRows, err := e.pipelineApplyOptionalMatch(ctx, rows, clause.text)
+			if err != nil {
+				return nil, true, err
+			}
+			rows = newRows
 		case pipelineClauseCreate:
 			newRows, stats, ok, err := e.pipelineApplyCreate(ctx, rows, clause.text)
 			if err != nil {
@@ -261,6 +287,48 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 }
 
 // ---- clause appliers ----
+
+func (e *StorageExecutor) pipelineApplyOptionalMatch(ctx context.Context, rows []pipelineRow, clause string) ([]pipelineRow, error) {
+	optionalClause := splitOptionalMatchClauses(strings.TrimSpace(clause[len("OPTIONAL MATCH"):]))
+	if len(optionalClause) != 1 {
+		return nil, localizedError(localization.CypherCoreOptionalMatchRequired(), nil)
+	}
+
+	out := make([]pipelineRow, 0, len(rows))
+	for _, row := range rows {
+		traversalRow := traversalOptRow{
+			nodes: make(map[string]*storage.Node),
+			rels:  make(map[string]*storage.Edge),
+		}
+		for name, value := range row {
+			switch entity := value.(type) {
+			case *storage.Node:
+				traversalRow.nodes[name] = entity
+			case *storage.Edge:
+				traversalRow.rels[name] = entity
+			}
+		}
+
+		expanded, err := e.applyTraversalOptionalClause(ctx, []traversalOptRow{traversalRow}, optionalClause[0])
+		if err != nil {
+			return nil, err
+		}
+		for _, expandedRow := range expanded {
+			joined := make(pipelineRow, util.SafePreallocSum(len(row), len(expandedRow.nodes)+len(expandedRow.rels)))
+			for name, value := range row {
+				joined[name] = value
+			}
+			for name, node := range expandedRow.nodes {
+				joined[name] = node
+			}
+			for name, relationship := range expandedRow.rels {
+				joined[name] = relationship
+			}
+			out = append(out, joined)
+		}
+	}
+	return out, nil
+}
 
 // pipelineApplyMatch runs MATCH for each current binding row and expands rows
 // by the matched combinations. Returns (newRows, true, nil) on success. If a
@@ -594,12 +662,13 @@ func (e *StorageExecutor) pipelineApplyWith(ctx context.Context, rows []pipeline
 	}
 
 	type withProjection struct {
-		expr        string
-		alias       string
-		aggregate   bool
-		collect     bool
-		distinct    bool
-		collectExpr string
+		expr          string
+		alias         string
+		aggregate     bool
+		collect       bool
+		distinct      bool
+		aggregateExpr string
+		collectExpr   string
 	}
 	projections := make([]withProjection, 0, len(items))
 	projectionAliases := make([]string, 0, len(items))
@@ -620,6 +689,11 @@ func (e *StorageExecutor) pipelineApplyWith(ctx context.Context, rows []pipeline
 				return nil, false
 			}
 			projection.aggregate = true
+			projection.aggregateExpr = strings.TrimSpace(extractFuncInner(expr))
+			if strings.HasPrefix(strings.ToUpper(projection.aggregateExpr), "DISTINCT ") {
+				projection.distinct = true
+				projection.aggregateExpr = strings.TrimSpace(projection.aggregateExpr[len("DISTINCT "):])
+			}
 			hasAggregate = true
 		}
 		if strings.HasPrefix(upperExpr, "COLLECT(") && strings.HasSuffix(expr, ")") {
@@ -684,7 +758,27 @@ func (e *StorageExecutor) pipelineApplyWith(ctx context.Context, rows []pipeline
 					continue
 				}
 				if !projection.collect {
-					newRow[projection.alias] = int64(len(group.rows))
+					if projection.aggregateExpr == "*" {
+						newRow[projection.alias] = int64(len(group.rows))
+						continue
+					}
+					var count int64
+					seen := make(map[string]struct{})
+					for _, row := range group.rows {
+						value, ok := projectFromRow(row, projection.aggregateExpr)
+						if !ok || value == nil {
+							continue
+						}
+						if projection.distinct {
+							valueKey := pipelineValueKey(value)
+							if _, exists := seen[valueKey]; exists {
+								continue
+							}
+							seen[valueKey] = struct{}{}
+						}
+						count++
+					}
+					newRow[projection.alias] = count
 					continue
 				}
 				values := make([]interface{}, 0, len(group.rows))
@@ -891,7 +985,7 @@ func (e *StorageExecutor) pipelineApplyReturn(rows []pipelineRow, clause string)
 		distinct      bool
 	}
 	var projs []proj
-	aggregateOnly := true
+	hasAggregate := false
 	for _, rawItem := range items {
 		item := strings.TrimSpace(rawItem)
 		if item == "" {
@@ -907,8 +1001,8 @@ func (e *StorageExecutor) pipelineApplyReturn(rows []pipelineRow, clause string)
 		}
 		exprUpper := strings.ToUpper(expr)
 		isAggr := strings.HasPrefix(exprUpper, "COUNT(") && strings.HasSuffix(expr, ")")
-		if !isAggr {
-			aggregateOnly = false
+		if isAggr {
+			hasAggregate = true
 		}
 		projection := proj{expr: expr, alias: alias, isAggr: isAggr}
 		if isAggr {
@@ -926,33 +1020,81 @@ func (e *StorageExecutor) pipelineApplyReturn(rows []pipelineRow, clause string)
 		result.Columns = append(result.Columns, p.alias)
 	}
 
-	// All aggregates → collapse to a single result row.
-	if aggregateOnly {
-		row := make([]interface{}, 0, len(projs))
-		for _, projection := range projs {
-			if projection.aggregateExpr == "*" {
-				row = append(row, int64(len(rows)))
-				continue
-			}
-			var count int64
-			seen := make(map[string]struct{})
-			for _, inputRow := range rows {
-				value, ok := projectFromRow(inputRow, projection.aggregateExpr)
-				if !ok || value == nil {
+	if hasAggregate {
+		type returnGroup struct {
+			first pipelineRow
+			rows  []pipelineRow
+		}
+		groups := make(map[string]*returnGroup)
+		groupOrder := make([]string, 0)
+		for _, inputRow := range rows {
+			keyParts := make([]string, 0, len(projs))
+			for _, projection := range projs {
+				if projection.isAggr {
 					continue
 				}
-				if projection.distinct {
-					key := pipelineValueKey(value)
-					if _, exists := seen[key]; exists {
+				value, ok := projectFromRow(inputRow, projection.expr)
+				if !ok {
+					return nil, false
+				}
+				keyParts = append(keyParts, pipelineValueKey(value))
+			}
+			key := strings.Join(keyParts, "\x1f")
+			group, exists := groups[key]
+			if !exists {
+				group = &returnGroup{first: inputRow}
+				groups[key] = group
+				groupOrder = append(groupOrder, key)
+			}
+			group.rows = append(group.rows, inputRow)
+		}
+		if len(rows) == 0 && len(projs) > 0 {
+			allAggregates := true
+			for _, projection := range projs {
+				allAggregates = allAggregates && projection.isAggr
+			}
+			if allAggregates {
+				groups[""] = &returnGroup{}
+				groupOrder = append(groupOrder, "")
+			}
+		}
+
+		for _, key := range groupOrder {
+			group := groups[key]
+			outRow := make([]interface{}, 0, len(projs))
+			for _, projection := range projs {
+				if !projection.isAggr {
+					value, ok := projectFromRow(group.first, projection.expr)
+					if !ok {
+						return nil, false
+					}
+					outRow = append(outRow, value)
+					continue
+				}
+				if projection.aggregateExpr == "*" {
+					outRow = append(outRow, int64(len(group.rows)))
+					continue
+				}
+				var count int64
+				seen := make(map[string]struct{})
+				for _, inputRow := range group.rows {
+					value, ok := projectFromRow(inputRow, projection.aggregateExpr)
+					if !ok || value == nil {
 						continue
 					}
-					seen[key] = struct{}{}
+					if projection.distinct {
+						valueKey := pipelineValueKey(value)
+						if _, exists := seen[valueKey]; exists {
+							continue
+						}
+						seen[valueKey] = struct{}{}
+					}
+					count++
 				}
-				count++
+				outRow = append(outRow, count)
 			}
-			row = append(row, count)
+			result.Rows = append(result.Rows, outRow)
 		}
-		result.Rows = [][]interface{}{row}
 		result, err := e.applyResultModifiers(result, modifiers)
 		return result, err == nil
 	}
@@ -960,11 +1102,6 @@ func (e *StorageExecutor) pipelineApplyReturn(rows []pipelineRow, clause string)
 	for _, row := range rows {
 		outRow := make([]interface{}, 0, len(projs))
 		for _, p := range projs {
-			if p.isAggr {
-				// Mixed aggregate + row projection is unusual; emit row count.
-				outRow = append(outRow, int64(len(rows)))
-				continue
-			}
 			val, ok := projectFromRow(row, p.expr)
 			if !ok {
 				return nil, false

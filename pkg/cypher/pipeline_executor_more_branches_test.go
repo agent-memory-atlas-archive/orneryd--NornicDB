@@ -66,8 +66,9 @@ func TestPipelineApplyReturn_AdditionalBranches(t *testing.T) {
 	res, ok = exec.pipelineApplyReturn(mixRows, "RETURN count(*) AS c, x")
 	require.True(t, ok)
 	require.Len(t, res.Rows, 2)
-	require.EqualValues(t, int64(2), res.Rows[0][0])
+	require.EqualValues(t, int64(1), res.Rows[0][0])
 	require.EqualValues(t, int64(1), res.Rows[0][1])
+	require.EqualValues(t, int64(1), res.Rows[1][0])
 	require.EqualValues(t, int64(2), res.Rows[1][1])
 
 	res, ok = exec.pipelineApplyReturn(mixRows, "RETURN missing")
