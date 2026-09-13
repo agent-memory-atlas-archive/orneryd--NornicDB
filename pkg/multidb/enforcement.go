@@ -344,32 +344,28 @@ func (c *databaseLimitChecker) calculateCurrentStorageSize(engine storage.Engine
 	var nodeSize int64
 	var edgeSize int64
 
-	// Calculate size of all nodes
-	nodes, err := engine.AllNodes()
+	err := storage.StreamNodesWithFallback(context.Background(), engine, 1000, func(node *storage.Node) error {
+		size, err := calculateNodeSize(node)
+		if err != nil {
+			size = 1024
+		}
+		nodeSize += size
+		return nil
+	})
 	if err != nil {
 		return 0, 0, localizedError(localization.MultidbStorageGetAllNodesFailed(err), err)
 	}
-	for _, node := range nodes {
-		size, err := calculateNodeSize(node)
-		if err != nil {
-			// If calculation fails, use a conservative default
-			size = 1024 // 1KB default
-		}
-		nodeSize += size
-	}
 
-	// Calculate size of all edges
-	edges, err := engine.AllEdges()
-	if err != nil {
-		return 0, 0, localizedError(localization.MultidbStorageGetAllEdgesFailed(err), err)
-	}
-	for _, edge := range edges {
+	err = storage.StreamEdgesWithFallback(context.Background(), engine, 1000, func(edge *storage.Edge) error {
 		size, err := calculateEdgeSize(edge)
 		if err != nil {
-			// If calculation fails, use a conservative default
-			size = 512 // 512 bytes default
+			size = 512
 		}
 		edgeSize += size
+		return nil
+	})
+	if err != nil {
+		return 0, 0, localizedError(localization.MultidbStorageGetAllEdgesFailed(err), err)
 	}
 
 	return nodeSize, edgeSize, nil

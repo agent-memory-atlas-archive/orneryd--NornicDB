@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bound database-manager startup memory by scanning only leaked system-record ID prefixes and streaming node/edge size reconciliation. In a cold 2,000-node persistent-store benchmark, cleanup fell from about 3.23 ms and 7.81 MB per operation to 25 us and 3.5 KB; reconciliation allocations fell about 5% without changing serialized-size accounting.
 - Preserve exact cosine-vector fast-path semantics for inline node properties, filtered top-k queries, exact LIMIT results, and WITH projections ordered before RETURN.
 - Skip empty k-means clusters during vector routing and load legacy vector files without query metadata when storage is empty.
 - Invalidate local and Fabric query-cache entries after direct, asynchronous, replicated, edge, and bulk-prefix graph mutations while keeping Badger label counts coherent.

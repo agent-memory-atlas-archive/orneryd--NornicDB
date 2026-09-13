@@ -1096,6 +1096,24 @@ func (n *NamespacedEngine) StreamNodes(ctx context.Context, fn func(node *Node) 
 	return nil
 }
 
+// StreamNodesByPrefix streams nodes in the namespace whose user-visible IDs
+// start with prefix.
+func (n *NamespacedEngine) StreamNodesByPrefix(ctx context.Context, prefix string, fn func(node *Node) error) error {
+	if prefixStreamer, ok := n.inner.(PrefixStreamingEngine); ok {
+		physicalPrefix := n.namespace + n.separator + prefix
+		return prefixStreamer.StreamNodesByPrefix(ctx, physicalPrefix, func(node *Node) error {
+			return fn(n.toUserNode(node))
+		})
+	}
+
+	return n.StreamNodes(ctx, func(node *Node) error {
+		if strings.HasPrefix(string(node.ID), prefix) {
+			return fn(node)
+		}
+		return nil
+	})
+}
+
 // StreamEdges streams edges in the namespace.
 func (n *NamespacedEngine) StreamEdges(ctx context.Context, fn func(edge *Edge) error) error {
 	if streamer, ok := n.inner.(StreamingEngine); ok {

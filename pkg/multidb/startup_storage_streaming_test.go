@@ -1,0 +1,189 @@
+package multidb
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/orneryd/nornicdb/pkg/storage"
+	"github.com/stretchr/testify/require"
+)
+
+var errStartupMaterialization = errors.New("startup must not materialize the full corpus")
+
+type startupStreamingEngine struct {
+	*storage.MemoryEngine
+	allNodesCalls      int
+	allEdgesCalls      int
+	nodeStreamCalls    int
+	edgeStreamCalls    int
+	prefixes           []string
+	prefixCallbackRuns int
+}
+
+func (e *startupStreamingEngine) AllNodes() ([]*storage.Node, error) {
+	e.allNodesCalls++
+	return nil, errStartupMaterialization
+}
+
+func (e *startupStreamingEngine) AllEdges() ([]*storage.Edge, error) {
+	e.allEdgesCalls++
+	return nil, errStartupMaterialization
+}
+
+func (e *startupStreamingEngine) StreamNodes(ctx context.Context, visit func(*storage.Node) error) error {
+	e.nodeStreamCalls++
+	nodes, err := e.MemoryEngine.AllNodes()
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := visit(node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *startupStreamingEngine) StreamEdges(ctx context.Context, visit func(*storage.Edge) error) error {
+	e.edgeStreamCalls++
+	edges, err := e.MemoryEngine.AllEdges()
+	if err != nil {
+		return err
+	}
+	for _, edge := range edges {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := visit(edge); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *startupStreamingEngine) StreamNodeChunks(ctx context.Context, chunkSize int, visit func([]*storage.Node) error) error {
+	if chunkSize <= 0 {
+		chunkSize = 1
+	}
+	var chunk []*storage.Node
+	err := e.StreamNodes(ctx, func(node *storage.Node) error {
+		chunk = append(chunk, node)
+		if len(chunk) < chunkSize {
+			return nil
+		}
+		if err := visit(chunk); err != nil {
+			return err
+		}
+		chunk = chunk[:0]
+		return nil
+	})
+	if err != nil || len(chunk) == 0 {
+		return err
+	}
+	return visit(chunk)
+}
+
+func (e *startupStreamingEngine) StreamNodesByPrefix(ctx context.Context, prefix string, visit func(*storage.Node) error) error {
+	e.prefixes = append(e.prefixes, prefix)
+	nodes, err := e.MemoryEngine.AllNodes()
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !strings.HasPrefix(string(node.ID), prefix) {
+			continue
+		}
+		e.prefixCallbackRuns++
+		if err := visit(node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Regression: initially reported in #373.
+func TestStartupCleanupScansOnlyLeakedSystemNodePrefixes(t *testing.T) {
+	engine := &startupStreamingEngine{MemoryEngine: storage.NewMemoryEngine()}
+	t.Cleanup(func() { _ = engine.Close() })
+
+	nodes := []*storage.Node{
+		{ID: "nornic:ordinary", Labels: []string{"Application"}, Properties: map[string]interface{}{"payload": strings.Repeat("x", 4096)}},
+		{ID: "nornic:system:databases:metadata", Labels: []string{"_System"}},
+		{ID: "nornic:system:migration:legacy", Labels: []string{"_System"}},
+		{ID: "nornic:system:user:admin", Labels: []string{"_System"}},
+		{ID: "nornic:system:user:application", Labels: []string{"Application"}},
+		{ID: "nornic:system:other", Labels: []string{"_System"}},
+	}
+	for _, node := range nodes {
+		_, err := engine.MemoryEngine.CreateNode(node)
+		require.NoError(t, err)
+	}
+
+	manager := &DatabaseManager{
+		inner: engine,
+		databases: map[string]*DatabaseInfo{
+			"nornic": {Name: "nornic", Type: "standard"},
+			"system": {Name: "system", Type: "system"},
+		},
+		config: DefaultConfig(),
+	}
+	manager.cleanupLeakedSystemNodes()
+
+	require.Zero(t, engine.allNodesCalls)
+	require.Equal(t, []string{
+		"nornic:system:databases:metadata",
+		"nornic:system:migration:",
+		"nornic:system:user:",
+	}, engine.prefixes)
+	require.Equal(t, 4, engine.prefixCallbackRuns)
+
+	for _, id := range []storage.NodeID{
+		"nornic:system:databases:metadata",
+		"nornic:system:migration:legacy",
+		"nornic:system:user:admin",
+	} {
+		_, err := engine.MemoryEngine.GetNode(id)
+		require.Error(t, err)
+	}
+	for _, id := range []storage.NodeID{
+		"nornic:ordinary",
+		"nornic:system:user:application",
+		"nornic:system:other",
+	} {
+		_, err := engine.MemoryEngine.GetNode(id)
+		require.NoError(t, err)
+	}
+}
+
+func TestStorageSizeReconciliationStreamsEntities(t *testing.T) {
+	engine := &startupStreamingEngine{MemoryEngine: storage.NewMemoryEngine()}
+	t.Cleanup(func() { _ = engine.Close() })
+	node := &storage.Node{ID: "nornic:node", Labels: []string{"Application"}, Properties: map[string]interface{}{"payload": strings.Repeat("x", 4096)}}
+	edge := &storage.Edge{ID: "nornic:edge", StartNode: node.ID, EndNode: node.ID, Type: "SELF", Properties: map[string]interface{}{"weight": int64(1)}}
+	_, err := engine.MemoryEngine.CreateNode(node)
+	require.NoError(t, err)
+	require.NoError(t, engine.MemoryEngine.CreateEdge(edge))
+
+	wantNodeSize, err := calculateNodeSize(node)
+	require.NoError(t, err)
+	wantEdgeSize, err := calculateEdgeSize(edge)
+	require.NoError(t, err)
+
+	checker := &databaseLimitChecker{}
+	nodeSize, edgeSize, err := checker.calculateCurrentStorageSize(engine)
+	require.NoError(t, err)
+	require.Equal(t, wantNodeSize, nodeSize)
+	require.Equal(t, wantEdgeSize, edgeSize)
+	require.Zero(t, engine.allNodesCalls)
+	require.Zero(t, engine.allEdgesCalls)
+	require.Equal(t, 1, engine.nodeStreamCalls)
+	require.Equal(t, 1, engine.edgeStreamCalls)
+}

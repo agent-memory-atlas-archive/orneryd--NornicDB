@@ -6,6 +6,7 @@
 package multidb
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -283,6 +284,11 @@ func (m *DatabaseManager) cleanupLeakedSystemNodes() {
 			strings.HasPrefix(id, systemPrefix+"migration:") ||
 			strings.HasPrefix(id, systemPrefix+"user:")
 	}
+	candidatePrefixes := []string{
+		systemPrefix + "databases:metadata",
+		systemPrefix + "migration:",
+		systemPrefix + "user:",
+	}
 
 	removed := 0
 	for dbName, info := range m.databases {
@@ -293,15 +299,25 @@ func (m *DatabaseManager) cleanupLeakedSystemNodes() {
 			continue
 		}
 		engine := storage.NewNamespacedEngine(m.inner, dbName)
-		nodes, err := engine.AllNodes()
-		if err != nil {
+		candidateIDs := make(map[storage.NodeID]struct{})
+		scanFailed := false
+		for _, prefix := range candidatePrefixes {
+			err := engine.StreamNodesByPrefix(context.Background(), prefix, func(node *storage.Node) error {
+				if isLeak(node) {
+					candidateIDs[node.ID] = struct{}{}
+				}
+				return nil
+			})
+			if err != nil {
+				scanFailed = true
+				break
+			}
+		}
+		if scanFailed {
 			continue
 		}
-		for _, node := range nodes {
-			if !isLeak(node) {
-				continue
-			}
-			if err := engine.DeleteNode(node.ID); err == nil {
+		for id := range candidateIDs {
+			if err := engine.DeleteNode(id); err == nil {
 				removed++
 			}
 		}

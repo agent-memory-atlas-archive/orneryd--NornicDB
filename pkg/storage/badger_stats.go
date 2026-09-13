@@ -504,7 +504,7 @@ func (b *BadgerEngine) IterateNodes(fn func(*Node) bool) error {
 
 	return b.withView(func(txn *badger.Txn) error {
 		prefix := []byte{prefixNode}
-		it := txn.NewIterator(badgerIterOptsPrefetchValues(prefix, 10))
+		it := txn.NewIterator(badgerIterOptsKeyOnly(prefix))
 		defer it.Close()
 
 		for it.Rewind(); it.Valid(); it.Next() {
@@ -589,7 +589,7 @@ func (b *BadgerEngine) StreamNodesByPrefix(ctx context.Context, prefix string, f
 
 	return b.withView(func(txn *badger.Txn) error {
 		seekPrefix := append([]byte{prefixNode}, []byte(prefix)...)
-		it := txn.NewIterator(badgerIterOptsPrefetchValues(seekPrefix, 10))
+		it := txn.NewIterator(badgerIterOptsKeyOnly(seekPrefix))
 		defer it.Close()
 
 		for it.Seek(seekPrefix); it.ValidForPrefix(seekPrefix); it.Next() {
@@ -634,7 +634,7 @@ func (b *BadgerEngine) StreamEdges(ctx context.Context, fn func(edge *Edge) erro
 
 	return b.withView(func(txn *badger.Txn) error {
 		prefix := []byte{prefixEdge}
-		it := txn.NewIterator(badgerIterOptsPrefetchValues(prefix, 10))
+		it := txn.NewIterator(badgerIterOptsKeyOnly(prefix))
 		defer it.Close()
 
 		for it.Rewind(); it.Valid(); it.Next() {
