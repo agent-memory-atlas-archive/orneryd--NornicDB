@@ -5,9 +5,10 @@ import (
 	"context"
 	"fmt"
 	"runtime"
-	"sort"
 	"sync"
 	"time"
+
+	"github.com/orneryd/nornicdb/pkg/search"
 )
 
 // ============================================================================
@@ -401,137 +402,85 @@ func (e *QueryExecutor) Discover(ctx context.Context, query string, nodeTypes []
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	method := "keyword"
-	var searchResults []*SemanticSearchResult
-	var err error
+	opts := search.GetAdaptiveRRFConfig(query)
+	opts.Limit = limit
+	if len(nodeTypes) > 0 {
+		opts.Types = nodeTypes
+	}
 
-	// Try vector search if embedder is available.
-	// For long queries, chunk using the embedder's own chunking method and fuse results across chunks.
+	var chunkQuery search.ChunkQueryFunc
+	var embedQuery search.EmbedQueryFunc
 	if e.embedder != nil {
-		const (
-			queryChunkSize    = 512
-			queryChunkOverlap = 50
-			maxQueryChunks    = 32
-			outerRRFK         = 60
-		)
-
-		queryChunks, chunkErr := e.embedder.ChunkText(query, queryChunkSize, queryChunkOverlap)
-		if chunkErr != nil {
-			return nil, chunkErr
+		chunkQuery = func(_ context.Context, text string) ([]string, error) {
+			return e.embedder.ChunkText(text, 512, 50)
 		}
-		if len(queryChunks) > maxQueryChunks {
-			queryChunks = queryChunks[:maxQueryChunks]
-		}
-
-		if len(queryChunks) <= 1 {
-			queryEmbedding, embedErr := e.embedder.Embed(ctx, query)
-			if embedErr == nil && len(queryEmbedding) > 0 {
-				method = "vector"
-				searchResults, err = e.searcher.HybridSearch(ctx, query, queryEmbedding, nodeTypes, limit)
-			}
-		} else {
-			perChunkLimit := limit
-			if perChunkLimit < 10 {
-				perChunkLimit = 10
-			}
-			if perChunkLimit < limit*3 {
-				perChunkLimit = limit * 3
-			}
-			if perChunkLimit > 100 {
-				perChunkLimit = 100
-			}
-
-			type fused struct {
-				best     *SemanticSearchResult
-				scoreRRF float64 // outer RRF used for ordering across chunks
-				bestSim  float64 // strongest underlying similarity across chunks
-			}
-			fusedByID := make(map[string]*fused)
-
-			var usedVectorChunks int
-			for _, chunkQuery := range queryChunks {
-				emb, embedErr := e.embedder.Embed(ctx, chunkQuery)
-				if embedErr != nil || len(emb) == 0 {
-					continue
-				}
-				usedVectorChunks++
-
-				chunkResults, searchErr := e.searcher.HybridSearch(ctx, chunkQuery, emb, nodeTypes, perChunkLimit)
-				if searchErr != nil {
-					continue
-				}
-
-				for rank, r := range chunkResults {
-					if r == nil {
-						continue
-					}
-					f := fusedByID[r.ID]
-					if f == nil {
-						f = &fused{best: r, bestSim: r.Score}
-						fusedByID[r.ID] = f
-					}
-					// Outer RRF: 1/(k + rank), rank is 1-based. Used for ordering only.
-					f.scoreRRF += 1.0 / (outerRRFK + float64(rank+1))
-					if r.Score > f.bestSim {
-						f.bestSim = r.Score
-						f.best = r
-					}
-				}
-			}
-
-			if usedVectorChunks > 0 && len(fusedByID) > 0 {
-				method = "vector"
-				fusedList := make([]*fused, 0, len(fusedByID))
-				for _, f := range fusedByID {
-					fusedList = append(fusedList, f)
-				}
-				sort.Slice(fusedList, func(i, j int) bool {
-					return fusedList[i].scoreRRF > fusedList[j].scoreRRF
-				})
-				if limit <= 0 {
-					limit = 10
-				}
-				if len(fusedList) > limit {
-					fusedList = fusedList[:limit]
-				}
-
-				searchResults = make([]*SemanticSearchResult, 0, len(fusedList))
-				for _, f := range fusedList {
-					if f.best == nil {
-						continue
-					}
-					// Surface the strongest underlying similarity (cosine when
-					// available), NOT the outer RRF rank-derived score. This
-					// restores meaningful min_similarity threshold semantics
-					// downstream.
-					searchResults = append(searchResults, &SemanticSearchResult{
-						ID:         f.best.ID,
-						Labels:     f.best.Labels,
-						Properties: f.best.Properties,
-						Score:      f.bestSim,
-					})
-				}
-			}
-		}
+		embedQuery = e.embedder.Embed
 	}
 
-	// Fall back to text search
-	if searchResults == nil {
-		searchResults, err = e.searcher.Search(ctx, query, nodeTypes, limit)
-	}
-
+	response, err := search.SearchTextChunks(
+		ctx,
+		query,
+		opts,
+		chunkQuery,
+		embedQuery,
+		func(ctx context.Context, text string, embedding []float32, searchOpts *search.SearchOptions) (*search.SearchResponse, error) {
+			var (
+				results []*SemanticSearchResult
+				err     error
+				method  string
+			)
+			if len(embedding) > 0 {
+				method = "rrf_hybrid"
+				results, err = e.searcher.HybridSearch(ctx, text, embedding, searchOpts.Types, searchOpts.Limit)
+			} else {
+				method = "bm25"
+				results, err = e.searcher.Search(ctx, text, searchOpts.Types, searchOpts.Limit)
+			}
+			if err != nil {
+				return nil, err
+			}
+			converted := make([]search.SearchResult, 0, len(results))
+			for rank, result := range results {
+				if result == nil {
+					continue
+				}
+				convertedResult := search.SearchResult{
+					ID:         result.ID,
+					Labels:     result.Labels,
+					Properties: result.Properties,
+					Score:      result.Score,
+					Similarity: result.Score,
+				}
+				if len(embedding) > 0 {
+					convertedResult.VectorRank = rank + 1
+				} else {
+					convertedResult.BM25Rank = rank + 1
+				}
+				converted = append(converted, convertedResult)
+			}
+			return &search.SearchResponse{SearchMethod: method, Results: converted}, nil
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
 
+	method := "keyword"
+	if response.SearchMethod == "chunked_rrf_hybrid" {
+		method = "vector"
+	}
+
 	// Convert to SearchResult and add related nodes
-	results := make([]SearchResult, 0, len(searchResults))
-	for _, r := range searchResults {
+	results := make([]SearchResult, 0, len(response.Results))
+	for _, r := range response.Results {
+		if r.VectorRank > 0 {
+			method = "vector"
+		}
 		result := SearchResult{
 			ID:         r.ID,
 			Type:       getLabelType(r.Labels),
 			Title:      getStringProp(r.Properties, "title"),
-			Similarity: r.Score,
+			Similarity: r.Similarity,
 			Properties: r.Properties,
 		}
 

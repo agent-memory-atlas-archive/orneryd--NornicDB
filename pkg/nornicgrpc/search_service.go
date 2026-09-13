@@ -2,7 +2,6 @@ package nornicgrpc
 
 import (
 	"context"
-	"sort"
 	"strings"
 	"time"
 
@@ -110,126 +109,21 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		opts.MinSimilarity = &v
 	}
 
-	// If embeddings are available, proactively chunk long queries by length.
-	// This keeps vector search usable for paragraph-sized inputs without relying
-	// on embedder/tokenizer failures to detect "too long" queries.
-	const (
-		queryChunkSize    = 512
-		queryChunkOverlap = 50
-		maxQueryChunks    = 32
-		outerRRFK         = 60
-	)
-
-	var (
-		resp *search.SearchResponse
-		err  error
-	)
-
-	if s.embedQuery != nil {
-		queryChunks := []string{req.Query}
-		if s.chunkQuery != nil {
-			queryChunks, err = s.chunkQuery(ctx, req.Query)
+	chunkQuery := search.ChunkQueryFunc(nil)
+	if s.chunkQuery != nil {
+		chunkQuery = func(ctx context.Context, query string) ([]string, error) {
+			chunks, err := s.chunkQuery(ctx, query)
 			if err != nil {
 				return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.QueryChunkFailed(err))
 			}
-		}
-		if len(queryChunks) > maxQueryChunks {
-			queryChunks = queryChunks[:maxQueryChunks]
-		}
-
-		if len(queryChunks) <= 1 {
-			emb, embedErr := s.embedQuery(ctx, req.Query)
-			if embedErr == nil && len(emb) > 0 {
-				resp, err = s.searcher.Search(ctx, req.Query, emb, opts)
-			}
-		} else {
-			// Pull more candidates per chunk, then cut down after fusion.
-			perChunkLimit := limit
-			if perChunkLimit < 10 {
-				perChunkLimit = 10
-			}
-			if perChunkLimit < limit*3 {
-				perChunkLimit = limit * 3
-			}
-			if perChunkLimit > 100 {
-				perChunkLimit = 100
-			}
-
-			type fused struct {
-				best     search.SearchResult
-				hasBest  bool
-				scoreRRF float64
-			}
-			fusedByID := make(map[string]*fused)
-
-			var usedVectorChunks int
-			for _, chunkQuery := range queryChunks {
-				emb, embedErr := s.embedQuery(ctx, chunkQuery)
-				if embedErr != nil || len(emb) == 0 {
-					continue
-				}
-				usedVectorChunks++
-
-				chunkOpts := *opts
-				chunkOpts.Limit = perChunkLimit
-				chunkResp, searchErr := s.searcher.Search(ctx, chunkQuery, emb, &chunkOpts)
-				if searchErr != nil || chunkResp == nil {
-					continue
-				}
-
-				for rank := range chunkResp.Results {
-					r := chunkResp.Results[rank]
-					id := string(r.NodeID)
-					f := fusedByID[id]
-					if f == nil {
-						f = &fused{}
-						fusedByID[id] = f
-					}
-					// Outer RRF: 1/(k + rank), rank is 1-based.
-					f.scoreRRF += 1.0 / (outerRRFK + float64(rank+1))
-					if !f.hasBest || r.Score > f.best.Score {
-						f.best = r
-						f.hasBest = true
-					}
-				}
-			}
-
-			if usedVectorChunks > 0 && len(fusedByID) > 0 {
-				fusedList := make([]*fused, 0, len(fusedByID))
-				for _, f := range fusedByID {
-					fusedList = append(fusedList, f)
-				}
-				sort.Slice(fusedList, func(i, j int) bool {
-					return fusedList[i].scoreRRF > fusedList[j].scoreRRF
-				})
-				if len(fusedList) > limit {
-					fusedList = fusedList[:limit]
-				}
-
-				resp = &search.SearchResponse{
-					SearchMethod:      "chunked_rrf_hybrid",
-					FallbackTriggered: false,
-					Results:           make([]search.SearchResult, 0, len(fusedList)),
-				}
-				for _, f := range fusedList {
-					r := f.best
-					r.Score = f.scoreRRF
-					r.RRFScore = f.scoreRRF
-					r.VectorRank = 0
-					r.BM25Rank = 0
-					resp.Results = append(resp.Results, r)
-				}
-			}
+			return chunks, nil
 		}
 	}
-
-	// If vector path didn't produce a response, fall back to BM25.
-	if resp == nil {
-		resp, err = s.searcher.Search(ctx, req.Query, nil, opts)
-		if err != nil {
-			return nil, s.localizedStatus(ctx, codes.Internal, localization.SearchFailed(err))
+	resp, err := search.SearchTextChunks(ctx, req.Query, opts, chunkQuery, search.EmbedQueryFunc(s.embedQuery), s.searcher.Search)
+	if err != nil {
+		if status.Code(err) != codes.Unknown {
+			return nil, err
 		}
-	} else if err != nil {
 		return nil, s.localizedStatus(ctx, codes.Internal, localization.SearchFailed(err))
 	}
 

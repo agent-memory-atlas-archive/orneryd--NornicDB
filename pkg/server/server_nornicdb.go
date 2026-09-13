@@ -427,206 +427,76 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If embeddings are available, chunk long queries by length so vector search
-	// remains usable for paragraph-sized inputs (no relying on tokenization errors).
-	//
-	// For short queries (1 chunk), we preserve the legacy behavior and return the
-	// search service response directly.
-	const (
-		queryChunkSize    = 512
-		queryChunkOverlap = 50
-		maxQueryChunks    = 32
-		outerRRFK         = 60
-		embedTimeout      = 8 * time.Second
-	)
+	const embedTimeout = 8 * time.Second
 
 	queryChunks, err := s.db.ChunkQueryForDB(ctx, dbName, req.Query)
 	if err != nil {
 		s.writeQueryChunkingFailed(w, r)
 		return
 	}
-	if len(queryChunks) > maxQueryChunks {
-		queryChunks = queryChunks[:maxQueryChunks]
+
+	opts := search.GetAdaptiveRRFConfig(req.Query)
+	opts.Limit = req.Limit
+	if len(req.Labels) > 0 {
+		opts.Types = req.Labels
 	}
-
-	var searchResponse *search.SearchResponse
-	// Helper to build search options consistently.
-	buildOpts := func(q string, limit int) *search.SearchOptions {
-		opts := search.GetAdaptiveRRFConfig(q)
-		opts.Limit = limit
-		if len(req.Labels) > 0 {
-			opts.Types = req.Labels
-		}
-		if len(req.Filters) > 0 {
-			opts.Filters = req.Filters
-		}
-		opts.RerankEnabled = searchSvc.RerankerAvailable(ctx)
-		return opts
+	if len(req.Filters) > 0 {
+		opts.Filters = req.Filters
 	}
-	// Bound embedding latency even if the embedder ignores context cancellation.
-	embedQuery := func(parent context.Context, q string) ([]float32, error) {
-		embedCalls++
-		embedStart := time.Now()
-		emb, embedErr := runEmbedWithTimeout(parent, embedTimeout, func(embedCtx context.Context) ([]float32, error) {
-			return s.db.EmbedQueryForDB(embedCtx, dbName, q)
-		})
-		embedTotalDur += time.Since(embedStart)
-		if embedErr == nil && len(emb) > 0 {
-			embedSuccessCalls++
-		}
-		return emb, embedErr
-	}
-	vectorSearchUsable := searchSvc.EmbeddingCount() > 0
+	opts.RerankEnabled = searchSvc.RerankerAvailable(ctx)
 
-	if !vectorSearchUsable {
-		// No indexed vectors for this database: skip query embedding entirely and
-		// run fulltext directly to avoid paying embedding latency with guaranteed fallback.
-		searchCalls++
-		searchStart := time.Now()
-		searchResponse, err = searchSvc.Search(ctx, req.Query, nil, buildOpts(req.Query, req.Limit))
-		searchExecDur += time.Since(searchStart)
-	} else if len(queryChunks) <= 1 {
-		// Fast path: short query (single chunk). Try hybrid; fall back to BM25.
-		// Use per-DB query embedding so vector dims match the index for this database.
-		emb, embedErr := embedQuery(ctx, req.Query)
-		if embedErr != nil {
-			if errors.Is(embedErr, nornicdb.ErrQueryEmbeddingDimensionMismatch) {
-				s.writeBoundaryError(w, r, http.StatusBadRequest, embedErr, ErrBadRequest)
-				return
-			}
-			s.logEvent(ctx, slog.LevelWarn, localization.ServerSearchQueryEmbeddingFailedEvent(embedErr))
-		}
-		if len(emb) > 0 {
-			searchCalls++
-			searchStart := time.Now()
-			searchResponse, err = searchSvc.Search(ctx, req.Query, emb, buildOpts(req.Query, req.Limit))
-			searchExecDur += time.Since(searchStart)
-		} else {
-			searchCalls++
-			searchStart := time.Now()
-			searchResponse, err = searchSvc.Search(ctx, req.Query, nil, buildOpts(req.Query, req.Limit))
-			searchExecDur += time.Since(searchStart)
-		}
-	} else {
-		// Multi-chunk: embed/search each chunk, then fuse results across chunks using RRF.
-		chunkLoopStart := time.Now()
-		perChunkLimit := req.Limit
-		if perChunkLimit < 10 {
-			perChunkLimit = 10
-		}
-		if perChunkLimit < req.Limit*3 {
-			perChunkLimit = req.Limit * 3
-		}
-		if perChunkLimit > 100 {
-			perChunkLimit = 100
-		}
-
-		type fused struct {
-			node       *nornicdb.Node
-			scoreRRF   float64
-			vectorRank int
-			bm25Rank   int
-		}
-		fusedByID := make(map[string]*fused)
-
-		var usedVectorChunks int
-		for _, chunkQuery := range queryChunks {
-			emb, embedErr := embedQuery(ctx, chunkQuery)
-			if embedErr != nil {
-				if errors.Is(embedErr, nornicdb.ErrQueryEmbeddingDimensionMismatch) {
-					s.writeBoundaryError(w, r, http.StatusBadRequest, embedErr, ErrBadRequest)
-					return
-				}
+	var embedQuery search.EmbedQueryFunc
+	if searchSvc.EmbeddingCount() > 0 {
+		embedQuery = func(parent context.Context, query string) ([]float32, error) {
+			embedCalls++
+			embedStart := time.Now()
+			embedding, embedErr := runEmbedWithTimeout(parent, embedTimeout, func(embedCtx context.Context) ([]float32, error) {
+				return s.db.EmbedQueryForDB(embedCtx, dbName, query)
+			})
+			embedTotalDur += time.Since(embedStart)
+			if embedErr == nil && len(embedding) > 0 {
+				embedSuccessCalls++
+			} else if embedErr != nil && !errors.Is(embedErr, nornicdb.ErrQueryEmbeddingDimensionMismatch) {
 				s.logEvent(ctx, slog.LevelWarn, localization.ServerSearchChunkedQueryEmbeddingFailedEvent(embedErr))
-				continue
 			}
-			if len(emb) == 0 {
-				continue
-			}
-			usedVectorChunks++
+			return embedding, embedErr
+		}
+	}
+
+	searchQuery := func(searchCtx context.Context, query string, embedding []float32, searchOpts *search.SearchOptions) (*search.SearchResponse, error) {
+		searchCalls++
+		if len(embedding) > 0 {
 			vectorChunkQueries++
-
-			searchCalls++
-			searchStart := time.Now()
-			resp, searchErr := searchSvc.Search(ctx, chunkQuery, emb, buildOpts(chunkQuery, perChunkLimit))
-			searchExecDur += time.Since(searchStart)
-			if searchErr != nil {
-				if errors.Is(searchErr, search.ErrSearchIndexBuilding) {
-					err = searchErr
-					break
-				}
-				continue
-			}
-			if resp == nil {
-				continue
-			}
-
-			for rank := range resp.Results {
-				r := resp.Results[rank]
-				id := string(r.NodeID) // already unprefixed by namespaced storage/search layer
-				f := fusedByID[id]
-				if f == nil {
-					f = &fused{
-						node: &nornicdb.Node{
-							ID:         id,
-							Labels:     r.Labels,
-							Properties: r.Properties,
-						},
-						scoreRRF:   0,
-						vectorRank: r.VectorRank,
-						bm25Rank:   r.BM25Rank,
-					}
-					fusedByID[id] = f
-				}
-
-				// Outer RRF: 1/(k + rank), rank is 1-based.
-				f.scoreRRF += 1.0 / (outerRRFK + float64(rank+1))
-			}
+		} else {
+			fallbackBM25Calls++
 		}
+		searchStart := time.Now()
+		response, searchErr := searchSvc.Search(searchCtx, query, embedding, searchOpts)
+		searchExecDur += time.Since(searchStart)
+		return response, searchErr
+	}
 
-		if err == nil {
-			if usedVectorChunks == 0 || len(fusedByID) == 0 {
-				// Embeddings not available (or all failed): fall back to BM25.
-				fallbackBM25Calls++
-				searchCalls++
-				searchStart := time.Now()
-				searchResponse, err = searchSvc.Search(ctx, req.Query, nil, buildOpts(req.Query, req.Limit))
-				searchExecDur += time.Since(searchStart)
-			} else {
-				// Materialize fused response.
-				fusedList := make([]*fused, 0, len(fusedByID))
-				for _, f := range fusedByID {
-					fusedList = append(fusedList, f)
-				}
-				sort.Slice(fusedList, func(i, j int) bool {
-					return fusedList[i].scoreRRF > fusedList[j].scoreRRF
-				})
-				if len(fusedList) > req.Limit {
-					fusedList = fusedList[:req.Limit]
-				}
-
-				// Build a SearchResponse-like structure to reuse existing conversion code.
-				searchResponse = &search.SearchResponse{
-					SearchMethod:      "chunked_rrf_hybrid",
-					FallbackTriggered: false,
-					Results:           make([]search.SearchResult, 0, len(fusedList)),
-				}
-				for _, f := range fusedList {
-					// Preserve vector_rank and bm25_rank from the first chunk where the node appeared.
-					searchResponse.Results = append(searchResponse.Results, search.SearchResult{
-						ID:         f.node.ID,
-						NodeID:     storage.NodeID(f.node.ID),
-						Labels:     f.node.Labels,
-						Properties: f.node.Properties,
-						Score:      f.scoreRRF,
-						RRFScore:   f.scoreRRF,
-						VectorRank: f.vectorRank,
-						BM25Rank:   f.bm25Rank,
-					})
-				}
-			}
-		}
-		chunkLoopDur = time.Since(chunkLoopStart)
+	chunkLoopStart := time.Now()
+	searchResponse, err := search.SearchTextChunksWithErrorPolicy(
+		ctx,
+		req.Query,
+		opts,
+		func(context.Context, string) ([]string, error) { return queryChunks, nil },
+		embedQuery,
+		searchQuery,
+		search.ChunkedSearchErrorPolicy{
+			FatalEmbeddingError: func(err error) bool {
+				return errors.Is(err, nornicdb.ErrQueryEmbeddingDimensionMismatch)
+			},
+			FatalSearchError: func(err error) bool {
+				return errors.Is(err, search.ErrSearchIndexBuilding)
+			},
+		},
+	)
+	chunkLoopDur = time.Since(chunkLoopStart)
+	if errors.Is(err, nornicdb.ErrQueryEmbeddingDimensionMismatch) {
+		s.writeBoundaryError(w, r, http.StatusBadRequest, err, ErrBadRequest)
+		return
 	}
 
 	if err != nil {

@@ -215,25 +215,75 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 		opts.RerankMinScore = v
 	}
 
-	embedding, err := e.resolveRetrieveEmbedding(ctx, req, query, failClosed)
+	embedding, suppliedEmbedding, err := resolveSuppliedRetrieveEmbedding(req, failClosed)
 	if err != nil {
 		return nil, err
 	}
 
 	svc := e.searchService
-	if svc == nil {
-		dims := search.DefaultVectorDimensions
-		if len(embedding) > 0 {
-			dims = len(embedding)
+	ensureSearchService := func(queryEmbedding []float32) *search.Service {
+		if svc == nil {
+			dims := search.DefaultVectorDimensions
+			if len(queryEmbedding) > 0 {
+				dims = len(queryEmbedding)
+			}
+			svc = search.NewServiceWithDimensions(e.storage, dims)
+			e.searchService = svc
 		}
-		svc = search.NewServiceWithDimensions(e.storage, dims)
-		e.searchService = svc
+		return svc
 	}
-	if useConfiguredRerank {
+	if useConfiguredRerank && svc != nil {
 		opts.RerankEnabled = svc.RerankerAvailable(ctx)
 	}
 
-	response, err := svc.Search(ctx, query, embedding, opts)
+	var response *search.SearchResponse
+	if suppliedEmbedding {
+		response, err = ensureSearchService(embedding).Search(ctx, query, embedding, opts)
+	} else {
+		if e.embedder == nil && failClosed {
+			return nil, failClosedEmbeddingUnavailable(localizedError(localization.CypherCoreEmbedderNotConfigured(), nil))
+		}
+
+		var embedQuery search.EmbedQueryFunc
+		if e.embedder != nil {
+			embedQuery = func(ctx context.Context, chunk string) ([]float32, error) {
+				embedding, embedErr := e.embedder.Embed(ctx, chunk)
+				if embedErr != nil {
+					if failClosed {
+						return nil, failClosedEmbeddingUnavailable(embedErr)
+					}
+					return nil, embedErr
+				}
+				if !usableEmbedding(embedding) {
+					if failClosed {
+						return nil, failClosedEmbeddingUnavailable(localizedError(localization.CypherCoreEmbeddingNoOutput(), nil))
+					}
+					return nil, nil
+				}
+				return embedding, nil
+			}
+		}
+
+		response, err = search.SearchTextChunksWithErrorPolicy(
+			ctx,
+			query,
+			opts,
+			func(_ context.Context, text string) ([]string, error) {
+				return e.embedder.ChunkText(text, 512, 50)
+			},
+			embedQuery,
+			func(ctx context.Context, text string, queryEmbedding []float32, searchOpts *search.SearchOptions) (*search.SearchResponse, error) {
+				service := ensureSearchService(queryEmbedding)
+				if useConfiguredRerank {
+					searchOpts.RerankEnabled = service.RerankerAvailable(ctx)
+				}
+				return service.Search(ctx, text, queryEmbedding, searchOpts)
+			},
+			search.ChunkedSearchErrorPolicy{
+				FatalEmbeddingError: func(error) bool { return failClosed },
+			},
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -312,46 +362,28 @@ var (
 	errRetrieveEmbeddingInvalid    = errors.New("query embedding is empty or non-finite")
 )
 
-func (e *StorageExecutor) resolveRetrieveEmbedding(ctx context.Context, req map[string]interface{}, query string, failClosed bool) ([]float32, error) {
+func resolveSuppliedRetrieveEmbedding(req map[string]interface{}, failClosed bool) ([]float32, bool, error) {
 	raw, present := policyPresent(req, "embedding", "queryEmbedding", "query_embedding")
-	if present {
-		if _, isString := raw.(string); isString {
-			if failClosed {
-				return nil, failClosedEmbeddingUnavailable(errRetrieveEmbeddingNotAVector)
-			}
-		} else {
-			embedding, parseErr := parseRetrieveEmbedding(raw, failClosed)
-			if parseErr != nil {
-				return nil, failClosedEmbeddingUnavailable(parseErr)
-			}
-			if usableEmbedding(embedding) {
-				return embedding, nil
-			}
-			if failClosed {
-				return nil, failClosedEmbeddingUnavailable(errRetrieveEmbeddingInvalid)
-			}
-		}
+	if !present {
+		return nil, false, nil
 	}
-	if e.embedder != nil {
-		embedded, embedErr := embedQueryChunked(ctx, e.embedder, query)
-		if embedErr != nil {
-			if failClosed {
-				return nil, failClosedEmbeddingUnavailable(embedErr)
-			}
-			return nil, nil
-		}
-		if usableEmbedding(embedded) {
-			return embedded, nil
-		}
+	if _, isString := raw.(string); isString {
 		if failClosed {
-			return nil, failClosedEmbeddingUnavailable(localizedError(localization.CypherCoreEmbeddingNoOutput(), nil))
+			return nil, false, failClosedEmbeddingUnavailable(errRetrieveEmbeddingNotAVector)
 		}
-		return nil, nil
+		return nil, false, nil
+	}
+	embedding, err := parseRetrieveEmbedding(raw, failClosed)
+	if err != nil {
+		return nil, false, failClosedEmbeddingUnavailable(err)
+	}
+	if usableEmbedding(embedding) {
+		return embedding, true, nil
 	}
 	if failClosed {
-		return nil, failClosedEmbeddingUnavailable(localizedError(localization.CypherCoreEmbedderNotConfigured(), nil))
+		return nil, false, failClosedEmbeddingUnavailable(errRetrieveEmbeddingInvalid)
 	}
-	return nil, nil
+	return nil, false, nil
 }
 
 func failClosedEmbeddingUnavailable(cause error) error {

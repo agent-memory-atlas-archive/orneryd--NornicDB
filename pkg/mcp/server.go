@@ -922,155 +922,31 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 		}
 		svc, err := s.db.GetOrCreateSearchService(dbName, engine)
 		if err == nil && svc != nil {
-			// Try vector/hybrid search if embeddings enabled
-			if s.embed != nil && s.config.EmbeddingEnabled {
-				// IMPORTANT: don't rely on embedding failures to detect "too long" queries.
-				// Instead, proactively chunk the query into embedding-safe segments.
-				const (
-					queryChunkSize    = 512
-					queryChunkOverlap = 50
-					maxQueryChunks    = 32 // safety cap to prevent pathological requests
-					outerRRFK         = 60 // RRF constant for cross-chunk fusion
-				)
-
-				queryChunks, chunkErr := s.embed.ChunkText(query, queryChunkSize, queryChunkOverlap)
-				if chunkErr != nil {
-					return nil, chunkErr
-				}
-				if len(queryChunks) > maxQueryChunks {
-					queryChunks = queryChunks[:maxQueryChunks]
-				}
-
-				// Embed each chunk and search; then fuse results across chunks using RRF (rank-based).
-				queryEmbeddings, err := s.embed.EmbedBatch(ctx, queryChunks)
-				if err == nil && len(queryEmbeddings) == len(queryChunks) && len(queryEmbeddings) > 0 {
-					method = "vector"
-
-					// Pull more candidates per chunk, then cut down after fusion.
-					perChunkLimit := limit
-					if perChunkLimit < 10 {
-						perChunkLimit = 10
-					}
-					if len(queryChunks) > 1 && perChunkLimit < limit*3 {
-						perChunkLimit = limit * 3
-					}
-					if perChunkLimit > 100 {
-						perChunkLimit = 100
-					}
-
-					type fused struct {
-						idLocal  string
-						labels   []string
-						title    string
-						preview  string
-						props    map[string]any
-						scoreRRF float64 // outer RRF, used for ordering across chunks
-						bestSim  float64 // max normalized relevance observed across chunks
-					}
-					fusedByID := make(map[string]*fused)
-
-					for i, emb := range queryEmbeddings {
-						if len(emb) == 0 {
-							continue
-						}
-						chunkQuery := queryChunks[i]
-
-						opts := search.GetAdaptiveRRFConfig(chunkQuery)
-						opts.Limit = perChunkLimit
-						if len(nodeTypes) > 0 {
-							opts.Types = nodeTypes
-						}
-
-						resp, err := svc.Search(ctx, chunkQuery, emb, opts)
-						if err != nil || resp == nil {
-							continue
-						}
-						for rank, r := range resp.Results {
-							id := r.ID
-							f := fusedByID[id]
-							if f == nil {
-								f = &fused{
-									idLocal:  id,
-									labels:   r.Labels,
-									title:    r.Title,
-									preview:  r.ContentPreview,
-									props:    r.Properties,
-									scoreRRF: 0,
-									bestSim:  0,
-								}
-								fusedByID[id] = f
-							}
-							// Outer RRF: 1/(k + rank), rank is 1-based. Used only for ordering.
-							f.scoreRRF += 1.0 / (outerRRFK + float64(rank+1))
-							// Expose one client-safe scale: cosine similarity for
-							// vector-backed hits, or zero for lexical-only hits.
-							similarity := discoverResultSimilarity(r)
-							if similarity > f.bestSim {
-								f.bestSim = similarity
-							}
-						}
-					}
-
-					// Build and sort fused list.
-					fusedList := make([]*fused, 0, len(fusedByID))
-					for _, f := range fusedByID {
-						// Threshold is applied to the same bounded relevance score
-						// returned to clients, never to outer RRF or raw BM25 scores.
-						if minScore > 0 && f.bestSim < minScore {
-							continue
-						}
-						fusedList = append(fusedList, f)
-					}
-
-					sort.SliceStable(fusedList, func(i, j int) bool {
-						if fusedList[i].bestSim == fusedList[j].bestSim {
-							return fusedList[i].scoreRRF > fusedList[j].scoreRRF
-						}
-						return fusedList[i].bestSim > fusedList[j].bestSim
-					})
-
-					if limit <= 0 {
-						limit = 10
-					}
-					if len(fusedList) > limit {
-						fusedList = fusedList[:limit]
-					}
-
-					results := make([]SearchResult, 0, len(fusedList))
-					for _, f := range fusedList {
-						props := toInterfaceMap(f.props)
-						res := SearchResult{
-							ID:             normalizeNodeElementID(f.idLocal),
-							Type:           getLabelType(f.labels),
-							Title:          f.title,
-							ContentPreview: f.preview,
-							Similarity:     f.bestSim,
-							Properties:     sanitizePropertiesForLLM(props),
-						}
-						if depth > 1 {
-							res.Related = s.getRelatedNodes(ctx, res.ID, depth)
-						}
-						results = append(results, res)
-					}
-
-					return DiscoverResult{
-						Results: results,
-						Method:  method,
-						Total:   len(results),
-					}, nil
-				}
-			}
-
-			// Keyword search (BM25-only)
 			opts := search.GetAdaptiveRRFConfig(query)
 			opts.Limit = limit
 			if len(nodeTypes) > 0 {
 				opts.Types = nodeTypes
 			}
-			resp, err := svc.Search(ctx, query, nil, opts)
+
+			var chunkQuery search.ChunkQueryFunc
+			var embedQuery search.EmbedQueryFunc
+			if s.embed != nil && s.config.EmbeddingEnabled {
+				chunkQuery = func(_ context.Context, text string) ([]string, error) {
+					return s.embed.ChunkText(text, 512, 50)
+				}
+				embedQuery = s.embed.Embed
+			}
+
+			resp, err := search.SearchTextChunks(ctx, query, opts, chunkQuery, embedQuery, svc.Search)
 			if err == nil && resp != nil {
+				if resp.SearchMethod == "chunked_rrf_hybrid" {
+					method = "vector"
+				}
 				results := make([]SearchResult, 0, len(resp.Results))
 				for _, r := range resp.Results {
+					if r.VectorRank > 0 {
+						method = "vector"
+					}
 					props := toInterfaceMap(r.Properties)
 					// Vector cosine is already bounded; lexical relevance is
 					// monotonically normalized before crossing the MCP boundary.
@@ -1090,7 +966,6 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 					}
 					results = append(results, res)
 				}
-				sortDiscoverResultsBySimilarity(results)
 				return DiscoverResult{Results: results, Method: method, Total: len(results)}, nil
 			}
 		}

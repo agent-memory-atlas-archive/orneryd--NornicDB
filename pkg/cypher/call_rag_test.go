@@ -39,6 +39,19 @@ func (s *failingVectorEmbedder) ChunkText(text string, maxTokens, overlap int) (
 	return chunkTestText(text, maxTokens, overlap)
 }
 
+type orthogonalChunkEmbedder struct{}
+
+func (orthogonalChunkEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	if text == "chunk one" {
+		return []float32{1, 0}, nil
+	}
+	return []float32{0, 1}, nil
+}
+
+func (orthogonalChunkEmbedder) ChunkText(string, int, int) ([]string, error) {
+	return []string{"chunk one", "chunk two"}, nil
+}
+
 func (s *stubInferenceManager) Generate(ctx context.Context, prompt string, params heimdall.GenerateParams) (string, error) {
 	return "generated: " + prompt, nil
 }
@@ -88,6 +101,33 @@ func TestCallDbRetrieveAndRerank(t *testing.T) {
 	require.NotEmpty(t, rretrieveRes.Columns)
 	assert.Equal(t, "node", rretrieveRes.Columns[0])
 	require.GreaterOrEqual(t, len(rretrieveRes.Rows), 1)
+}
+
+func TestCallDbRetrieveUsesPerChunkOuterRRF(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewNamespacedEngine(newTestMemoryEngine(t), "test")
+	exec := NewStorageExecutor(store)
+	exec.SetEmbedder(orthogonalChunkEmbedder{})
+
+	for _, node := range []*storage.Node{
+		{ID: "repeated", Labels: []string{"Document"}, Properties: map[string]interface{}{"content": "repeated"}, ChunkEmbeddings: [][]float32{{1, 0}, {0, 1}}},
+		{ID: "averaged", Labels: []string{"Document"}, Properties: map[string]interface{}{"content": "averaged"}, ChunkEmbeddings: [][]float32{{0.70710677, 0.70710677}}},
+	} {
+		_, err := store.CreateNode(node)
+		require.NoError(t, err)
+	}
+
+	service := search.NewServiceWithDimensions(store, 2)
+	require.NoError(t, service.BuildIndexes(ctx))
+	exec.SetSearchService(service)
+
+	result, err := exec.Execute(ctx, "CALL db.retrieve({query: 'complete query', limit: 2})", nil)
+	require.NoError(t, err)
+	require.Len(t, result.Rows, 2)
+	first, ok := result.Rows[0][0].(*storage.Node)
+	require.True(t, ok)
+	require.Equal(t, storage.NodeID("repeated"), first.ID)
+	require.Equal(t, "chunked_rrf_hybrid", result.Rows[0][5])
 }
 
 func TestCallDbRetrieveAppliesPropertyFilters(t *testing.T) {
@@ -348,28 +388,25 @@ func TestApplyRetrievalPolicyOptionsFailClosedRejectsRerankAndFractionalCounts(t
 }
 
 func TestResolveRetrieveEmbeddingFailClosedRejectsMalformedElements(t *testing.T) {
-	exec := NewStorageExecutor(newTestMemoryEngine(t))
-	ctx := context.Background()
-
-	_, err := exec.resolveRetrieveEmbedding(ctx, map[string]interface{}{
+	_, _, err := resolveSuppliedRetrieveEmbedding(map[string]interface{}{
 		"embedding": []interface{}{1, "bad", 0},
-	}, "alpha", true)
+	}, true)
 	require.Error(t, err)
 	require.ErrorIs(t, err, errRetrieveEmbeddingNotAVector)
 
-	_, err = exec.resolveRetrieveEmbedding(ctx, map[string]interface{}{
+	_, _, err = resolveSuppliedRetrieveEmbedding(map[string]interface{}{
 		"embedding": []interface{}{1, "2", 0},
-	}, "alpha", true)
+	}, true)
 	require.Error(t, err)
 	require.ErrorIs(t, err, errRetrieveEmbeddingNotAVector)
 }
 
 func TestResolveRetrieveEmbeddingFailOpenDropsInvalidElements(t *testing.T) {
-	exec := NewStorageExecutor(newTestMemoryEngine(t))
-	embedding, err := exec.resolveRetrieveEmbedding(context.Background(), map[string]interface{}{
+	embedding, supplied, err := resolveSuppliedRetrieveEmbedding(map[string]interface{}{
 		"embedding": []interface{}{float64(1), "bad", float64(0)},
-	}, "alpha", false)
+	}, false)
 	require.NoError(t, err)
+	require.True(t, supplied)
 	require.Equal(t, []float32{1, 0}, embedding)
 }
 

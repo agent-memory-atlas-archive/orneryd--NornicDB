@@ -163,6 +163,7 @@ func TestNewServer(t *testing.T) {
 type mockEmbedder struct {
 	embedCalled      bool
 	embedBatchCalled bool
+	embedTexts       []string
 	batchTexts       []string
 	embedding        []float32
 }
@@ -177,6 +178,7 @@ func chunkTestText(text string, maxTokens, overlap int) ([]string, error) {
 
 func (m *mockEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	m.embedCalled = true
+	m.embedTexts = append(m.embedTexts, text)
 	if m.embedding != nil {
 		return m.embedding, nil
 	}
@@ -1012,16 +1014,16 @@ func TestHandleDiscover_ChunksLongQueryForEmbedding(t *testing.T) {
 		t.Fatalf("handleDiscover() error = %v", err)
 	}
 
-	if !embedder.embedBatchCalled {
-		t.Error("expected EmbedBatch to be called for chunked query embedding")
+	if !embedder.embedCalled {
+		t.Error("expected Embed to be called for each query chunk")
 	}
-	if embedder.embedCalled {
-		t.Error("expected Embed (single) NOT to be called for chunked query embedding")
+	if embedder.embedBatchCalled {
+		t.Error("expected canonical search path not to use a separate EmbedBatch implementation")
 	}
-	if len(embedder.batchTexts) <= 1 {
-		t.Errorf("expected query to be chunked into multiple parts, got %d", len(embedder.batchTexts))
+	if len(embedder.embedTexts) <= 1 {
+		t.Errorf("expected query to be chunked into multiple parts, got %d", len(embedder.embedTexts))
 	}
-	for i, c := range embedder.batchTexts {
+	for i, c := range embedder.embedTexts {
 		tokens, err := countTestTokens(c)
 		if err != nil {
 			t.Fatalf("countTestTokens: %v", err)
@@ -1039,7 +1041,7 @@ func TestHandleDiscover_ChunksLongQueryForEmbedding(t *testing.T) {
 		t.Fatalf("second handleDiscover() error = %v", err)
 	}
 	discoverResult := result.(DiscoverResult)
-	require.Equal(t, "vector", discoverResult.Method)
+	require.Equal(t, "keyword", discoverResult.Method)
 }
 
 func TestHandleDiscover_WithDBKeywordResults(t *testing.T) {

@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Repair persisted HNSW warmup, localized model-path, and vector-store error fixtures for Windows and Linux.
 - Restore documentation-site builds after dependency and configuration changes.
 - Match Neo4j Bolt result streaming for explicit transactions with zero-based `qid` values, independently resumable concurrent statements, latest-statement fallback, bounded `DISCARD`, and invalid-stream failure/reset behavior. Focused Apple M3 Max benchmarks reduced streaming-option parsing from about 125 ns, 339 B, and 3 allocations per operation to 13 ns with zero allocations; autocommit stream-state handling fell from about 19 ns, 48 B, and 1 allocation to 7 ns with zero allocations.
+- Unify textual search across HTTP, native gRPC, Cypher retrieval, MCP discover, and Heimdall discovery. Long queries now embed and search each chunk independently, rank the combined candidates with one deterministic outer RRF implementation, and never average chunk embeddings; explicit caller-provided vectors remain single-vector searches. On Apple M3 Max, the focused 8-chunk/800-candidate fusion benchmark improved from about 55.6 us, 79.7 KB, and 294 allocations per operation to 24.4 us, 43.0 KB, and 8 allocations, increasing throughput from about 18.0k to 41.0k operations per second; the single-chunk path remains allocation-free at about 6 ns.
 
 ## [v1.3.2] - 9/11/2026
 
