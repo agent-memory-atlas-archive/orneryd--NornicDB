@@ -321,16 +321,26 @@ func (s *Session) handleRun(data []byte) error {
 	// Store result for PULL
 	s.lastResult = result
 	s.resultIndex = 0
-	s.queryId++
 
 	// Return SUCCESS with field names (Neo4j compatible metadata)
 	// Note: Neo4j only sends qid for EXPLICIT transactions, not implicit/autocommit
 	// For implicit transactions, only send fields and t_first
 	if s.inTransaction {
+		statementID := s.queryId
+		s.queryId++
+		if s.resultStreams == nil {
+			s.resultStreams = make(map[int64]*resultStream)
+		}
+		s.resultStreams[statementID] = &resultStream{
+			result:   result,
+			isWrite:  isWrite,
+			database: dbName,
+		}
+		s.latestStatementID = statementID
 		if err := s.sendSuccessNoFlush(map[string]any{
 			"fields":  result.Columns,
 			"t_first": int64(0),
-			"qid":     s.queryId,
+			"qid":     statementID,
 		}); err != nil {
 			return err
 		}
@@ -509,9 +519,192 @@ func (s *Session) parseRunMessage(data []byte) (string, map[string]any, map[stri
 	return query, params, metadata, nil
 }
 
+type streamingOptions struct {
+	limit       int
+	statementID int64
+}
+
+const maxStreamingLimit = int64(1<<31 - 1)
+
+func parseStreamingOptions(data []byte) (streamingOptions, error) {
+	options := streamingOptions{limit: -1, statementID: -1}
+	if len(data) == 0 {
+		return options, nil
+	}
+
+	size, offset, err := streamingMapHeader(data)
+	if err != nil {
+		return options, err
+	}
+	for range size {
+		key, consumed, err := streamingOptionKey(data, offset)
+		if err != nil {
+			return options, fmt.Errorf("failed to decode streaming option key: %w", err)
+		}
+		offset += consumed
+		value, consumed, err := decodePackStreamValue(data, offset)
+		if err != nil {
+			return options, fmt.Errorf("failed to decode streaming option %q: %w", string(key), err)
+		}
+		offset += consumed
+
+		switch {
+		case len(key) == 1 && key[0] == 'n':
+			limit, ok := value.(int64)
+			if !ok {
+				return options, fmt.Errorf("n must be an integer")
+			}
+			if limit > maxStreamingLimit {
+				return options, fmt.Errorf("n must not exceed %d", maxStreamingLimit)
+			}
+			options.limit = int(limit)
+		case len(key) == 3 && key[0] == 'q' && key[1] == 'i' && key[2] == 'd':
+			if value == nil {
+				options.statementID = -1
+				continue
+			}
+			statementID, ok := value.(int64)
+			if !ok {
+				return options, fmt.Errorf("qid must be an integer")
+			}
+			options.statementID = statementID
+		}
+	}
+	if options.limit != -1 && options.limit < 1 {
+		return options, fmt.Errorf("n must be -1 or at least 1")
+	}
+	return options, nil
+}
+
+func streamingOptionKey(data []byte, offset int) ([]byte, int, error) {
+	if offset >= len(data) {
+		return nil, 0, fmt.Errorf("offset out of bounds")
+	}
+
+	start := offset
+	marker := data[offset]
+	offset++
+	var length int
+	switch {
+	case marker >= 0x80 && marker <= 0x8F:
+		length = int(marker - 0x80)
+	case marker == 0xD0:
+		if offset >= len(data) {
+			return nil, 0, fmt.Errorf("incomplete STRING8")
+		}
+		length = int(data[offset])
+		offset++
+	case marker == 0xD1:
+		if offset+1 >= len(data) {
+			return nil, 0, fmt.Errorf("incomplete STRING16")
+		}
+		length = int(data[offset])<<8 | int(data[offset+1])
+		offset += 2
+	case marker == 0xD2:
+		if offset+3 >= len(data) {
+			return nil, 0, fmt.Errorf("incomplete STRING32")
+		}
+		length = int(data[offset])<<24 | int(data[offset+1])<<16 | int(data[offset+2])<<8 | int(data[offset+3])
+		offset += 4
+	default:
+		return nil, 0, fmt.Errorf("not a string marker: 0x%02X", marker)
+	}
+	if length < 0 || offset+length > len(data) {
+		return nil, 0, fmt.Errorf("string data out of bounds")
+	}
+	return data[offset : offset+length], offset + length - start, nil
+}
+
+func streamingMapHeader(data []byte) (size, offset int, err error) {
+	if len(data) == 0 {
+		return 0, 0, fmt.Errorf("missing streaming options")
+	}
+
+	switch marker := data[0]; {
+	case marker >= 0xA0 && marker <= 0xAF:
+		return int(marker - 0xA0), 1, nil
+	case marker == 0xD8:
+		if len(data) < 2 {
+			return 0, 0, fmt.Errorf("incomplete MAP8")
+		}
+		return int(data[1]), 2, nil
+	case marker == 0xD9:
+		if len(data) < 3 {
+			return 0, 0, fmt.Errorf("incomplete MAP16")
+		}
+		return int(data[1])<<8 | int(data[2]), 3, nil
+	case marker == 0xDA:
+		if len(data) < 5 {
+			return 0, 0, fmt.Errorf("incomplete MAP32")
+		}
+		size64 := uint64(data[1])<<24 | uint64(data[2])<<16 | uint64(data[3])<<8 | uint64(data[4])
+		if size64 > uint64(len(data)) {
+			return 0, 0, fmt.Errorf("streaming options map exceeds message size")
+		}
+		return int(size64), 5, nil
+	default:
+		return 0, 0, fmt.Errorf("not a map marker: 0x%02X", marker)
+	}
+}
+
+func (s *Session) selectResultStream(statementID int64) (resultStream, int64, bool) {
+	if s.inTransaction && s.resultStreams != nil {
+		if statementID == -1 {
+			statementID = s.latestStatementID
+		}
+		stream, ok := s.resultStreams[statementID]
+		if !ok {
+			return resultStream{}, statementID, false
+		}
+		return *stream, statementID, true
+	}
+	if s.lastResult == nil {
+		return resultStream{}, -1, false
+	}
+	return resultStream{
+		result:   s.lastResult,
+		index:    s.resultIndex,
+		isWrite:  s.lastQueryIsWrite,
+		database: s.lastQueryDatabase,
+	}, -1, true
+}
+
+func (s *Session) updateResultStream(statementID int64, stream resultStream, hasMore bool) {
+	if s.inTransaction && s.resultStreams != nil {
+		if hasMore {
+			*s.resultStreams[statementID] = stream
+		} else {
+			delete(s.resultStreams, statementID)
+		}
+		if statementID != s.latestStatementID {
+			return
+		}
+	}
+	if hasMore {
+		s.lastResult = stream.result
+		s.resultIndex = stream.index
+	} else {
+		s.lastResult = nil
+		s.resultIndex = 0
+	}
+}
+
+func (s *Session) sendStreamingFailure(message string) error {
+	s.failedUntilReset = true
+	return s.sendFailure("Neo.ClientError.Request.InvalidFormat", message)
+}
+
 // handlePull handles the PULL message.
 func (s *Session) handlePull(data []byte) error {
-	if s.lastResult == nil {
+	options, err := parseStreamingOptions(data)
+	if err != nil {
+		return s.sendStreamingFailure(err.Error())
+	}
+	stream, statementID, ok := s.selectResultStream(options.statementID)
+	if !ok {
+		if s.inTransaction {
+			return s.sendStreamingFailure(fmt.Sprintf("No such statement: %d", statementID))
+		}
 		// Neo4j doesn't send has_more when false - just empty metadata
 		if err := s.sendSuccessNoFlush(map[string]any{}); err != nil {
 			return err
@@ -519,47 +712,32 @@ func (s *Session) handlePull(data []byte) error {
 		return s.flushIfPending()
 	}
 
-	// Parse PULL options (n = number of records to pull)
-	pullN := -1 // Default: all records
-	if len(data) > 0 {
-		opts, _, err := decodePackStreamMap(data, 0)
-		if err == nil {
-			if n, ok := opts["n"]; ok {
-				switch v := n.(type) {
-				case int64:
-					pullN = int(v)
-				case int:
-					pullN = v
-				}
-			}
-		}
-	}
-
 	// Stream records - use batched writing for large result sets
-	remaining := len(s.lastResult.Rows) - s.resultIndex
-	if pullN > 0 && remaining > pullN {
-		remaining = pullN
+	remaining := len(stream.result.Rows) - stream.index
+	if options.limit > 0 && remaining > options.limit {
+		remaining = options.limit
 	}
 
 	// For large batches (>50 records), use batched writing to reduce syscalls
 	if remaining > 50 {
-		if err := s.sendRecordsBatched(s.lastResult.Rows[s.resultIndex : s.resultIndex+remaining]); err != nil {
+		if err := s.sendRecordsBatched(stream.result.Rows[stream.index : stream.index+remaining]); err != nil {
 			return err
 		}
-		s.resultIndex += remaining
+		stream.index += remaining
 	} else {
 		// Small batches: send individually (avoids buffer allocation overhead)
-		for s.resultIndex < len(s.lastResult.Rows) {
+		pullN := options.limit
+		for stream.index < len(stream.result.Rows) {
 			if pullN == 0 {
 				break
 			}
 
-			row := s.lastResult.Rows[s.resultIndex]
+			row := stream.result.Rows[stream.index]
 			if err := s.writeRecordNoFlush(row); err != nil {
 				return err
 			}
 
-			s.resultIndex++
+			stream.index++
 			if pullN > 0 {
 				pullN--
 			}
@@ -567,14 +745,12 @@ func (s *Session) handlePull(data []byte) error {
 	}
 
 	// Check if more records available
-	hasMore := s.resultIndex < len(s.lastResult.Rows)
+	hasMore := stream.index < len(stream.result.Rows)
+	s.updateResultStream(statementID, stream, hasMore)
 
 	// Clear result if done
 	if !hasMore {
-		// Capture stats before clearing the result reference.
-		resultStats := s.lastResult.Stats
-		s.lastResult = nil
-		s.resultIndex = 0
+		resultStats := stream.result.Stats
 
 		// Neo4j-style deferred commit: flush pending writes after streaming completes.
 		if err := s.flushPendingExecutorWrites(); err != nil {
@@ -584,13 +760,13 @@ func (s *Session) handlePull(data []byte) error {
 		// Return metadata for completed query (Neo4j compatibility)
 		// Neo4j sends: type, bookmark, t_last, stats, db (but NOT has_more when false)
 		queryType := "r"
-		if s.lastQueryIsWrite {
+		if stream.isWrite {
 			queryType = "w"
 		}
 
 		bookmark := s.currentBookmark()
-		if s.lastQueryIsWrite {
-			if receiptBookmark, ok := s.bookmarkFromReceipt(); ok {
+		if stream.isWrite {
+			if receiptBookmark, ok := s.bookmarkFromResultReceipt(stream.result); ok {
 				bookmark = receiptBookmark
 			} else {
 				bookmark = s.generateBookmark()
@@ -603,8 +779,8 @@ func (s *Session) handlePull(data []byte) error {
 			"type":     queryType,
 			"t_last":   int64(0), // Streaming time
 		}
-		if s.lastQueryDatabase != "" {
-			metadata["db"] = s.lastQueryDatabase
+		if stream.database != "" {
+			metadata["db"] = stream.database
 		} else if s.database != "" {
 			metadata["db"] = s.database
 		} else {
@@ -670,13 +846,37 @@ func databaseFromMetadata(metadata map[string]any) (string, bool) {
 
 // handleDiscard handles the DISCARD message.
 func (s *Session) handleDiscard(data []byte) error {
-	// Capture stats before clearing the result.
-	var resultStats *QueryStats
-	if s.lastResult != nil {
-		resultStats = s.lastResult.Stats
+	options, err := parseStreamingOptions(data)
+	if err != nil {
+		return s.sendStreamingFailure(err.Error())
 	}
-	s.lastResult = nil
-	s.resultIndex = 0
+	stream, statementID, ok := s.selectResultStream(options.statementID)
+	if !ok {
+		if s.inTransaction {
+			return s.sendStreamingFailure(fmt.Sprintf("No such statement: %d", statementID))
+		}
+		if err := s.sendSuccessNoFlush(map[string]any{}); err != nil {
+			return err
+		}
+		return s.flushIfPending()
+	}
+
+	remaining := len(stream.result.Rows) - stream.index
+	discardCount := remaining
+	if options.limit > 0 && discardCount > options.limit {
+		discardCount = options.limit
+	}
+	stream.index += discardCount
+	hasMore := stream.index < len(stream.result.Rows)
+	s.updateResultStream(statementID, stream, hasMore)
+	if hasMore {
+		if err := s.sendSuccessNoFlush(map[string]any{"has_more": true}); err != nil {
+			return err
+		}
+		return s.flushIfPending()
+	}
+
+	resultStats := stream.result.Stats
 
 	// Neo4j-style deferred commit: flush pending writes after discard.
 	if err := s.flushPendingExecutorWrites(); err != nil {
@@ -685,12 +885,12 @@ func (s *Session) handleDiscard(data []byte) error {
 
 	// Build completion metadata with stats (same contract as PULL completion).
 	queryType := "r"
-	if s.lastQueryIsWrite {
+	if stream.isWrite {
 		queryType = "w"
 	}
 	bookmark := s.currentBookmark()
-	if s.lastQueryIsWrite {
-		if receiptBookmark, ok := s.bookmarkFromReceipt(); ok {
+	if stream.isWrite {
+		if receiptBookmark, ok := s.bookmarkFromResultReceipt(stream.result); ok {
 			bookmark = receiptBookmark
 		} else {
 			bookmark = s.generateBookmark()
@@ -701,8 +901,8 @@ func (s *Session) handleDiscard(data []byte) error {
 		"type":     queryType,
 		"t_last":   int64(0),
 	}
-	if s.lastQueryDatabase != "" {
-		metadata["db"] = s.lastQueryDatabase
+	if stream.database != "" {
+		metadata["db"] = stream.database
 	} else if s.database != "" {
 		metadata["db"] = s.database
 	} else {
@@ -880,6 +1080,9 @@ func (s *Session) handleBegin(data []byte) error {
 	s.txDatabase = txDatabase
 	s.txHasMerge = false
 	s.txHasNonMergeWrite = false
+	s.queryId = 0
+	s.latestStatementID = -1
+	s.resultStreams = make(map[int64]*resultStream)
 	if err := s.sendSuccessNoFlush(nil); err != nil {
 		return err
 	}
@@ -1008,11 +1211,15 @@ func (s *Session) currentBookmark() string {
 }
 
 func (s *Session) bookmarkFromReceipt() (string, bool) {
-	if s.lastResult == nil || s.lastResult.Metadata == nil {
+	return s.bookmarkFromResultReceipt(s.lastResult)
+}
+
+func (s *Session) bookmarkFromResultReceipt(result *QueryResult) (string, bool) {
+	if result == nil || result.Metadata == nil {
 		return "", false
 	}
 
-	receiptAny, ok := s.lastResult.Metadata["receipt"]
+	receiptAny, ok := result.Metadata["receipt"]
 	if !ok || receiptAny == nil {
 		return "", false
 	}

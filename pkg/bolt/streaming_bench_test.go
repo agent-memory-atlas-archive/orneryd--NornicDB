@@ -254,3 +254,50 @@ func BenchmarkBolt_StreamRecords_EndToEnd_LargeRow(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkBoltResultStreamState(b *testing.B) {
+	result := &QueryResult{Rows: [][]any{{int64(1)}}}
+
+	b.Run("autocommit", func(b *testing.B) {
+		session := &Session{lastResult: result}
+		b.ReportAllocs()
+		for b.Loop() {
+			stream, statementID, ok := session.selectResultStream(-1)
+			if !ok {
+				b.Fatal("missing result stream")
+			}
+			session.updateResultStream(statementID, stream, true)
+		}
+	})
+
+	b.Run("explicit", func(b *testing.B) {
+		stream := &resultStream{result: result}
+		session := &Session{
+			inTransaction:     true,
+			resultStreams:     map[int64]*resultStream{0: stream},
+			latestStatementID: 0,
+		}
+		b.ReportAllocs()
+		for b.Loop() {
+			selected, statementID, ok := session.selectResultStream(0)
+			if !ok {
+				b.Fatal("missing result stream")
+			}
+			session.updateResultStream(statementID, selected, true)
+		}
+	})
+}
+
+func BenchmarkParseStreamingOptions(b *testing.B) {
+	data := encodePackStreamMap(map[string]any{"n": int64(100), "qid": int64(7)})
+	b.ReportAllocs()
+	for b.Loop() {
+		options, err := parseStreamingOptions(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if options.limit != 100 || options.statementID != 7 {
+			b.Fatalf("unexpected options: %+v", options)
+		}
+	}
+}

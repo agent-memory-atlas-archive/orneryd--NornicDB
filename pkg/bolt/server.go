@@ -396,6 +396,13 @@ type QueryResult struct {
 	Stats    *QueryStats // Write counters for ResultSummary
 }
 
+type resultStream struct {
+	result   *QueryResult
+	index    int
+	isWrite  bool
+	database string
+}
+
 // QueryStats holds write counters emitted in the Bolt PULL completion metadata.
 // Field names match the Neo4j Bolt protocol specification for "stats".
 type QueryStats struct {
@@ -1429,8 +1436,10 @@ type Session struct {
 	rawTransactionExecutor          bool
 
 	// Query result state (for streaming with PULL)
-	lastResult  *QueryResult
-	resultIndex int
+	lastResult        *QueryResult
+	resultIndex       int
+	resultStreams     map[int64]*resultStream
+	latestStatementID int64
 
 	// Deferred commit state (Neo4j-style optimization)
 	// Writes are buffered in AsyncEngine until PULL completes
@@ -1438,7 +1447,7 @@ type Session struct {
 	flushPending bool
 
 	// Query metadata for Neo4j driver compatibility
-	queryId            int64          // Query ID counter for qid field
+	queryId            int64          // Next explicit-transaction qid
 	lastQueryIsWrite   bool           // Was last query a write operation
 	lastQueryDatabase  string         // Effective database for last RUN
 	lastRunMetadata    map[string]any // Metadata from last RUN message (bookmarks, tx_timeout, etc.)

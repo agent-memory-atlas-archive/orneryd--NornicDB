@@ -455,8 +455,14 @@ Client                              Server
   │◄─ RECORD [row1] ──────────────────┤
   │◄─ RECORD [row2] ──────────────────┤
   │◄─ RECORD [row3] ──────────────────┤
-  │◄─ SUCCESS {has_more: false} ──────┤
+    │◄─ SUCCESS {type, t_last, db} ─────┤
 ```
+
+Within an explicit transaction, each `RUN` returns a zero-based `qid`. Multiple
+results may remain active at once; `PULL` and `DISCARD` select a result with
+`qid`, or use the latest `RUN` when `qid` is omitted. Partial operations return
+`has_more: true`. Result streams are scoped to the current Bolt connection and
+transaction and cannot be resumed after disconnect.
 
 ### Transaction Flow
 

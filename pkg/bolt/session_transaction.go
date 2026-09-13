@@ -143,6 +143,9 @@ func (s *Session) clearExplicitTransactionState() {
 	s.pendingFlush = false
 	s.lastResult = nil
 	s.resultIndex = 0
+	s.resultStreams = nil
+	s.queryId = 0
+	s.latestStatementID = -1
 	if s.baseExec != nil {
 		s.executor = s.baseExec
 	}
