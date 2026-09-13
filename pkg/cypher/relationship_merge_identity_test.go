@@ -87,7 +87,7 @@ CREATE (:ContainerImage {digest: 'sha256:abc'}),
 	})
 }
 
-func TestRelationshipMergeEdgeIDUsesPropertyIdentityOnlyWhenPresent(t *testing.T) {
+func TestRelationshipMergeEdgeIDUsesFullPatternIdentity(t *testing.T) {
 	exec := &StorageExecutor{}
 	first := exec.newRelationshipMergeEdgeID("source", "target", "ASSERTS", map[string]interface{}{
 		"scope_id":        "scope-a",
@@ -107,8 +107,8 @@ func TestRelationshipMergeEdgeIDUsesPropertyIdentityOnlyWhenPresent(t *testing.T
 
 	bareFirst := exec.newRelationshipMergeEdgeID("source", "target", "ASSERTS", nil)
 	bareSecond := exec.newRelationshipMergeEdgeID("source", "target", "ASSERTS", nil)
-	require.NotEqual(t, bareFirst, bareSecond)
-	require.False(t, strings.HasPrefix(string(bareFirst), "merge-"))
+	require.Equal(t, bareFirst, bareSecond)
+	require.True(t, strings.HasPrefix(string(bareFirst), "merge-"))
 }
 
 func TestRelationshipMatchesMergePatternRequiresTypeAndEveryProperty(t *testing.T) {
@@ -386,6 +386,38 @@ func TestRelationshipMergeIdentityConcurrentSameIdentityConvergesAfterRetry(t *t
 	assertAssertRelationshipRows(t, firstExec, ctx, [][]interface{}{
 		{"scope-a", "source-a"},
 	})
+}
+
+func TestBareRelationshipMergeConcurrentSameIdentityConvergesAfterRetry(t *testing.T) {
+	engine := edgeConflictTestEngine(t)
+	firstExec := NewStorageExecutor(engine)
+	secondExec := NewStorageExecutor(engine)
+	ctx := context.Background()
+	seedRelEndpoints(t, firstExec)
+
+	query := `MATCH (a:A {key: 'a1'})
+MATCH (b:B {key: 'b1'})
+MERGE (a)-[rel:ASSERTS]->(b)
+SET rel.confidence = 0.9`
+	_, err := firstExec.Execute(ctx, "BEGIN", nil)
+	require.NoError(t, err)
+	_, err = secondExec.Execute(ctx, "BEGIN", nil)
+	require.NoError(t, err)
+	_, err = firstExec.Execute(ctx, query, nil)
+	require.NoError(t, err)
+	_, err = secondExec.Execute(ctx, query, nil)
+	require.NoError(t, err)
+	_, err = firstExec.Execute(ctx, "COMMIT", nil)
+	require.NoError(t, err)
+	_, err = secondExec.Execute(ctx, "COMMIT", nil)
+	require.ErrorIs(t, err, storage.ErrConflict)
+
+	_, err = secondExec.Execute(ctx, query, nil)
+	require.NoError(t, err)
+	count := mustCountRows(t, firstExec, ctx, `
+MATCH (:A {key: 'a1'})-[rel:ASSERTS]->(:B {key: 'b1'})
+RETURN count(rel)`, nil)
+	require.Equal(t, int64(1), count)
 }
 
 func TestUnwindRelationshipMergeBatchConcurrentSameIdentityConvergesAfterRetry(t *testing.T) {

@@ -109,7 +109,7 @@ func (e *StorageExecutor) newRelationshipMergeEdgeID(
 	relType string,
 	matchProps map[string]interface{},
 ) storage.EdgeID {
-	if len(matchProps) == 0 || relationshipMergeIdentityContainsNaN(matchProps) {
+	if relationshipMergeIdentityContainsNaN(matchProps) {
 		return storage.EdgeID(e.generateID())
 	}
 	return deterministicRelationshipMergeEdgeID(startID, endID, relType, matchProps, 0)
