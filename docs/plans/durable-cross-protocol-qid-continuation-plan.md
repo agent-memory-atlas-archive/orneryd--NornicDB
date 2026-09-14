@@ -14,8 +14,9 @@ The end state is:
   result after reconnecting or through another supported protocol.
 - HTTP, native gRPC, and `db.retrieve` expose the same start, pull, and discard
   semantics instead of separate page and release APIs.
-- Search continuation pages the final canonical outer-RRF population produced
-  by `search.SearchTextChunks`, not individual chunks or pre-fusion candidates.
+- Search continuation incrementally extends the final canonical outer-RRF
+  population produced by `search.SearchTextChunks`; the initial retrieval depth
+  is not a total-result ceiling.
 - No database transaction, storage lock, search-index lock, or global registry
   lock remains held while the client decides whether to request another page.
 - Search calls that do not request continuation retain their current behavior
@@ -39,16 +40,28 @@ DISCARD(qid)             -> released
 
 Properties of this contract:
 
-- `n` is the maximum number of records returned by one operation.
-- `limit` remains the maximum size of the frozen ranked population.
+- `n` is only the maximum number of records returned by one operation.
+- In continuation mode, `limit` is the initial retrieval depth and expansion
+  quantum, not the maximum number of results the caller may consume.
+- Optional `max_results` lets a caller request an explicit total ceiling. When
+  omitted, pulls continue until the searchable population is exhausted or a
+  configured server safety limit rejects further expansion.
 - A successful partial response returns a qid representing the next position.
 - Repeating the same durable qid is idempotent and returns the same page.
 - `DISCARD` releases the complete retained population, regardless of which
   position token from that population is supplied.
 - An exhausted response has `has_more: false` and no next qid.
 - Pulling does not extend the fixed expiry time.
-- Later pulls do not rerun chunking, embedding, ANN, BM25, outer RRF, MMR, or
-  reranking.
+- Later pulls never rerun chunking or embedding. They may deepen ANN and BM25
+  retrieval and recompute fusion over the expanded candidate prefixes when the
+  retained unseen-result buffer cannot satisfy `n`.
+
+"Infinite" continuation means that no initial client-selected batch or top-K
+silently becomes the stream's lifetime ceiling. It does not mean unbounded
+memory, CPU, token lifetime, or results beyond the finite searchable corpus.
+Every pull remains subject to explicit per-operation and per-principal resource
+budgets, and a client may refresh an expired qid from its last logical position
+only through a new search.
 
 ## Identifier Model
 
@@ -87,7 +100,8 @@ The token contains only:
 
 It contains no query, filters, embedding, node IDs, scores, properties, roles,
 or credentials. The registry entry binds the stream to its canonical database
-and authenticated owner.
+and authenticated owner and retains the compact normalized search state needed
+to deepen retrieval without embedding the query again.
 
 The name `qid` is used by HTTP, gRPC, and Cypher for the durable token. Bolt
 continues to use its numeric `qid` field and exposes the opaque form as
@@ -189,25 +203,28 @@ Conceptual entry:
 
 ```go
 type entry struct {
-    streamID     [16]byte
-    ownerHash    [32]byte
-    databaseID   uint64
-    expiresUnix  int64
-    columns      []string
-    descriptors  []compactHit
-    stringArena  []byte
-    bytes        int64
+  streamID       [16]byte
+  ownerHash      [32]byte
+  databaseID     uint64
+  expiresUnix    int64
+  columns        []string
+  descriptors    []compactHit
+  stringArena    []byte
+  searchState    compactSearchState
+  emitted        uint64
+  retrievalDepth uint32
+  exhausted      bool
+  bytes          int64
 }
 ```
 
-`compactHit` stores offsets and lengths into one immutable string arena plus
-only the numeric ranking fields needed to reproduce the search row. It does not
-retain:
+`compactHit` stores offsets and lengths into one string arena plus only the
+numeric ranking fields needed to reproduce the search row. `compactSearchState`
+stores normalized filters/options, query chunks, and their embeddings so later
+pulls do not call the chunker or embedding provider again. It does not retain:
 
 - `storage.Node` values;
 - property maps or label slices;
-- embeddings;
-- query text or filters;
 - complete `SearchResult` objects;
 - storage transactions;
 - index handles or locks.
@@ -225,9 +242,15 @@ token signing.
 - Hold a shard lock only for map lookup, insertion, or deletion.
 - Build, validate, size, and pack a population before acquiring a shard lock.
 - Verify token HMAC and fixed fields before acquiring a shard lock.
-- After lookup, retain an immutable entry reference and release the lock before
-  slicing descriptors, hydrating nodes, authorizing results, or encoding the
-  next token.
+- After lookup, retain the entry reference and release the shard lock before
+  slicing descriptors, hydrating nodes, authorizing results, encoding the next
+  token, or deepening retrieval.
+- Serialize expansion only per entry. Pulls that can be served from buffered
+  descriptors remain concurrent; one pull expands while followers recheck the
+  buffer after that expansion completes.
+- Publish expanded descriptors with a short entry lock or immutable snapshot
+  swap. Never hold that lock while ANN, BM25, fusion, reranking, or storage
+  hydration runs.
 - Use atomic counters or a short accounting lock for global and per-owner byte
   and session admission.
 - Make release idempotent at the registry level where possible. A release racing
@@ -238,29 +261,55 @@ Expired entries should be reclaimed by a bounded periodic shard sweep or timing
 wheel. Shutdown must stop the reaper cleanly. Tests should use an injected clock
 and explicit sweep hook rather than sleeps.
 
-### 4. Search Population Ownership
+### 4. Progressive Search Ownership
 
-The initial request executes the existing canonical path:
+The initial request executes the existing canonical path and retains the
+normalized chunk vectors and options:
 
 ```text
-chunk -> embed -> per-chunk search -> outer RRF -> freeze -> first pull
+chunk -> embed -> per-chunk search -> outer RRF -> buffer -> first pull
 ```
 
-Only the final user-visible order is retained. Phase one supports ranked search
-only. It does not implement PR #353's `ranked_then_id`, `id`, complete storage
-scans, or grouping modes.
+When a pull cannot be satisfied from buffered unseen descriptors, the stream
+increases retrieval depth geometrically, reruns the search branches with the
+retained vectors and normalized options, performs canonical outer RRF over the
+larger prefixes, removes IDs already emitted or buffered, and appends newly
+discovered results. Expansion stops when enough rows are buffered, all branches
+report exhaustion, the optional `max_results` is reached, or a server resource
+budget rejects the operation.
 
-If the requested first page exhausts the result population, return it directly
-without registering a durable stream.
+Repeated deepening is the first correctness-oriented implementation because it
+does not retain index locks or mutable index iterators across requests. It must
+be hidden behind a producer interface so BM25 keyset iteration and safe
+vector-index frontier snapshots can replace repeated work after profiling.
+
+The current `MaxCandidates` and `maxChunkCandidateLimit` constants are ordinary
+one-shot search safeguards, not valid lifetime ceilings for a continued stream.
+Continuation uses separate checked depth limits up to the current searchable
+cardinality. Candidate-generator implementations must report whether a returned
+prefix is exhausted; a short approximate response must not be presented as
+proof that the corpus is exhausted.
+
+Phase one supports ranked search only. It does not implement PR #353's
+`ranked_then_id`, `id`, complete storage scans, or grouping modes.
+
+If all retrieval branches establish exhaustion and the requested first page
+consumes every result, return it directly without registering a durable stream.
 
 ### 5. Consistency Contract
 
-Continuation freezes:
+Continuation guarantees:
 
-- logical result IDs;
-- result order;
-- scores and rank metadata;
+- already emitted logical result IDs never repeat;
+- already emitted order never changes;
+- retained scores and rank metadata for emitted rows remain unchanged;
 - search method and fallback diagnostics.
+
+Because deeper approximate or multi-list retrieval can discover a result whose
+recomputed score would have placed it in an earlier page, the contract is
+append-only progressive ranking, not a claim that every emitted page is a
+prefix of one omniscient global ordering. New results are appended in their
+order within the latest canonical fused expansion.
 
 It does not freeze node properties or provide an MVCC snapshot. Each pull:
 
@@ -340,9 +389,11 @@ Discard request:
 }
 ```
 
-The response adds `qid`, `has_more`, `position`, `returned`, `total`, and
-`expires_at`. When no continuation fields are supplied, the current request and
-response behavior remains unchanged.
+The response adds `qid`, `has_more`, `position`, `returned`, `discovered`,
+`exhausted`, and `expires_at`. `total` is omitted until exhaustion because the
+eventual searchable result count is not known during progressive retrieval.
+When no continuation fields are supplied, the current request and response
+behavior remains unchanged.
 
 On pull and discard, the token selects its canonical database. If a request
 also supplies `database`, it must resolve to the same database or fail closed.
@@ -357,6 +408,7 @@ message SearchTextRequest {
   string qid = 6;
   int32 n = 7;
   bool discard = 8;
+  optional int64 max_results = 9;
 }
 
 message SearchTextResponse {
@@ -365,7 +417,7 @@ message SearchTextResponse {
   bool has_more = 7;
   int64 position = 8;
   int32 returned = 9;
-  int64 total = 10;
+  optional int64 total = 10;
   google.protobuf.Timestamp expires_at = 11;
   bool released = 12;
 }
@@ -403,7 +455,8 @@ page = {
   has_more: ...,
   position: ...,
   returned: ...,
-  total: ...,
+  discovered: ...,
+  total: ..., // present only after exhaustion
   expires_at: ...
 }
 ```
@@ -440,7 +493,10 @@ Initial defaults should be conservative and configurable:
 
 - fixed TTL: 5 minutes;
 - maximum page size `n`: 500;
-- maximum ranked population: 5,000 descriptors;
+- maximum buffered unseen descriptors per stream;
+- maximum cumulative results may be configured by an administrator as a safety
+  ceiling, but is independent of the initial `limit` and defaults to searchable
+  corpus exhaustion where deployment capacity permits;
 - maximum active streams per principal;
 - maximum retained bytes per principal;
 - maximum active streams globally;
@@ -462,13 +518,16 @@ release, pull outcomes, and wrong-instance tokens.
   and DISCARD independent of any transport.
 - [ ] Capture ordinary search and current Bolt PULL latency, allocations, and
   retained heap before adding the registry.
-- [ ] Add benchmark fixtures for 10, 100, 1,000, and 5,000 ranked hits.
-- [ ] Verify one canonical outer-RRF response supplies every fixture population.
+- [ ] Add benchmark fixtures that consume 10, 100, 1,000, 5,000, and more than
+  5,000 ranked hits from one stream.
+- [ ] Verify a stream can return more results than its initial `limit` without
+  duplicates or repeated embedding calls.
 
 ### Phase 1: Shared Stream And Compact Registry
 
 - [ ] Add the shared stream interface and materialized adapter.
-- [ ] Add compact search descriptors and a contiguous string arena.
+- [ ] Add compact search descriptors, normalized resumable search state, and a
+  contiguous string arena.
 - [ ] Add signed position-bearing durable qids.
 - [ ] Add sharded immutable registry entries and bounded admission accounting.
 - [ ] Add fixed expiry and bounded cleanup.
@@ -478,11 +537,15 @@ release, pull outcomes, and wrong-instance tokens.
 
 ### Phase 2: Search Integration
 
-- [ ] Freeze only the final `SearchTextChunks` outer-RRF population.
+- [ ] Buffer the initial final `SearchTextChunks` outer-RRF population and
+  progressively deepen it when unseen rows run low.
 - [ ] Preserve explicit-vector single-search behavior.
 - [ ] Hydrate and authorize only the requested page.
 - [ ] Avoid registry insertion for one-page populations.
-- [ ] Ensure pulls make no embedder, ANN, BM25, fusion, MMR, or reranker calls.
+- [ ] Ensure pulls never call the chunker or embedder.
+- [ ] Add branch exhaustion reporting and continuation-specific retrieval depth
+  beyond one-shot candidate caps.
+- [ ] Preserve emitted-prefix stability while deduplicating expanded results.
 
 ### Phase 3: Bolt Adapter
 
@@ -525,9 +588,10 @@ release, pull outcomes, and wrong-instance tokens.
 
 Required microbenchmarks:
 
-- population packing for 10, 100, 1,000, and 5,000 hits;
+- population packing for 10, 100, 1,000, 5,000, and 20,000 hits;
 - first-page publication with page sizes 10, 50, and 500;
 - pull at the beginning, middle, and end of a population;
+- expansion at 2x, 4x, and 8x the initial retrieval depth;
 - token decode/verify and next-token encode;
 - page hydration with batch and per-node fallback storage;
 - release and expiry cleanup;
@@ -560,8 +624,10 @@ Acceptance criteria:
   allocation regression beyond measurement noise.
 - No lock hold duration grows with total population size or requested page size.
 - Registry lookup and token validation perform no population-sized work.
-- Pull allocates only bounded response/hydration state; retained descriptors are
-  not copied.
+- Buffered pulls allocate only bounded response/hydration state; retained
+  descriptors are not copied.
+- Expansion cost is reported separately and amortized over newly discovered
+  results; no expansion performs work while holding registry or entry locks.
 - Memory remains bounded under abandoned-cursor and adversarial admission tests.
 - HTTP, gRPC, Cypher, and extension-aware Bolt return identical IDs and rank
   order when reading the same retained population.
@@ -577,7 +643,8 @@ Acceptance criteria:
 - Complete collection enumeration or export.
 - `ranked_then_id`, `id`, or grouped continuation modes.
 - Holding a snapshot of mutable node properties.
-- Increasing ANN recall by requesting later pages.
+- Claiming globally exact ranking across progressively discovered approximate
+  candidates.
 - Adding separate `.page` or `.release` procedure namespaces.
 
 ## Decisions Required During Implementation
