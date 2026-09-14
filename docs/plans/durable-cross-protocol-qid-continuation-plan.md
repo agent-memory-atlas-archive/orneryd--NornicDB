@@ -1,0 +1,595 @@
+# Durable Cross-Protocol QID Continuation Plan
+
+## Objective
+
+Extend NornicDB's Neo4j-compatible Bolt result-stream contract into one durable,
+protocol-neutral continuation mechanism for ranked search.
+
+The end state is:
+
+- Bolt preserves standard `RUN`, `PULL {qid, n}`, and `DISCARD {qid}` behavior.
+- A connection-local Bolt `qid` can alias the same retained result population
+  used by HTTP, native gRPC, and Cypher.
+- Extension-aware Bolt clients can obtain an opaque durable qid and resume the
+  result after reconnecting or through another supported protocol.
+- HTTP, native gRPC, and `db.retrieve` expose the same start, pull, and discard
+  semantics instead of separate page and release APIs.
+- Search continuation pages the final canonical outer-RRF population produced
+  by `search.SearchTextChunks`, not individual chunks or pre-fusion candidates.
+- No database transaction, storage lock, search-index lock, or global registry
+  lock remains held while the client decides whether to request another page.
+- Search calls that do not request continuation retain their current behavior
+  and performance.
+
+This plan supersedes the API shape proposed by PR #353. That implementation is
+useful as a reference for signed tokens and admission limits, but its global
+locking, deep copying, broad mutation invalidation, full-collection modes, and
+separate `db.retrieve.page`/`db.retrieve.release` procedures are not carried
+forward.
+
+## Contract
+
+All protocols implement the same logical operations:
+
+```text
+START(query, options, n) -> records, qid, has_more
+PULL(qid, n)             -> records, qid, has_more
+DISCARD(qid)             -> released
+```
+
+Properties of this contract:
+
+- `n` is the maximum number of records returned by one operation.
+- `limit` remains the maximum size of the frozen ranked population.
+- A successful partial response returns a qid representing the next position.
+- Repeating the same durable qid is idempotent and returns the same page.
+- `DISCARD` releases the complete retained population, regardless of which
+  position token from that population is supplied.
+- An exhausted response has `has_more: false` and no next qid.
+- Pulling does not extend the fixed expiry time.
+- Later pulls do not rerun chunking, embedding, ANN, BM25, outer RRF, MMR, or
+  reranking.
+
+## Identifier Model
+
+Neo4j-compatible Bolt and durable continuation need related but distinct wire
+identifiers.
+
+### Connection-Local Bolt QID
+
+Bolt `qid` remains a nonnegative `int64` allocated within an explicit
+transaction. It is an alias in the session's statement map and obeys Neo4j's
+existing rules:
+
+- `RUN` in an explicit transaction returns a zero-based numeric `qid`.
+- `PULL {qid, n}` and `DISCARD {qid, n}` address that statement.
+- An omitted `qid` addresses the latest statement.
+- Commit, rollback, reset, timeout, or connection teardown removes the alias.
+- Ordinary clients observe no protocol behavior change.
+
+A numeric Bolt qid is not globally unique, authenticated, or suitable for
+reconnection. It must not become the durable identifier itself.
+
+### Durable QID
+
+The durable qid is an opaque, signed, base64url token. It addresses the same
+underlying result stream but is safe to carry across requests, connections, and
+supported protocols.
+
+The token contains only:
+
+- format version;
+- owning server-instance or cursor-store identifier;
+- random stream identifier;
+- unsigned position;
+- fixed expiry;
+- HMAC-SHA256 authentication tag.
+
+It contains no query, filters, embedding, node IDs, scores, properties, roles,
+or credentials. The registry entry binds the stream to its canonical database
+and authenticated owner.
+
+The name `qid` is used by HTTP, gRPC, and Cypher for the durable token. Bolt
+continues to use its numeric `qid` field and exposes the opaque form as
+`durable_qid` extension metadata when durable continuation was requested.
+
+## Current Code Facts
+
+### Bolt Streams Are Materialized
+
+- `pkg/bolt/server.go` defines `resultStream` as a pointer to a complete
+  `QueryResult` plus a row index.
+- `pkg/bolt/session_messages.go` stores explicit-transaction streams in
+  `Session.resultStreams map[int64]*resultStream`.
+- `handlePull` slices or walks `QueryResult.Rows`; it does not ask the executor
+  for additional rows.
+- `clearExplicitTransactionState` removes all numeric qid aliases.
+
+This already provides Neo4j-compatible wire streaming, but not lazy execution
+or reconnect-safe continuation.
+
+### Search Has One Canonical Text Path
+
+- `pkg/search/chunked_search.go` owns text chunking, independent embedding and
+  search, deduplication, and outer RRF.
+- HTTP, native gRPC, Cypher retrieval, MCP, and Heimdall use this canonical
+  search behavior.
+- Continuation must be attached after the final fused `SearchResponse` is
+  ordered.
+
+### Cypher Retrieval Returns Rows
+
+`pkg/cypher/call_rag.go` currently returns these columns:
+
+```text
+node, score, rrf_score, vector_rank, bm25_rank,
+search_method, fallback_triggered
+```
+
+Calls without continuation options must retain this result shape. A durable
+continuation call may add a stable qid column or metadata, but it must still
+represent an empty page and an exhausted page without inventing fake nodes.
+
+## Architecture
+
+### 1. Shared Result-Stream Abstraction
+
+Introduce a small protocol-neutral package rather than placing the base
+contract in Bolt, Cypher, or HTTP.
+
+Proposed package:
+
+```text
+pkg/resultstream/
+  stream.go
+  materialized.go
+  registry.go
+  token.go
+  compact_search.go
+```
+
+Target API:
+
+```go
+type Position uint64
+
+type Page struct {
+    Rows     [][]any
+    Position Position
+    Next     Position
+    HasMore bool
+    Metadata map[string]any
+}
+
+type Stream interface {
+    Columns() []string
+    Pull(ctx context.Context, position Position, n int) (*Page, error)
+    Close() error
+}
+```
+
+Required implementations:
+
+- `MaterializedStream` adapts existing `QueryResult.Rows` and preserves current
+  behavior while Bolt is migrated.
+- `SearchStream` owns an immutable compact ranked population and hydrates only
+  the requested page.
+
+This should align with the separate execution-streaming work in
+`docs/plans/neo4j-compatible-streaming-driver-and-server-plan.md`. If that plan
+lands first, reuse its shared row-stream interface and add positional durable
+registry semantics rather than creating a competing abstraction.
+
+### 2. One Registry Shared By Protocol Adapters
+
+Use a process-level registry that can be reached by Bolt, HTTP, native gRPC,
+and Cypher adapters. Entries are immutable after publication.
+
+Conceptual entry:
+
+```go
+type entry struct {
+    streamID     [16]byte
+    ownerHash    [32]byte
+    databaseID   uint64
+    expiresUnix  int64
+    columns      []string
+    descriptors  []compactHit
+    stringArena  []byte
+    bytes        int64
+}
+```
+
+`compactHit` stores offsets and lengths into one immutable string arena plus
+only the numeric ranking fields needed to reproduce the search row. It does not
+retain:
+
+- `storage.Node` values;
+- property maps or label slices;
+- embeddings;
+- query text or filters;
+- complete `SearchResult` objects;
+- storage transactions;
+- index handles or locks.
+
+Full nodes are batch-hydrated for the requested page through normal storage and
+authorization paths. Storage engines that implement `BatchGetNodes` should use
+it; the fallback may call `GetNode` per descriptor.
+
+### 3. Locking Model
+
+Avoid PR #353's single mutex around cloning, expiry scans, page copying, and
+token signing.
+
+- Split the registry into 32 or 64 shards selected by stream ID.
+- Hold a shard lock only for map lookup, insertion, or deletion.
+- Build, validate, size, and pack a population before acquiring a shard lock.
+- Verify token HMAC and fixed fields before acquiring a shard lock.
+- After lookup, retain an immutable entry reference and release the lock before
+  slicing descriptors, hydrating nodes, authorizing results, or encoding the
+  next token.
+- Use atomic counters or a short accounting lock for global and per-owner byte
+  and session admission.
+- Make release idempotent at the registry level where possible. A release racing
+  with an already-admitted pull may finish that pull; future pulls fail.
+- Never scan every entry on every pull.
+
+Expired entries should be reclaimed by a bounded periodic shard sweep or timing
+wheel. Shutdown must stop the reaper cleanly. Tests should use an injected clock
+and explicit sweep hook rather than sleeps.
+
+### 4. Search Population Ownership
+
+The initial request executes the existing canonical path:
+
+```text
+chunk -> embed -> per-chunk search -> outer RRF -> freeze -> first pull
+```
+
+Only the final user-visible order is retained. Phase one supports ranked search
+only. It does not implement PR #353's `ranked_then_id`, `id`, complete storage
+scans, or grouping modes.
+
+If the requested first page exhausts the result population, return it directly
+without registering a durable stream.
+
+### 5. Consistency Contract
+
+Continuation freezes:
+
+- logical result IDs;
+- result order;
+- scores and rank metadata;
+- search method and fallback diagnostics.
+
+It does not freeze node properties or provide an MVCC snapshot. Each pull:
+
+- verifies the current authenticated principal owns the stream;
+- verifies current read access to the bound database;
+- hydrates the current node state;
+- applies result-level authorization before returning a node;
+- skips nodes that were deleted or are no longer visible.
+
+Ordinary node writes do not invalidate all cursors. This avoids adding mutation
+hooks and write-path contention across storage wrappers. Invalidation is
+reserved for service shutdown, explicit release, expiry, incompatible ranking
+policy replacement, or an administrator reconfiguration that changes cursor
+security or resource policy.
+
+The documented guarantee is stable ranked membership and order, not stable
+properties or transactional snapshot isolation.
+
+## Protocol Adapters
+
+### Bolt
+
+Keep the Neo4j contract unchanged for ordinary clients. Change the internal
+`resultStream` to hold a shared `resultstream.Stream` or materialized adapter.
+
+When a search request explicitly enables durable continuation:
+
+1. `RUN` creates or attaches to a registry entry.
+2. The session assigns its normal numeric qid as a local alias.
+3. `PULL {qid, n}` invokes the shared stream pull operation.
+4. A partial `PULL` reports standard `has_more: true` and adds the opaque
+   `durable_qid` to extension metadata.
+5. `DISCARD {qid}` closes the local alias and releases the durable entry when
+   the request selected durable-discard behavior.
+
+The standard Bolt state machine does not allow a normal driver to issue a bare
+`PULL` on a new connection without first establishing a result. Reconnection
+therefore uses one of these supported paths:
+
+- call `db.retrieve({qid: $qid, n: $n})` through a standard Neo4j driver; or
+- use a future negotiated Bolt extension that attaches a durable qid to a new
+  local numeric qid.
+
+Do not change the type or scope of the standard Bolt `qid` field.
+
+### HTTP Search
+
+Extend the existing `/nornicdb/search` JSON contract additively.
+
+Initial request:
+
+```json
+{
+  "database": "nornic",
+  "query": "sunset beach",
+  "labels": ["Image"],
+  "limit": 500,
+  "n": 50
+}
+```
+
+Pull request:
+
+```json
+{
+  "qid": "opaque-signed-token",
+  "n": 50
+}
+```
+
+Discard request:
+
+```json
+{
+  "qid": "opaque-signed-token",
+  "discard": true
+}
+```
+
+The response adds `qid`, `has_more`, `position`, `returned`, `total`, and
+`expires_at`. When no continuation fields are supplied, the current request and
+response behavior remains unchanged.
+
+On pull and discard, the token selects its canonical database. If a request
+also supplies `database`, it must resolve to the same database or fail closed.
+
+### Native gRPC
+
+Append fields without renumbering existing protobuf fields:
+
+```proto
+message SearchTextRequest {
+  // Existing fields 1-5 remain unchanged.
+  string qid = 6;
+  int32 n = 7;
+  bool discard = 8;
+}
+
+message SearchTextResponse {
+  // Existing fields 1-5 remain unchanged.
+  string qid = 6;
+  bool has_more = 7;
+  int64 position = 8;
+  int32 returned = 9;
+  int64 total = 10;
+  google.protobuf.Timestamp expires_at = 11;
+  bool released = 12;
+}
+```
+
+Before enabling durable qids, native gRPC must expose an authenticated
+principal and canonical database through request context using the same server
+authorization policy as HTTP and Bolt. Metadata supplied by the caller must not
+be accepted as a trusted owner identity.
+
+### Cypher `db.retrieve`
+
+Extend the existing request map:
+
+```cypher
+CALL db.retrieve({query: $query, limit: 500, n: 50})
+CALL db.retrieve({qid: $qid, n: 50})
+CALL db.retrieve({qid: $qid, discard: true})
+```
+
+Do not add `db.retrieve.page` or `db.retrieve.release`.
+
+Calls without `n`, `qid`, or `discard` retain the existing columns and row
+behavior. Continuation-enabled calls need a page envelope or procedure metadata
+that can represent empty and exhausted pages. The implementation phase must
+select one additive Cypher shape and add compatibility tests before changing
+`call_rag.go`. Preferred shape:
+
+```text
+page = {
+  results: [{node, score, rrf_score, vector_rank, bm25_rank}],
+  search_method: ...,
+  fallback_triggered: ...,
+  qid: ...,
+  has_more: ...,
+  position: ...,
+  returned: ...,
+  total: ...,
+  expires_at: ...
+}
+```
+
+This avoids repeating page metadata on every result and preserves metadata for
+an empty page. It is activated only by continuation options, so existing
+`YIELD node, score, ...` calls remain unchanged.
+
+## Security And Topology
+
+- Authenticate every start, pull, and discard operation.
+- Derive owner identity from trusted server context. Prefer immutable subject ID
+  over username or bearer-token text.
+- Bind the entry to the canonical database, not a user-supplied alias.
+- Recheck database read access and node visibility on every pull.
+- Compare owner hashes in constant time.
+- Return one generic invalid-qid response for malformed, forged, wrong-owner,
+  and unknown tokens where distinguishing them would leak state.
+- Log detailed internal reasons without logging complete tokens or query data.
+- Rate-limit invalid token attempts independently from valid pulls.
+
+Phase one is process-local and survives connection loss, not process loss. A
+multi-instance deployment requires affinity to the instance encoded in the
+token. A wrong instance returns a distinct retryable routing error without
+revealing whether the stream exists.
+
+A later shared registry may store the compact serialized population in a
+distributed cache. It must preserve immutable entries and position-bearing
+tokens rather than serialize Go object graphs or live iterators.
+
+## Resource Policy
+
+Initial defaults should be conservative and configurable:
+
+- fixed TTL: 5 minutes;
+- maximum page size `n`: 500;
+- maximum ranked population: 5,000 descriptors;
+- maximum active streams per principal;
+- maximum retained bytes per principal;
+- maximum active streams globally;
+- maximum retained bytes globally;
+- maximum concurrent population builds;
+- maximum bytes for one population.
+
+Admission rejects the new stream when any limit is exceeded. It does not evict
+an unrelated live stream. Exact retained bytes are calculated from descriptor
+and arena capacities, with fixed entry/map overhead included. Expose gauges and
+counters for active streams, retained bytes, admission failures, expiry,
+release, pull outcomes, and wrong-instance tokens.
+
+## Implementation Phases
+
+### Phase 0: Contract Tests And Baselines
+
+- [ ] Add black-box contract tests for START, repeated PULL, replay, exhaustion,
+  and DISCARD independent of any transport.
+- [ ] Capture ordinary search and current Bolt PULL latency, allocations, and
+  retained heap before adding the registry.
+- [ ] Add benchmark fixtures for 10, 100, 1,000, and 5,000 ranked hits.
+- [ ] Verify one canonical outer-RRF response supplies every fixture population.
+
+### Phase 1: Shared Stream And Compact Registry
+
+- [ ] Add the shared stream interface and materialized adapter.
+- [ ] Add compact search descriptors and a contiguous string arena.
+- [ ] Add signed position-bearing durable qids.
+- [ ] Add sharded immutable registry entries and bounded admission accounting.
+- [ ] Add fixed expiry and bounded cleanup.
+- [ ] Add owner/database binding and error taxonomy.
+- [ ] Prove with tests that no transaction or storage/search lock survives
+  publication.
+
+### Phase 2: Search Integration
+
+- [ ] Freeze only the final `SearchTextChunks` outer-RRF population.
+- [ ] Preserve explicit-vector single-search behavior.
+- [ ] Hydrate and authorize only the requested page.
+- [ ] Avoid registry insertion for one-page populations.
+- [ ] Ensure pulls make no embedder, ANN, BM25, fusion, MMR, or reranker calls.
+
+### Phase 3: Bolt Adapter
+
+- [ ] Wrap current materialized results in the shared stream interface.
+- [ ] Map each numeric transaction-local qid to a stream handle.
+- [ ] Preserve latest-qid fallback and existing invalid-qid failures.
+- [ ] Preserve bounded `PULL` and `DISCARD` behavior for multiple active streams.
+- [ ] Emit `durable_qid` only when durable continuation was requested.
+- [ ] Cover commit, rollback, reset, timeout, disconnect, and reconnect paths.
+- [ ] Confirm ordinary Bolt compatibility tests pass unchanged.
+
+### Phase 4: HTTP And Native gRPC
+
+- [ ] Add `qid`, `n`, and `discard` to the existing HTTP search request.
+- [ ] Add continuation metadata to the existing HTTP response.
+- [ ] Append protobuf fields and regenerate checked-in Go bindings.
+- [ ] Add native gRPC principal/database context integration.
+- [ ] Map common continuation errors consistently to HTTP and gRPC statuses.
+- [ ] Add cross-protocol tests that start in one protocol and pull or discard in
+  another.
+
+### Phase 5: Existing Cypher Procedure
+
+- [ ] Extend `db.retrieve` request parsing with `qid`, `n`, and `discard`.
+- [ ] Add the continuation-only page envelope without changing ordinary columns.
+- [ ] Derive owner and canonical database from trusted execution context.
+- [ ] Verify standard Neo4j drivers can resume a durable qid after reconnect by
+  calling the existing procedure.
+- [ ] Verify empty and exhausted pages retain continuation metadata.
+
+### Phase 6: Operations And Cluster Readiness
+
+- [ ] Add configuration, metrics, structured events, and localized errors.
+- [ ] Add shutdown and reconfiguration behavior.
+- [ ] Document process-local durability and load-balancer affinity requirements.
+- [ ] Design, but do not require, a shared-registry provider interface for a
+  later cluster-durable implementation.
+
+## Performance Validation
+
+Required microbenchmarks:
+
+- population packing for 10, 100, 1,000, and 5,000 hits;
+- first-page publication with page sizes 10, 50, and 500;
+- pull at the beginning, middle, and end of a population;
+- token decode/verify and next-token encode;
+- page hydration with batch and per-node fallback storage;
+- release and expiry cleanup;
+- parallel pulls of the same token;
+- concurrent starts, pulls, and releases across registry shards.
+
+Required load tests:
+
+- ordinary non-continuation search;
+- continuation with immediate draining;
+- continuation with realistic client think time;
+- abandoned cursors retained until expiry;
+- mixed start/pull/discard traffic at admission limits;
+- one principal attempting to exhaust per-owner limits;
+- 1, 8, 32, and 128 concurrent clients where the test host permits.
+
+Report:
+
+- p50, p95, and p99 operation latency;
+- operations per second;
+- `B/op` and allocations per operation;
+- registry lock wait and hold time;
+- retained heap and RSS at configured capacity;
+- cleanup duration and reclaimed bytes;
+- storage hydration cost separately from registry lookup.
+
+Acceptance criteria:
+
+- Search without continuation has no statistically significant latency or
+  allocation regression beyond measurement noise.
+- No lock hold duration grows with total population size or requested page size.
+- Registry lookup and token validation perform no population-sized work.
+- Pull allocates only bounded response/hydration state; retained descriptors are
+  not copied.
+- Memory remains bounded under abandoned-cursor and adversarial admission tests.
+- HTTP, gRPC, Cypher, and extension-aware Bolt return identical IDs and rank
+  order when reading the same retained population.
+- Replaying one durable qid returns the same position and result IDs.
+- `go test -race` passes concurrent pull, release, expiry, shutdown, and
+  reconfiguration tests.
+
+## Explicit Non-Goals For The First Release
+
+- Making standard numeric Bolt qids globally unique or reconnect-safe.
+- Retaining explicit database transactions across disconnections.
+- Surviving server process restart or instance failure.
+- Complete collection enumeration or export.
+- `ranked_then_id`, `id`, or grouped continuation modes.
+- Holding a snapshot of mutable node properties.
+- Increasing ANN recall by requesting later pages.
+- Adding separate `.page` or `.release` procedure namespaces.
+
+## Decisions Required During Implementation
+
+1. Choose the shared package boundary after reconciling this work with the
+   existing row-streaming plan; there must be only one base stream abstraction.
+2. Verify whether supported Neo4j drivers expose unknown Bolt `PULL` success
+   metadata. If they do not, `durable_qid` remains available through
+   `db.retrieve` for standard drivers and through raw/extension-aware Bolt.
+3. Select the exact trusted principal identifier and authorization-revision
+   source for all four transports.
+4. Decide whether a policy/index generation change invalidates existing ranked
+   populations or only affects newly started streams.
+5. Establish measured defaults for per-owner and global byte/session limits from
+   benchmark heap profiles rather than copying PR #353's estimates.
