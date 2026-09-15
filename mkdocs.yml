@@ -229,6 +229,7 @@ nav:
           - Embedding & Search Architecture: architecture/embedding-search-architecture.md
           - Embedding & Search Examples: architecture/embedding-search-examples.md
           - Embedding & Search Flow Diagrams: architecture/embedding-search-flow-diagrams.md
+          - Secure Search Continuation: architecture/secure-search-continuation.md
           - Knowledge-Policy Scoring Pipeline: architecture/knowledge-policy-scoring-pipeline.md
           - Knowledge-Policy Visibility Layer and Deindex: architecture/knowledge-policy-visibility-layer.md
           - Embedding & Search Overview: architecture/embedding-search.md
