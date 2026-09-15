@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-## [v1.3.3] - 9/13/2026
+## [v1.3.3] - 9/15/2026
 
 ### Added
 
@@ -20,12 +20,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Cypher, and Bolt metadata, including progressive ranked retrieval, complete
   ID populations, deterministic grouped passages, bounded per-owner registry
   admission, and page-only hydration.
+- Add continuation lifecycle metrics, bounded cursor admission controls, and
+  protocol-specific status mappings so operators can distinguish disabled,
+  saturated, expired, invalid, and wrong-scope continuation cursors.
 
 ### Fixed
 
 - Preserve process-wide cursor lifecycle metrics and gauges when additional
   database search services attach to the shared continuation registry.
-- Prevent ranked continuation from treating short approximate, filtered, or fused batches as exhaustion. Propagate retrieval exhaustion evidence, deepen chunk candidates beyond one-shot limits, remove the arbitrary 5,000-candidate engine ceiling, and report caller-selected budget limits explicitly instead of silently ending the stream.
+- Prevent stateful `db.retrieve` continuation START/PULL/DISCARD calls from
+  using the ordinary Cypher result cache, so cursor ownership, discard,
+  expiry, and invalidation checks are always enforced.
+- Align no-auth anonymous HTTP and Bolt principals so a durable continuation
+  cursor started through one protocol can be resumed through the other when
+  authentication is disabled.
+- Preserve continuation result display metadata, including canonical type,
+  title, description, content preview, grouped gRPC child evidence, and
+  explicit `max_results` completion labels.
+- Prevent ranked continuation from treating short approximate, filtered, or
+  fused batches as exhaustion. Propagate retrieval exhaustion evidence, deepen
+  chunk candidates beyond one-shot limits, remove the arbitrary
+  5,000-candidate engine ceiling, and report caller-selected budget limits
+  explicitly instead of silently ending the stream.
+- Stop ranked and `ranked_then_id` continuation when an ANN or hybrid producer
+  reaches a stable bounded candidate pool, avoiding repeated equivalent
+  retrieval work, integer-overflow depth expansion, and TTL-delayed failures.
+- Preserve Stage-2 rerank tails and candidate-budget boundaries so reranker
+  top-k limits do not silently drop otherwise eligible search results or mark
+  non-exhausted collections as fully exhausted.
+- Use property indexes for scalar expression-valued lookup keys, including
+  forms such as `MATCH (n:Doc {id: $i + 1})`, `WHERE n.id = row.offset + 1`,
+  and UNWIND-driven relationship creation that binds both endpoints by
+  expression. These shapes now avoid full label scans when the expression
+  evaluates to an indexable scalar.
 - Bound database-manager startup memory by scanning only leaked system-record ID prefixes and streaming node/edge size reconciliation. In a cold 2,000-node persistent-store benchmark, cleanup fell from about 3.23 ms and 7.81 MB per operation to 25 us and 3.5 KB; reconciliation allocations fell about 5% without changing serialized-size accounting.
 - Preserve exact cosine-vector fast-path semantics for inline node properties, filtered top-k queries, exact LIMIT results, and WITH projections ordered before RETURN.
 - Skip empty k-means clusters during vector routing and load legacy vector files without query metadata when storage is empty.
@@ -41,10 +68,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Honor explicitly supplied embedding CLI flags in the loaded configuration; omitted flags preserve environment/YAML values.
 - Pass embedding GPU-layer choices through local model initialization and distinguish CPU-only `0` from automatic `-1` when reusing embedders.
 - Preserve async node update classification across flush cleanup, retain pending-create counts after failed first writes, and report persistence-lookup failures.
+- Release Badger-backed in-memory engine resources and background server graphs
+  on close/stop paths used by production and tests, reducing retained memory
+  from completed database/server lifecycles.
 - Restore persisted vector-store reloads on Windows while preserving committed-tail recovery and append semantics.
 - Repair persisted HNSW warmup, localized model-path, and vector-store error fixtures for Windows and Linux.
 - Restore documentation-site builds after dependency and configuration changes.
+- Complete the CLI localization catalogs for the Voyage embedding mode flag and
+  its provider/API key help text.
 - Match Neo4j Bolt result streaming for explicit transactions with zero-based `qid` values, independently resumable concurrent statements, latest-statement fallback, bounded `DISCARD`, and invalid-stream failure/reset behavior. Focused Apple M3 Max benchmarks reduced streaming-option parsing from about 125 ns, 339 B, and 3 allocations per operation to 13 ns with zero allocations; autocommit stream-state handling fell from about 19 ns, 48 B, and 1 allocation to 7 ns with zero allocations.
+- Keep Bolt connections open after delivered retryable commit conflicts, mapping
+  Badger write conflicts to the existing transient transaction status without
+  forcing the client driver to reconnect before retrying.
 - Unify textual search across HTTP, native gRPC, Cypher retrieval, MCP discover, and Heimdall discovery. Long queries now embed and search each chunk independently, rank the combined candidates with one deterministic outer RRF implementation, and never average chunk embeddings; explicit caller-provided vectors remain single-vector searches. On Apple M3 Max, the focused 8-chunk/800-candidate fusion benchmark improved from about 55.6 us, 79.7 KB, and 294 allocations per operation to 24.4 us, 43.0 KB, and 8 allocations, increasing throughput from about 18.0k to 41.0k operations per second; the single-chunk path remains allocation-free at about 6 ns.
 
 ## [v1.3.2] - 9/11/2026
