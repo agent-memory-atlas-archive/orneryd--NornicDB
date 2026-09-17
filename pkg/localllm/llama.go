@@ -83,7 +83,7 @@ int get_n_layers(struct llama_model* model) {
 // Load model with optimal GPU settings.
 // n_gpu_layers: -1 = all layers on GPU, 0 = CPU only, N = N layers on GPU.
 // suppress_logs: 1 redirects stderr during llama_model_load_from_file.
-struct llama_model* load_model_with_options(const char* path, int n_gpu_layers, int suppress_logs) {
+struct llama_model* load_model_with_options(const char* path, int n_gpu_layers, int lazy_mode, int suppress_logs) {
     init_backend();
 
     int original_stderr = -1;
@@ -104,6 +104,7 @@ struct llama_model* load_model_with_options(const char* path, int n_gpu_layers, 
 
 	// Memory mapping for low memory usage.
 	params.load_mode = LLAMA_LOAD_MODE_MMAP;
+	params.lazy_mode = (enum llama_lazy_mode)lazy_mode;
 
     // Device selection - NULL means use all available devices
     // (present in modern llama.cpp releases, explicit for clarity)
@@ -130,8 +131,8 @@ struct llama_model* load_model_with_options(const char* path, int n_gpu_layers, 
     return model;
 }
 
-struct llama_model* load_model(const char* path, int n_gpu_layers) {
-    return load_model_with_options(path, n_gpu_layers, 1);
+struct llama_model* load_model(const char* path, int n_gpu_layers, int lazy_mode) {
+    return load_model_with_options(path, n_gpu_layers, lazy_mode, 1);
 }
 
 // Create embedding context with configurable features.
@@ -629,6 +630,7 @@ type Model struct {
 //   - BatchSize: Batch size for processing (default: match effective context size)
 //   - Threads: CPU threads for inference (default: NumCPU/2, min 4)
 //   - GPULayers: GPU layer offload (-1=auto/all, 0=CPU only, N=N layers)
+//   - LazyMode: Tensor loading mode (0=off, 1=auto, 2=on)
 //   - Features: llama.cpp context features configurable per-model via env
 type Options struct {
 	ModelPath   string
@@ -636,6 +638,7 @@ type Options struct {
 	BatchSize   int
 	Threads     int
 	GPULayers   int
+	LazyMode    int
 	Features    ContextFeatures
 }
 
@@ -684,6 +687,7 @@ func DefaultOptions(modelPath string) Options {
 		BatchSize:   0, // Auto: match effective context size
 		Threads:     threads,
 		GPULayers:   -1, // Auto: offload all layers to GPU
+		LazyMode:    LazyModeAuto,
 		Features:    DefaultContextFeatures(),
 	}
 }
@@ -768,7 +772,7 @@ func LoadModel(opts Options) (*Model, error) {
 	cPath := C.CString(opts.ModelPath)
 	defer C.free(unsafe.Pointer(cPath))
 
-	model := C.load_model(cPath, C.int(opts.GPULayers))
+	model := C.load_model(cPath, C.int(opts.GPULayers), C.int(normalizeLazyMode(opts.LazyMode)))
 	if model == nil {
 		return nil, fmt.Errorf("failed to load model: %s", opts.ModelPath)
 	}
@@ -1177,6 +1181,7 @@ type GenerationOptions struct {
 	BatchSize   int // Processing batch size (default: 512)
 	Threads     int // CPU threads (default: NumCPU/2)
 	GPULayers   int // GPU offload (-1=auto, 0=CPU)
+	LazyMode    int // Tensor loading: 0=off, 1=auto, 2=on
 	Features    ContextFeatures
 }
 
@@ -1192,6 +1197,7 @@ func DefaultGenerationOptions(modelPath string) GenerationOptions {
 		BatchSize:   512,
 		Threads:     threads,
 		GPULayers:   -1, // Auto GPU
+		LazyMode:    LazyModeAuto,
 		Features: ContextFeatures{
 			CtxType:       0,  // LLAMA_CONTEXT_TYPE_DEFAULT
 			PoolingType:   -1, // LLAMA_POOLING_TYPE_UNSPECIFIED (no pooling for generation)
@@ -1242,7 +1248,7 @@ func LoadGenerationModel(opts GenerationOptions) (*GenerationModel, error) {
 	if strings.EqualFold(os.Getenv("NORNICDB_LLAMA_VERBOSE_LOAD"), "true") || os.Getenv("NORNICDB_LLAMA_VERBOSE_LOAD") == "1" {
 		suppressLogs = 0
 	}
-	model := C.load_model_with_options(cPath, C.int(opts.GPULayers), suppressLogs)
+	model := C.load_model_with_options(cPath, C.int(opts.GPULayers), C.int(normalizeLazyMode(opts.LazyMode)), suppressLogs)
 	if model == nil {
 		return nil, fmt.Errorf("failed to load generation model: %s", opts.ModelPath)
 	}

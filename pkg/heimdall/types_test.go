@@ -88,6 +88,7 @@ type MockFeatureFlags struct {
 	apiURL           string
 	apiKey           string
 	gpuLayers        int
+	lazyMode         int
 	contextSize      int
 	batchSize        int
 	maxTokens        int
@@ -106,6 +107,7 @@ func (m *MockFeatureFlags) GetHeimdallProvider() string       { return m.provide
 func (m *MockFeatureFlags) GetHeimdallAPIURL() string         { return m.apiURL }
 func (m *MockFeatureFlags) GetHeimdallAPIKey() string         { return m.apiKey }
 func (m *MockFeatureFlags) GetHeimdallGPULayers() int         { return m.gpuLayers }
+func (m *MockFeatureFlags) GetHeimdallLazyMode() int          { return m.lazyMode }
 func (m *MockFeatureFlags) GetHeimdallContextSize() int       { return m.contextSize }
 func (m *MockFeatureFlags) GetHeimdallBatchSize() int         { return m.batchSize }
 func (m *MockFeatureFlags) GetHeimdallMaxTokens() int         { return m.maxTokens }
@@ -122,6 +124,7 @@ func TestConfigFromFeatureFlags(t *testing.T) {
 		enabled:          true,
 		model:            "test-model",
 		gpuLayers:        8,
+		lazyMode:         2,
 		maxTokens:        1024,
 		temperature:      0.7,
 		anomalyDetection: true,
@@ -134,6 +137,7 @@ func TestConfigFromFeatureFlags(t *testing.T) {
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, "test-model", cfg.Model)
 	assert.Equal(t, 8, cfg.GPULayers)
+	assert.Equal(t, 2, cfg.LazyMode)
 	assert.Equal(t, 1024, cfg.MaxTokens)
 	assert.Equal(t, float32(0.7), cfg.Temperature)
 	assert.True(t, cfg.AnomalyDetection)

@@ -18,11 +18,12 @@ func init() {
 }
 
 // yzmaGeneratorLoader loads a generation model using yzma bindings (Windows GPU).
-func yzmaGeneratorLoader(modelPath string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+func yzmaGeneratorLoader(modelPath string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 	opts := localllm.DefaultGenerationOptions(modelPath)
 	opts.GPULayers = gpuLayers
 	opts.ContextSize = contextSize
 	opts.BatchSize = batchSize
+	opts.LazyMode = lazyMode
 
 	// Apply Heimdall-specific context features from env
 	if v, ok := yzmaEnvInt("NORNICDB_HEIMDALL_CTX_TYPE"); ok && v != 0 {
@@ -36,6 +37,9 @@ func yzmaGeneratorLoader(modelPath string, gpuLayers, contextSize, batchSize int
 	}
 	if v, ok := yzmaEnvInt("NORNICDB_HEIMDALL_FLASH_ATTN"); ok {
 		opts.Features.FlashAttn = v
+	}
+	if v, ok := yzmaEnvInt("NORNICDB_HEIMDALL_LAZY_MODE"); ok && v >= localllm.LazyModeOff && v <= localllm.LazyModeOn {
+		opts.LazyMode = v
 	}
 
 	model, err := localllm.LoadGenerationModel(opts)

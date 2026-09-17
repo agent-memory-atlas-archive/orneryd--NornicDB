@@ -298,6 +298,8 @@ func buildEmbedConfigFromResolved(effective map[string]string, fallback *Config)
 		PoolingType:   fallback.EmbeddingPoolingType,
 		AttentionType: fallback.EmbeddingAttentionType,
 		FlashAttn:     fallback.EmbeddingFlashAttn,
+		LazyMode:      fallback.EmbeddingLazyMode,
+		LazyModeSet:   true,
 	}
 	switch provider {
 	case "ollama":
@@ -438,6 +440,7 @@ type Config struct {
 	EmbeddingPoolingType   int // Env: NORNICDB_EMBEDDING_POOLING_TYPE
 	EmbeddingAttentionType int // Env: NORNICDB_EMBEDDING_ATTENTION_TYPE
 	EmbeddingFlashAttn     int // Env: NORNICDB_EMBEDDING_FLASH_ATTN
+	EmbeddingLazyMode      int // Env: NORNICDB_EMBEDDING_LAZY_MODE
 
 	// Slow Query Logging Configuration
 	// SlowQueryEnabled turns on slow query logging (default: true)
@@ -564,6 +567,7 @@ func DefaultConfig() *Config {
 		EmbeddingDimensions: 1024,
 		EmbeddingCacheSize:  10000, // ~40MB cache for 1024-dim vectors
 		EmbeddingGPULayers:  -1,
+		EmbeddingLazyMode:   1,
 
 		// Slow query logging enabled by default
 		// Override via:
@@ -1404,6 +1408,7 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 					if config.Features.RerankFlashAttn != 0 {
 						opts.Features.FlashAttn = config.Features.RerankFlashAttn
 					}
+					opts.LazyMode = config.Features.RerankLazyMode
 				}
 				rerankerModel, err := localllm.LoadRerankerModel(opts)
 				if err != nil {
@@ -1482,6 +1487,8 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 			PoolingType:   config.EmbeddingPoolingType,
 			AttentionType: config.EmbeddingAttentionType,
 			FlashAttn:     config.EmbeddingFlashAttn,
+			LazyMode:      config.EmbeddingLazyMode,
+			LazyModeSet:   true,
 		}
 
 		// Set API path based on provider (only for remote providers)

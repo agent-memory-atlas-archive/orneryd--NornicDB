@@ -641,6 +641,10 @@ type MemoryConfig struct {
 	// -1=auto, 0=disabled (default), 1=enabled.
 	// Env: NORNICDB_EMBEDDING_FLASH_ATTN
 	EmbeddingFlashAttn int
+	// EmbeddingLazyMode controls llama.cpp on-demand tensor loading.
+	// 0=off, 1=auto (default), 2=on.
+	// Env: NORNICDB_EMBEDDING_LAZY_MODE
+	EmbeddingLazyMode int
 	// DefaultNodeLabel is the label applied to nodes when no label is specified.
 	// Env: NORNICDB_DEFAULT_NODE_LABEL (default: "Memory")
 	DefaultNodeLabel string
@@ -891,6 +895,10 @@ type FeatureFlagsConfig struct {
 	// -1=auto (default), 0=disabled, 1=enabled.
 	// Env: NORNICDB_HEIMDALL_FLASH_ATTN
 	HeimdallFlashAttn int
+	// HeimdallLazyMode controls llama.cpp on-demand tensor loading.
+	// 0=off, 1=auto (default), 2=on.
+	// Environment: NORNICDB_HEIMDALL_LAZY_MODE
+	HeimdallLazyMode int
 
 	// Expose MCP tools (store, recall, discover, link, task, tasks) to the Heimdall agentic loop.
 	// When false, the LLM does not see or call MCP tools (reduces context size). Default: false.
@@ -936,6 +944,10 @@ type FeatureFlagsConfig struct {
 	// -1=auto, 0=disabled, 1=enabled.
 	// Env: NORNICDB_RERANK_FLASH_ATTN
 	RerankFlashAttn int
+	// RerankLazyMode controls llama.cpp on-demand tensor loading.
+	// 0=off, 1=auto (default), 2=on.
+	// Environment: NORNICDB_RERANK_LAZY_MODE
+	RerankLazyMode int
 
 	// === Token Budget Settings for Heimdall Prompt Construction ===
 	// These control how the context window is partitioned between system prompt,
@@ -1019,6 +1031,7 @@ func (f *FeatureFlagsConfig) GetHeimdallProvider() string       { return f.Heimd
 func (f *FeatureFlagsConfig) GetHeimdallAPIURL() string         { return f.HeimdallAPIURL }
 func (f *FeatureFlagsConfig) GetHeimdallAPIKey() string         { return f.HeimdallAPIKey }
 func (f *FeatureFlagsConfig) GetHeimdallGPULayers() int         { return f.HeimdallGPULayers }
+func (f *FeatureFlagsConfig) GetHeimdallLazyMode() int          { return f.HeimdallLazyMode }
 func (f *FeatureFlagsConfig) GetHeimdallContextSize() int       { return f.HeimdallContextSize }
 func (f *FeatureFlagsConfig) GetHeimdallBatchSize() int         { return f.HeimdallBatchSize }
 func (f *FeatureFlagsConfig) GetHeimdallMaxTokens() int         { return f.HeimdallMaxTokens }
@@ -1526,6 +1539,7 @@ type YAMLConfig struct {
 		Dimensions    int     `yaml:"dimensions"`
 		CacheSize     int     `yaml:"cache_size"`
 		MinSimilarity float64 `yaml:"min_similarity"`
+		LazyMode      *int    `yaml:"lazy_mode"`
 	} `yaml:"embedding"`
 
 	// Per-database search index master switches and warming triggers
@@ -1608,6 +1622,7 @@ type YAMLConfig struct {
 		MaxUserTokens    int      `yaml:"max_user_tokens"`
 		MCPEnable        bool     `yaml:"mcp_enable"` // expose MCP tools to agentic loop (default: false)
 		MCPTools         []string `yaml:"mcp_tools"`  // allowlist: nil/omit = all, [] = none, [store,link] = only those
+		LazyMode         *int     `yaml:"lazy_mode"`
 	} `yaml:"heimdall"`
 
 	// Search rerank (Stage-2 reranking: local GGUF or external API like embeddings/Heimdall).
@@ -1617,6 +1632,7 @@ type YAMLConfig struct {
 		Model    string `yaml:"model"`
 		APIURL   string `yaml:"api_url"`
 		APIKey   string `yaml:"api_key"`
+		LazyMode *int   `yaml:"lazy_mode"`
 	} `yaml:"search_rerank"`
 
 	// Feature flags (subset supported in YAML).
@@ -1905,6 +1921,7 @@ func LoadDefaults() *Config {
 	config.Memory.EmbeddingCacheSize = 10000
 	config.Memory.ModelsDir = "./models"
 	config.Memory.EmbeddingGPULayers = -1     // auto
+	config.Memory.EmbeddingLazyMode = 1       // llama.cpp auto
 	config.Memory.EmbeddingWarmupInterval = 0 // disabled
 	config.Memory.DefaultNodeLabel = "Memory"
 	config.Memory.AutoLinksEnabled = true
@@ -1993,6 +2010,7 @@ func LoadDefaults() *Config {
 	config.Features.HeimdallAPIURL = ""
 	config.Features.HeimdallAPIKey = ""
 	config.Features.HeimdallGPULayers = -1
+	config.Features.HeimdallLazyMode = 1
 	config.Features.HeimdallContextSize = 8192
 	config.Features.HeimdallBatchSize = 2048
 	config.Features.HeimdallMaxTokens = 1024
@@ -2007,6 +2025,7 @@ func LoadDefaults() *Config {
 	config.Features.SearchRerankModel = "bge-reranker-v2-m3"
 	config.Features.SearchRerankAPIURL = ""
 	config.Features.SearchRerankAPIKey = ""
+	config.Features.RerankLazyMode = 1
 	config.Features.HeimdallMaxContextTokens = 8192
 	config.Features.HeimdallMaxSystemTokens = 6000
 	config.Features.HeimdallMaxUserTokens = 2000
@@ -2509,6 +2528,9 @@ func applyEnvVars(config *Config) error {
 	if v, ok := lookupEnvInt("NORNICDB_EMBEDDING_FLASH_ATTN"); ok {
 		config.Memory.EmbeddingFlashAttn = v
 	}
+	if v, ok := lookupEnvInt("NORNICDB_EMBEDDING_LAZY_MODE"); ok && v >= 0 && v <= 2 {
+		config.Memory.EmbeddingLazyMode = v
+	}
 	if v := getEnvInt("NORNICDB_KMEANS_MIN_EMBEDDINGS", 0); v > 0 {
 		config.Memory.KmeansMinEmbeddings = v
 	}
@@ -2832,6 +2854,9 @@ func applyEnvVars(config *Config) error {
 	if v, ok := lookupEnvInt("NORNICDB_HEIMDALL_FLASH_ATTN"); ok {
 		config.Features.HeimdallFlashAttn = v
 	}
+	if v, ok := lookupEnvInt("NORNICDB_HEIMDALL_LAZY_MODE"); ok && v >= 0 && v <= 2 {
+		config.Features.HeimdallLazyMode = v
+	}
 	// MCP tools in agentic loop (NORNICDB_HEIMDALL_MCP_ENABLE, NORNICDB_HEIMDALL_MCP_TOOLS)
 	if v := os.Getenv("NORNICDB_HEIMDALL_MCP_ENABLE"); v != "" {
 		config.Features.HeimdallMCPEnable = v == "true" || v == "1"
@@ -2876,6 +2901,9 @@ func applyEnvVars(config *Config) error {
 	}
 	if v, ok := lookupEnvInt("NORNICDB_RERANK_FLASH_ATTN"); ok {
 		config.Features.RerankFlashAttn = v
+	}
+	if v, ok := lookupEnvInt("NORNICDB_RERANK_LAZY_MODE"); ok && v >= 0 && v <= 2 {
+		config.Features.RerankLazyMode = v
 	}
 	if v := getEnvInt("NORNICDB_HEIMDALL_MAX_CONTEXT_TOKENS", 0); v > 0 {
 		config.Features.HeimdallMaxContextTokens = v
@@ -3369,6 +3397,9 @@ func LoadFromFile(configPath string) (*Config, error) {
 	if yamlCfg.Embedding.MinSimilarity > 0 {
 		config.Memory.SearchMinSimilarity = yamlCfg.Embedding.MinSimilarity
 	}
+	if yamlCfg.Embedding.LazyMode != nil && *yamlCfg.Embedding.LazyMode >= 0 && *yamlCfg.Embedding.LazyMode <= 2 {
+		config.Memory.EmbeddingLazyMode = *yamlCfg.Embedding.LazyMode
+	}
 
 	// === Memory Settings ===
 	if yamlCfg.Memory.DecayEnabled {
@@ -3540,6 +3571,9 @@ func LoadFromFile(configPath string) (*Config, error) {
 	if yamlCfg.Heimdall.GPULayers != nil {
 		config.Features.HeimdallGPULayers = *yamlCfg.Heimdall.GPULayers
 	}
+	if yamlCfg.Heimdall.LazyMode != nil && *yamlCfg.Heimdall.LazyMode >= 0 && *yamlCfg.Heimdall.LazyMode <= 2 {
+		config.Features.HeimdallLazyMode = *yamlCfg.Heimdall.LazyMode
+	}
 	if yamlCfg.Heimdall.ContextSize > 0 {
 		config.Features.HeimdallContextSize = yamlCfg.Heimdall.ContextSize
 	}
@@ -3590,6 +3624,9 @@ func LoadFromFile(configPath string) (*Config, error) {
 	}
 	if yamlCfg.SearchRerank.APIKey != "" {
 		config.Features.SearchRerankAPIKey = yamlCfg.SearchRerank.APIKey
+	}
+	if yamlCfg.SearchRerank.LazyMode != nil && *yamlCfg.SearchRerank.LazyMode >= 0 && *yamlCfg.SearchRerank.LazyMode <= 2 {
+		config.Features.RerankLazyMode = *yamlCfg.SearchRerank.LazyMode
 	}
 
 	// Qdrant gRPC settings

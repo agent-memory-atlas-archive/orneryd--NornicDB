@@ -67,6 +67,7 @@ NORNICDB_EMBEDDING_CTX_TYPE=0                  # 0 = default, 1 = MTP (multi-tok
 NORNICDB_EMBEDDING_POOLING_TYPE=1              # 1 = mean (default), 2 = cls, 3 = last, 4 = rank
 NORNICDB_EMBEDDING_ATTENTION_TYPE=1            # 0 = causal, 1 = non-causal (BERT-style, default)
 NORNICDB_EMBEDDING_FLASH_ATTN=-1              # -1 = auto (default), 0 = disabled, 1 = enabled
+NORNICDB_EMBEDDING_LAZY_MODE=1                 # 0 = off, 1 = auto (default), 2 = on
 ```
 
 **Backward Compatibility:** Existing `ollama` and `openai` configurations work exactly as before.
@@ -203,13 +204,14 @@ void init_backend() {
     }
 }
 
-// Load model with mmap for low memory usage
+// Load model with mmap and automatic lazy tensor loading for low memory usage
 llama_model* load_model(const char* path, int n_gpu_layers) {
     init_backend();
     struct llama_model_params params = llama_model_default_params();
     params.n_gpu_layers = n_gpu_layers;
-    params.use_mmap = 1;
-    return llama_load_model_from_file(path, params);
+    params.load_mode = LLAMA_LOAD_MODE_MMAP;
+    params.lazy_mode = LLAMA_LAZY_MODE_AUTO;
+    return llama_model_load_from_file(path, params);
 }
 
 // Create embedding context (minimal memory)
@@ -221,17 +223,18 @@ llama_context* create_context(llama_model* model, int n_ctx, int n_batch, int n_
     params.n_threads_batch = n_threads;
     params.embeddings = 1;
     params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
-    return llama_new_context_with_model(model, params);
+    return llama_init_from_model(model, params);
 }
 
 // Tokenize using model's vocab
 int tokenize(llama_model* model, const char* text, int text_len, int* tokens, int max_tokens) {
-    return llama_tokenize(model, text, text_len, tokens, max_tokens, 1, 1);
+    const llama_vocab* vocab = llama_model_get_vocab(model);
+    return llama_tokenize(vocab, text, text_len, tokens, max_tokens, 1, 1);
 }
 
 // Generate embedding
 int embed(llama_context* ctx, int* tokens, int n_tokens, float* out, int n_embd) {
-    llama_kv_cache_clear(ctx);
+    llama_memory_clear(llama_get_memory(ctx), true);
     
     struct llama_batch batch = llama_batch_init(n_tokens, 0, 1);
     for (int i = 0; i < n_tokens; i++) {
@@ -259,9 +262,9 @@ int embed(llama_context* ctx, int* tokens, int n_tokens, float* out, int n_embd)
     return 0;
 }
 
-int get_n_embd(llama_model* model) { return llama_n_embd(model); }
+int get_n_embd(llama_model* model) { return llama_model_n_embd(model); }
 void free_ctx(llama_context* ctx) { if (ctx) llama_free(ctx); }
-void free_model(llama_model* model) { if (model) llama_free_model(model); }
+void free_model(llama_model* model) { if (model) llama_model_free(model); }
 */
 import "C"
 
@@ -524,7 +527,7 @@ VERSION="${1:-b4535}"
 OUTDIR="lib/llama"
 mkdir -p "$OUTDIR"
 
-git clone --depth 1 --branch "$VERSION" https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp
+git clone --depth 1 --branch "$VERSION" https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
 cd /tmp/llama.cpp
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -532,7 +535,7 @@ ARCH=$(uname -m)
 [[ "$ARCH" == "x86_64" ]] && ARCH="amd64"
 [[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
 
-CMAKE_ARGS="-DLLAMA_STATIC=ON -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF"
+CMAKE_ARGS="-DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF"
 [[ "$OS" == "darwin" && "$ARCH" == "arm64" ]] && CMAKE_ARGS="$CMAKE_ARGS -DLLAMA_METAL=ON"
 
 cmake -B build $CMAKE_ARGS

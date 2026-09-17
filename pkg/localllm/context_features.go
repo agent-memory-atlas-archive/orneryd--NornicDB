@@ -2,6 +2,15 @@
 
 package localllm
 
+const (
+	// LazyModeOff eagerly reads every tensor during model loading.
+	LazyModeOff = iota
+	// LazyModeAuto lazily reads eligible large tensors when supported by the backend.
+	LazyModeAuto
+	// LazyModeOn lazily reads all tensors marked as eligible by the model architecture.
+	LazyModeOn
+)
+
 // ContextFeatures configures llama.cpp context parameters that vary by model.
 //
 // These are passthrough settings from environment variables so that different
@@ -34,4 +43,11 @@ func DefaultContextFeatures() ContextFeatures {
 		AttentionType: 1, // LLAMA_ATTENTION_TYPE_NON_CAUSAL
 		FlashAttn:     0, // LLAMA_FLASH_ATTN_TYPE_DISABLED
 	}
+}
+
+func normalizeLazyMode(mode int) int {
+	if mode < LazyModeOff || mode > LazyModeOn {
+		return LazyModeAuto
+	}
+	return mode
 }

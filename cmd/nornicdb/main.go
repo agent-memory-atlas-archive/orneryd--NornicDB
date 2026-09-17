@@ -795,6 +795,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	serverConfig.EmbeddingPoolingType = cfg.Memory.EmbeddingPoolingType
 	serverConfig.EmbeddingAttentionType = cfg.Memory.EmbeddingAttentionType
 	serverConfig.EmbeddingFlashAttn = cfg.Memory.EmbeddingFlashAttn
+	serverConfig.EmbeddingLazyMode = cfg.Memory.EmbeddingLazyMode
 	serverConfig.Headless = headless
 	serverConfig.BasePath = basePath
 	serverConfig.Features = &cfg.Features // Pass features loaded from YAML config

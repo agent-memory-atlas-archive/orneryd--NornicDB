@@ -138,10 +138,12 @@ type Config struct {
 	WarmupInterval time.Duration // Model warmup interval (0=disabled)
 
 	// Llama.cpp context features (passthrough, env-configurable per model domain)
-	CtxType       int // Context type: 0=default, 1=MTP
-	PoolingType   int // Pooling: 1=mean, 2=cls, 3=last, 4=rank
-	AttentionType int // Attention: 0=causal, 1=non-causal
-	FlashAttn     int // Flash attn: -1=auto, 0=off, 1=on (embedding default: off)
+	CtxType       int  // Context type: 0=default, 1=MTP
+	PoolingType   int  // Pooling: 1=mean, 2=cls, 3=last, 4=rank
+	AttentionType int  // Attention: 0=causal, 1=non-causal
+	FlashAttn     int  // Flash attn: -1=auto, 0=off, 1=on (embedding default: off)
+	LazyMode      int  // Tensor loading: 0=off, 1=auto, 2=on
+	LazyModeSet   bool // Distinguishes an explicit off (0) from an omitted setting
 }
 
 // DefaultOllamaConfig returns configuration for local Ollama with mxbai-embed-large.

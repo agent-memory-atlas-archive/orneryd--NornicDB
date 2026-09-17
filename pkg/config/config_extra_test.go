@@ -56,6 +56,45 @@ func TestApplyEnvVars_FlashAttentionAllowsZeroOverride(t *testing.T) {
 	assert.Equal(t, 0, cfg.Features.RerankFlashAttn)
 }
 
+func TestApplyEnvVars_LlamaLazyModeAllowsEveryUpstreamValue(t *testing.T) {
+	t.Setenv("NORNICDB_EMBEDDING_LAZY_MODE", "0")
+	t.Setenv("NORNICDB_HEIMDALL_LAZY_MODE", "2")
+	t.Setenv("NORNICDB_RERANK_LAZY_MODE", "1")
+
+	cfg := LoadDefaults()
+	require.NoError(t, applyEnvVars(cfg))
+
+	assert.Equal(t, 0, cfg.Memory.EmbeddingLazyMode)
+	assert.Equal(t, 2, cfg.Features.HeimdallLazyMode)
+	assert.Equal(t, 1, cfg.Features.RerankLazyMode)
+}
+
+func TestLoadDefaults_LlamaLazyModeUsesUpstreamAuto(t *testing.T) {
+	cfg := LoadDefaults()
+
+	assert.Equal(t, 1, cfg.Memory.EmbeddingLazyMode)
+	assert.Equal(t, 1, cfg.Features.HeimdallLazyMode)
+	assert.Equal(t, 1, cfg.Features.RerankLazyMode)
+}
+
+func TestLoadFromFile_LlamaLazyModes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nornicdb.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+embedding:
+  lazy_mode: 0
+heimdall:
+  lazy_mode: 2
+search_rerank:
+  lazy_mode: 0
+`), 0o600))
+
+	cfg, err := LoadFromFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, 0, cfg.Memory.EmbeddingLazyMode)
+	assert.Equal(t, 2, cfg.Features.HeimdallLazyMode)
+	assert.Equal(t, 0, cfg.Features.RerankLazyMode)
+}
+
 func TestLoadFromEnv_BM25Properties(t *testing.T) {
 	t.Setenv("NORNICDB_SEARCH_BM25_PROPERTIES", " title, text, ,summary ")
 
@@ -105,6 +144,7 @@ func TestFeatureFlagsConfig_HeimdallGetters_Defaults(t *testing.T) {
 func TestFeatureFlagsConfig_AdditionalHeimdallGetters(t *testing.T) {
 	f := &FeatureFlagsConfig{
 		HeimdallGPULayers:        7,
+		HeimdallLazyMode:         2,
 		HeimdallContextSize:      4096,
 		HeimdallBatchSize:        512,
 		HeimdallMaxTokens:        256,
@@ -118,6 +158,7 @@ func TestFeatureFlagsConfig_AdditionalHeimdallGetters(t *testing.T) {
 	}
 
 	assert.Equal(t, 7, f.GetHeimdallGPULayers())
+	assert.Equal(t, 2, f.GetHeimdallLazyMode())
 	assert.Equal(t, 4096, f.GetHeimdallContextSize())
 	assert.Equal(t, 512, f.GetHeimdallBatchSize())
 	assert.Equal(t, 256, f.GetHeimdallMaxTokens())

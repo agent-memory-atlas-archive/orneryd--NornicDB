@@ -246,6 +246,8 @@ type Config struct {
 	MaxTokens   int     `json:"max_tokens"`
 	Temperature float32 `json:"temperature"`
 	GPULayers   int     `json:"gpu_layers"`
+	// LazyMode controls llama.cpp on-demand tensor loading: 0=off, 1=auto, 2=on.
+	LazyMode int `json:"lazy_mode"`
 
 	// Feature toggles
 	AnomalyDetection bool          `json:"anomaly_detection"`
@@ -273,6 +275,7 @@ func DefaultConfig() Config {
 		MaxTokens:        1024, // 1K output (faster)
 		Temperature:      0.5,
 		GPULayers:        -1, // Auto
+		LazyMode:         1,  // llama.cpp auto
 		AnomalyDetection: true,
 		AnomalyInterval:  5 * time.Minute,
 		RuntimeDiagnosis: true,
@@ -291,6 +294,7 @@ type FeatureFlagsSource interface {
 	GetHeimdallAPIURL() string
 	GetHeimdallAPIKey() string
 	GetHeimdallGPULayers() int
+	GetHeimdallLazyMode() int
 	GetHeimdallContextSize() int
 	GetHeimdallBatchSize() int
 	GetHeimdallMaxTokens() int
@@ -325,6 +329,7 @@ func ConfigFromFeatureFlags(flags FeatureFlagsSource) Config {
 	cfg.APIURL = flags.GetHeimdallAPIURL()
 	cfg.APIKey = flags.GetHeimdallAPIKey()
 	cfg.GPULayers = flags.GetHeimdallGPULayers()
+	cfg.LazyMode = flags.GetHeimdallLazyMode()
 	cfg.ContextSize = flags.GetHeimdallContextSize()
 	cfg.BatchSize = flags.GetHeimdallBatchSize()
 	cfg.MaxTokens = flags.GetHeimdallMaxTokens()

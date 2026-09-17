@@ -5,7 +5,7 @@
 #   ./scripts/build-llama.sh [version]
 #
 # Examples:
-#   ./scripts/build-llama.sh          # Uses default version (b10411)
+#   ./scripts/build-llama.sh          # Uses default version (v0.4.1)
 #   ./scripts/build-llama.sh b8000    # Specific version
 #
 # Output:
@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-VERSION="${1:-b10411}"
+VERSION="${1:-v0.4.1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUTDIR="$PROJECT_ROOT/lib/llama"
@@ -40,7 +40,7 @@ mkdir -p "$OUTDIR"
 
 # Clone llama.cpp
 echo "📥 Cloning llama.cpp $VERSION..."
-git clone --depth 1 --branch "$VERSION" https://github.com/ggerganov/llama.cpp.git "$TMPDIR"
+git clone --depth 1 --branch "$VERSION" https://github.com/ggml-org/llama.cpp.git "$TMPDIR"
 cd "$TMPDIR"
 
 # Detect platform
@@ -54,7 +54,7 @@ echo "   Platform: ${OS}/${ARCH}"
 # Base CMake args for static library
 # Build PIC objects so static libs can link into PIE executables on Linux CI.
 # Disable all tools/examples/server/app targets — we only need the static libs.
-CMAKE_ARGS="-DLLAMA_STATIC=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_COMMON=ON -DLLAMA_CURL=OFF"
+CMAKE_ARGS="-DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_COMMON=ON -DLLAMA_CURL=OFF"
 
 # GPU-specific configuration
 GPU_SUFFIX=""

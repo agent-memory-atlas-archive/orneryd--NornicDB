@@ -215,7 +215,8 @@ type Model struct {
 	dims      int
 	modelDesc string
 	gpuLayers int32 // 0=CPU only, -1=auto (all layers to GPU if available)
-	usingGPU  bool  // True if GPU is being used for this model
+	lazyMode  int
+	usingGPU  bool // True if GPU is being used for this model
 	mu        sync.Mutex
 }
 
@@ -242,6 +243,7 @@ type Options struct {
 	BatchSize   int
 	Threads     int
 	GPULayers   int
+	LazyMode    int
 	Features    ContextFeatures
 }
 
@@ -271,6 +273,7 @@ func DefaultOptions(modelPath string) Options {
 		BatchSize:   8192, // Matches context for efficient processing
 		Threads:     threads,
 		GPULayers:   -1, // Auto: offload all layers to GPU
+		LazyMode:    LazyModeAuto,
 		Features:    DefaultContextFeatures(),
 	}
 }
@@ -344,6 +347,7 @@ func LoadModel(opts Options) (*Model, error) {
 	// Load model with appropriate GPU layer configuration
 	modelParams := llama.ModelDefaultParams()
 	modelParams.NGpuLayers = gpuLayers
+	modelParams.LazyMode = llama.LazyMode(normalizeLazyMode(opts.LazyMode))
 
 	lmodel, err := llama.ModelLoadFromFile(opts.ModelPath, modelParams)
 	if err != nil {
@@ -381,6 +385,7 @@ func LoadModel(opts Options) (*Model, error) {
 		dims:      dims,
 		modelDesc: modelDesc,
 		gpuLayers: gpuLayers,
+		lazyMode:  normalizeLazyMode(opts.LazyMode),
 		usingGPU:  usingGPU,
 	}, nil
 }
@@ -421,6 +426,7 @@ func (m *Model) Embed(ctx context.Context, text string) ([]float32, error) {
 	// Load model with stored GPU configuration
 	modelParams := llama.ModelDefaultParams()
 	modelParams.NGpuLayers = m.gpuLayers
+	modelParams.LazyMode = llama.LazyMode(m.lazyMode)
 
 	model, err := llama.ModelLoadFromFile(m.modelPath, modelParams)
 	if err != nil {
@@ -619,6 +625,7 @@ type GenerationModel struct {
 	contextSize uint32
 	batchSize   uint32
 	gpuLayers   int32
+	lazyMode    int
 	usingGPU    bool
 	mu          sync.Mutex
 }
@@ -630,6 +637,7 @@ type GenerationOptions struct {
 	BatchSize   int
 	Threads     int
 	GPULayers   int
+	LazyMode    int
 	Features    ContextFeatures
 }
 
@@ -649,6 +657,7 @@ func DefaultGenerationOptions(modelPath string) GenerationOptions {
 		BatchSize:   512,
 		Threads:     threads,
 		GPULayers:   -1, // Auto: use GPU if available
+		LazyMode:    LazyModeAuto,
 		Features: ContextFeatures{
 			CtxType:       0,  // LLAMA_CONTEXT_TYPE_DEFAULT
 			PoolingType:   -1, // LLAMA_POOLING_TYPE_UNSPECIFIED
@@ -719,6 +728,7 @@ func LoadGenerationModel(opts GenerationOptions) (*GenerationModel, error) {
 		contextSize: uint32(opts.ContextSize),
 		batchSize:   uint32(opts.BatchSize),
 		gpuLayers:   gpuLayers,
+		lazyMode:    normalizeLazyMode(opts.LazyMode),
 		usingGPU:    usingGPU,
 	}, nil
 }
@@ -758,6 +768,7 @@ func (g *GenerationModel) Generate(ctx context.Context, prompt string, params Ge
 	// Load model with GPU configuration
 	modelParams := llama.ModelDefaultParams()
 	modelParams.NGpuLayers = g.gpuLayers
+	modelParams.LazyMode = llama.LazyMode(g.lazyMode)
 
 	model, err := llama.ModelLoadFromFile(g.modelPath, modelParams)
 	if err != nil {
@@ -874,6 +885,7 @@ func (g *GenerationModel) GenerateStream(ctx context.Context, prompt string, par
 	// Load model with GPU configuration
 	modelParams := llama.ModelDefaultParams()
 	modelParams.NGpuLayers = g.gpuLayers
+	modelParams.LazyMode = llama.LazyMode(g.lazyMode)
 
 	model, err := llama.ModelLoadFromFile(g.modelPath, modelParams)
 	if err != nil {

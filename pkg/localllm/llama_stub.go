@@ -28,6 +28,7 @@ type Options struct {
 	BatchSize   int
 	Threads     int
 	GPULayers   int
+	LazyMode    int
 	Features    ContextFeatures
 }
 
@@ -46,6 +47,7 @@ func DefaultOptions(modelPath string) Options {
 		BatchSize:   0,
 		Threads:     threads,
 		GPULayers:   -1,
+		LazyMode:    LazyModeAuto,
 		Features:    DefaultContextFeatures(),
 	}
 }

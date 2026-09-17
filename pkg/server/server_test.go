@@ -3884,6 +3884,8 @@ func TestBuildEmbedConfigFromResolved_Branches(t *testing.T) {
 	require.Equal(t, "openai", cfg.Provider)
 	require.Equal(t, "/v1/embeddings", cfg.APIPath)
 	require.Equal(t, 1024, cfg.Dimensions)
+	require.True(t, cfg.LazyModeSet)
+	require.Equal(t, 1, cfg.LazyMode)
 
 	cfg = buildEmbedConfigFromResolved(map[string]string{
 		"db.nornic.embedding.provider":   "ollama",

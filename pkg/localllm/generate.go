@@ -59,6 +59,7 @@ type GenerationOptions struct {
 	BatchSize   int
 	Threads     int
 	GPULayers   int
+	LazyMode    int
 	Features    ContextFeatures
 }
 
@@ -70,6 +71,7 @@ func DefaultGenerationOptions(modelPath string) GenerationOptions {
 		BatchSize:   512,
 		Threads:     4,
 		GPULayers:   -1,
+		LazyMode:    LazyModeAuto,
 		Features: ContextFeatures{
 			CtxType:       0,  // LLAMA_CONTEXT_TYPE_DEFAULT
 			PoolingType:   -1, // LLAMA_POOLING_TYPE_UNSPECIFIED

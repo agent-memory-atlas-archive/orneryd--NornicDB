@@ -140,6 +140,9 @@ func NewLocalGGUF(config *Config) (*LocalGGUFEmbedder, error) {
 
 	// Zero is an explicit CPU-only choice; automatic offload is represented by -1.
 	opts.GPULayers = config.GPULayers
+	if config.LazyModeSet {
+		opts.LazyMode = config.LazyMode
+	}
 
 	// Apply llama context features from config (env-driven overrides).
 	// Only override defaults when the config value is explicitly set.

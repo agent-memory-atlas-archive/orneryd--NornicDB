@@ -781,7 +781,7 @@ func TestHeimdallCoverage_LocalGeneratorFallbackAndManagerReset(t *testing.T) {
 	require.NoError(t, os.WriteFile(modelPath, []byte("model"), 0o600))
 
 	var calls []int
-	previous := SetGeneratorLoader(func(modelPath string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+	previous := SetGeneratorLoader(func(modelPath string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 		calls = append(calls, gpuLayers)
 		assert.Equal(t, 8192, contextSize)
 		assert.Equal(t, 2048, batchSize)
@@ -2124,7 +2124,7 @@ func TestHeimdallCoverage_NewManagerProviderBranches(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "unknown.gguf"), []byte("model"), 0o600))
-	previous := SetGeneratorLoader(func(modelPath string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+	previous := SetGeneratorLoader(func(modelPath string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 		return NewMockGenerator(modelPath), nil
 	})
 	t.Cleanup(func() { SetGeneratorLoader(previous) })
@@ -2145,7 +2145,7 @@ func TestHeimdallCoverage_LoadLocalGeneratorDefaultDiscovery(t *testing.T) {
 	var capturedGPULayers int
 	var capturedContextSize int
 	var capturedBatchSize int
-	previous := SetGeneratorLoader(func(modelPath string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+	previous := SetGeneratorLoader(func(modelPath string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 		capturedModelPath = modelPath
 		capturedGPULayers = gpuLayers
 		capturedContextSize = contextSize

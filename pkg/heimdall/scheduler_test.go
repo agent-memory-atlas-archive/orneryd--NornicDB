@@ -690,9 +690,10 @@ func TestNewManager_ModelPathResolution(t *testing.T) {
 	require.NoError(t, err)
 
 	// Use mock loader to avoid CGO dependency
-	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 		// Verify the path was resolved correctly
 		assert.Equal(t, modelPath, path)
+		assert.Equal(t, 2, lazyMode)
 		return NewMockGenerator(path), nil
 	})
 	defer SetGeneratorLoader(origLoader)
@@ -702,6 +703,7 @@ func TestNewManager_ModelPathResolution(t *testing.T) {
 		ModelsDir: tmpDir,
 		Model:     "test-model",
 		GPULayers: 0,
+		LazyMode:  2,
 	}
 
 	manager, err := NewManager(cfg)
@@ -734,7 +736,7 @@ func TestNewManager_EnvVarOverrides(t *testing.T) {
 	// Use mock loader and verify env vars were used
 	var loadedPath string
 	var loadedGPULayers int
-	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 		loadedPath = path
 		loadedGPULayers = gpuLayers
 		return NewMockGenerator(path), nil
@@ -773,7 +775,7 @@ func TestSetGeneratorLoader(t *testing.T) {
 	defer SetGeneratorLoader(origLoader)
 
 	// Create mock loader
-	mockLoader := func(modelPath string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+	mockLoader := func(modelPath string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 		return NewMockGenerator(modelPath), nil
 	}
 
@@ -782,7 +784,7 @@ func TestSetGeneratorLoader(t *testing.T) {
 	assert.NotNil(t, prev)
 
 	// Verify it works
-	gen, err := loadGenerator("/test/model.gguf", 0, 32768, 8192)
+	gen, err := loadGenerator("/test/model.gguf", 0, 32768, 8192, 1)
 	require.NoError(t, err)
 	assert.NotNil(t, gen)
 
@@ -790,7 +792,7 @@ func TestSetGeneratorLoader(t *testing.T) {
 	SetGeneratorLoader(prev)
 
 	// Now should fail again
-	gen, err = loadGenerator("/test/model.gguf", 0, 32768, 8192)
+	gen, err = loadGenerator("/test/model.gguf", 0, 32768, 8192, 1)
 	assert.Error(t, err)
 	assert.Nil(t, gen)
 }
@@ -806,7 +808,7 @@ func TestNewManager_WithMockLoader(t *testing.T) {
 	require.NoError(t, err)
 
 	// Save and restore original loader
-	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 		return NewMockGenerator(path), nil
 	})
 	defer SetGeneratorLoader(origLoader)
@@ -846,7 +848,7 @@ func TestNewManager_GPUFallbackToCPU(t *testing.T) {
 	cpuAttempts := 0
 
 	// Mock loader that fails on GPU but succeeds on CPU
-	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 		if gpuLayers != 0 {
 			gpuAttempts++
 			return nil, errors.New("GPU not available")
@@ -885,7 +887,7 @@ func TestNewManager_BothLoadsFail(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mock loader that always fails
-	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 		return nil, errors.New("model loading failed")
 	})
 	defer SetGeneratorLoader(origLoader)
@@ -918,7 +920,7 @@ func TestNewManager_CPUOnlyMode(t *testing.T) {
 	loadedGPULayers := -1
 
 	// Mock loader that tracks what was requested
-	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+	origLoader := SetGeneratorLoader(func(path string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 		loadedGPULayers = gpuLayers
 		return NewMockGenerator(path), nil
 	})

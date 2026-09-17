@@ -117,10 +117,11 @@ func NewManager(cfg Config) (*Manager, error) {
 //   - gpuLayers: GPU layer offload (-1=auto, 0=CPU only)
 //   - contextSize: Context window size (single-shot = 8192)
 //   - batchSize: Batch processing size (match context for single-shot)
-type GeneratorLoader func(modelPath string, gpuLayers, contextSize, batchSize int) (Generator, error)
+//   - lazyMode: llama.cpp lazy tensor loading (0=off, 1=auto, 2=on)
+type GeneratorLoader func(modelPath string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error)
 
 // DefaultGeneratorLoader is the default loader (stub without CGO).
-var DefaultGeneratorLoader GeneratorLoader = func(modelPath string, gpuLayers, contextSize, batchSize int) (Generator, error) {
+var DefaultGeneratorLoader GeneratorLoader = func(modelPath string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
 	return nil, fmt.Errorf("SLM generation requires CGO build with localllm tag")
 }
 
@@ -137,8 +138,8 @@ func SetGeneratorLoader(loader GeneratorLoader) GeneratorLoader {
 }
 
 // loadGenerator creates a generator for the model using the active loader.
-func loadGenerator(modelPath string, gpuLayers, contextSize, batchSize int) (Generator, error) {
-	return generatorLoader(modelPath, gpuLayers, contextSize, batchSize)
+func loadGenerator(modelPath string, gpuLayers, contextSize, batchSize, lazyMode int) (Generator, error) {
+	return generatorLoader(modelPath, gpuLayers, contextSize, batchSize, lazyMode)
 }
 
 // loadLocalGenerator resolves the GGUF model path and loads it via generatorLoader.
@@ -197,11 +198,11 @@ func loadLocalGenerator(cfg Config) (Generator, string, error) {
 	logHeimdallPrintf(slog.LevelInfo, "   GPU layers: %d (-1 = auto, falls back to CPU if needed)", gpuLayers)
 	logHeimdallPrintf(slog.LevelInfo, "   Context: %d tokens, Batch: %d tokens (single-shot mode)", contextSize, batchSize)
 
-	generator, err := loadGenerator(modelPath, gpuLayers, contextSize, batchSize)
+	generator, err := loadGenerator(modelPath, gpuLayers, contextSize, batchSize, cfg.LazyMode)
 	if err != nil {
 		gpuErr := err
 		logHeimdallPrintf(slog.LevelWarn, "⚠️  GPU loading failed, trying CPU fallback: %v", err)
-		generator, err = loadGenerator(modelPath, 0, contextSize, batchSize)
+		generator, err = loadGenerator(modelPath, 0, contextSize, batchSize, cfg.LazyMode)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to load SLM model: gpu load failed: %v; cpu fallback failed: %w", gpuErr, err)
 		}

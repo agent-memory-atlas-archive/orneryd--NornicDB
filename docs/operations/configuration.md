@@ -994,6 +994,7 @@ Heimdall is the cognitive guardian and AI chat assistant. It supports **local** 
 | `NORNICDB_HEIMDALL_POOLING_TYPE`   | `-1`    | Pooling: -1=none, 1=mean, 2=cls, 3=last         |
 | `NORNICDB_HEIMDALL_ATTENTION_TYPE` | `0`     | Attention: 0=causal, 1=non-causal               |
 | `NORNICDB_HEIMDALL_FLASH_ATTN`     | `-1`    | Flash attention: -1=auto, 0=disabled, 1=enabled |
+| `NORNICDB_HEIMDALL_LAZY_MODE`      | `1`     | Lazy tensor loading: 0=off, 1=auto, 2=on        |
 
 Streaming (SSE) is supported for chat completions when the client requests it; the OpenAI and Ollama providers stream tokens as they are generated.
 
@@ -1019,6 +1020,7 @@ Stage-2 reranking improves vector/hybrid search by re-scoring top candidates wit
 | `NORNICDB_RERANK_POOLING_TYPE`   | `4`     | Pooling: 1=mean, 2=cls, 3=last, 4=rank          |
 | `NORNICDB_RERANK_ATTENTION_TYPE` | `1`     | Attention: 0=causal, 1=non-causal               |
 | `NORNICDB_RERANK_FLASH_ATTN`     | `0`     | Flash attention: -1=auto, 0=disabled, 1=enabled |
+| `NORNICDB_RERANK_LAZY_MODE`      | `1`     | Lazy tensor loading: 0=off, 1=auto, 2=on        |
 
 Local models live in `NORNICDB_MODELS_DIR` (default `./models`). Download the default reranker with `make download-bge-reranker`.
 
@@ -1033,6 +1035,7 @@ search_rerank:
   model: bge-reranker-v2-m3-Q4_K_M.gguf
   api_url: ""
   api_key: ""
+  lazy_mode: 1 # 0=off, 1=auto, 2=on (local provider only)
 ```
 
 See [Cross-Encoder Reranking](../features/cross-encoder-reranking.md) for full configuration, local GGUF vs external API, and examples.
@@ -1093,6 +1096,7 @@ export NORNICDB_MODELS_DIR=./models                # used by provider=local
 # export NORNICDB_EMBEDDING_POOLING_TYPE=1         # 1=mean, 2=cls, 3=last, 4=rank
 # export NORNICDB_EMBEDDING_ATTENTION_TYPE=1       # 0=causal, 1=non-causal (BERT-style)
 # export NORNICDB_EMBEDDING_FLASH_ATTN=-1          # -1=auto, 0=disabled, 1=enabled
+# export NORNICDB_EMBEDDING_LAZY_MODE=1             # 0=off, 1=auto, 2=on
 ```
 
 ## Qdrant gRPC Endpoint (Qdrant SDK Compatibility)

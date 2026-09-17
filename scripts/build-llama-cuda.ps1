@@ -10,14 +10,14 @@
 #   - Make (from MinGW or MSYS2)
 #
 # Usage:
-#   .\scripts\build-llama-cuda.ps1 [-Version b10411] [-Clean]
+#   .\scripts\build-llama-cuda.ps1 [-Version v0.4.1] [-Clean]
 #
 # Output:
 #   lib\llama\libllama_windows_amd64.a (static library, CPU-only)
 #   lib\llama\llama.h, ggml*.h (headers)
 
 param(
-    [string]$Version = "b10411",  # Latest stable llama.cpp release tag
+    [string]$Version = "v0.4.1",  # Latest stable llama.cpp release tag
     [switch]$Clean
 )
 
@@ -106,7 +106,7 @@ if ($isGitRepo) {
 
 if ($needsClone) {
     Write-Host "[CLONE] llama.cpp $Version..." -ForegroundColor Cyan
-    & git clone --depth 1 --branch $Version https://github.com/ggerganov/llama.cpp.git .
+    & git clone --depth 1 --branch $Version https://github.com/ggml-org/llama.cpp.git .
     if ($LASTEXITCODE -ne 0) { 
         Write-Host "[ERROR] Git clone failed" -ForegroundColor Red
         Set-Location $OriginalDir
@@ -161,7 +161,6 @@ $cmakeArgs = @(
     "-B", "build",
     "-G", "MinGW Makefiles",
     "-DCMAKE_BUILD_TYPE=Release",
-    "-DLLAMA_STATIC=ON",
     "-DBUILD_SHARED_LIBS=OFF",
     "-DLLAMA_BUILD_TESTS=OFF",
     "-DLLAMA_BUILD_EXAMPLES=OFF",

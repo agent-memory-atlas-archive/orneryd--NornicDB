@@ -6,7 +6,7 @@
 FROM debian:bookworm-slim AS builder
 
 ARG TARGETARCH
-ARG LLAMA_VERSION=b10411
+ARG LLAMA_VERSION=v0.4.1
 ARG LLAMA_BUILD_JOBS=2
 
 WORKDIR /llama
@@ -29,9 +29,9 @@ RUN set -eux; \
         exit 1; \
         ;; \
     esac; \
-    git clone --depth 1 --branch "${LLAMA_VERSION}" https://github.com/ggerganov/llama.cpp.git .; \
+    git clone --depth 1 --branch "${LLAMA_VERSION}" https://github.com/ggml-org/llama.cpp.git .; \
     cmake -B build \
-      -DLLAMA_STATIC=ON -DBUILD_SHARED_LIBS=OFF \
+      -DBUILD_SHARED_LIBS=OFF \
       -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
       -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_CURL=OFF \
       -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF \

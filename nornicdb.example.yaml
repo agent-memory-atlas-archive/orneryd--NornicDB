@@ -378,6 +378,11 @@ embedding:
   # Env: NORNICDB_EMBEDDING_FLASH_ATTN
   # flash_attn: -1
 
+  # Lazy tensor loading: 0=off, 1=auto (default), 2=on
+  # Env: NORNICDB_EMBEDDING_LAZY_MODE
+  # lazy_mode: 1
+
+
 # =============================================================================
 # MEMORY/DECAY CONFIGURATION
 # Docs: https://github.com/orneryd/nornicdb/docs/features/memory-decay.md
@@ -670,6 +675,11 @@ heimdall:
   # Flash attention: -1=auto (default), 0=disabled, 1=enabled
   # Env: NORNICDB_HEIMDALL_FLASH_ATTN
   # flash_attn: -1
+
+  # Lazy tensor loading: 0=off, 1=auto (default), 2=on
+  # Env: NORNICDB_HEIMDALL_LAZY_MODE
+  # lazy_mode: 1
+
 
 # =============================================================================
 # COMPLIANCE SETTINGS

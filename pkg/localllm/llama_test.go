@@ -49,6 +49,9 @@ func TestDefaultOptions(t *testing.T) {
 	if opts.GPULayers != -1 {
 		t.Errorf("GPULayers = %d, want -1 (auto)", opts.GPULayers)
 	}
+	if opts.LazyMode != LazyModeAuto {
+		t.Errorf("LazyMode = %d, want %d (auto)", opts.LazyMode, LazyModeAuto)
+	}
 	if opts.Features.FlashAttn != 0 {
 		t.Errorf("Features.FlashAttn = %d, want 0 (disabled)", opts.Features.FlashAttn)
 	}
@@ -69,6 +72,23 @@ func TestDefaultRerankerOptions(t *testing.T) {
 	opts.Features.PoolingType = 3
 	if opts.Features.PoolingType != 3 {
 		t.Fatal("reranker pooling override was not retained")
+	}
+}
+
+func TestNormalizeLazyMode(t *testing.T) {
+	for _, tc := range []struct {
+		input int
+		want  int
+	}{
+		{input: LazyModeOff, want: LazyModeOff},
+		{input: LazyModeAuto, want: LazyModeAuto},
+		{input: LazyModeOn, want: LazyModeOn},
+		{input: -1, want: LazyModeAuto},
+		{input: 3, want: LazyModeAuto},
+	} {
+		if got := normalizeLazyMode(tc.input); got != tc.want {
+			t.Fatalf("normalizeLazyMode(%d) = %d, want %d", tc.input, got, tc.want)
+		}
 	}
 }
 
@@ -146,6 +166,9 @@ func TestDefaultGenerationOptions(t *testing.T) {
 	}
 	if opts.GPULayers != -1 {
 		t.Fatalf("GPULayers = %d, want -1", opts.GPULayers)
+	}
+	if opts.LazyMode != LazyModeAuto {
+		t.Fatalf("LazyMode = %d, want %d (auto)", opts.LazyMode, LazyModeAuto)
 	}
 }
 

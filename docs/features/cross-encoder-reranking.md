@@ -63,6 +63,8 @@ Local GGUF rerankers default to llama.cpp rank pooling (`4`), non-causal
 attention (`1`), and disabled flash attention (`0`). Override these with
 `NORNICDB_RERANK_POOLING_TYPE`, `NORNICDB_RERANK_ATTENTION_TYPE`, and
 `NORNICDB_RERANK_FLASH_ATTN` when a model requires different context settings.
+Tensor loading defaults to upstream's automatic mode and can be changed with
+`NORNICDB_RERANK_LAZY_MODE` (`0`=off, `1`=auto, `2`=on).
 
 Models directory for **local** provider: `NORNICDB_MODELS_DIR` (default `./models`). Download the default reranker with:
 
@@ -79,6 +81,7 @@ search_rerank:
   model: bge-reranker-v2-m3-Q4_K_M.gguf # GGUF filename (local) or API model name
   api_url: "" # For ollama/openai/http (e.g. https://api.cohere.ai/v1/rerank)
   api_key: "" # For Cohere, OpenAI, etc.
+  lazy_mode: 1 # 0=off, 1=auto, 2=on (local provider only)
 ```
 
 ### Local GGUF (BGE-Reranker-v2-m3)
