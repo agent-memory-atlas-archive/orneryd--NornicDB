@@ -1142,7 +1142,11 @@ func (e *StorageExecutor) executeUnwind(ctx context.Context, cypher string) (*Ex
 			row := make([]interface{}, len(returnItems))
 			rowValues := map[string]interface{}{variable: item}
 			for i, ri := range returnItems {
-				row[i] = e.evaluateExpressionFromValues(ri.expr, rowValues)
+				value, ok := e.evaluateRowExpression(ri.expr, rowValues)
+				if !ok {
+					return nil, localizedError(localization.CypherResidualCreateWithExpressionInvalid(ri.expr), nil)
+				}
+				row[i] = value
 			}
 			result.Rows = append(result.Rows, row)
 		}

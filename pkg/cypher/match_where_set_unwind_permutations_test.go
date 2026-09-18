@@ -472,5 +472,6 @@ func TestEvaluateWithWhereCondition_DirectBranches(t *testing.T) {
 	assert.True(t, exec.evaluateWithWhereCondition(ctx, "n < 11", vals))
 
 	// Unknown pattern defaults to pass-through.
-	assert.True(t, exec.evaluateWithWhereCondition(ctx, "totally_unknown_condition", vals))
+	assert.False(t, exec.evaluateWithWhereCondition(ctx, "totally_unknown_condition", vals),
+		"an unresolved predicate must not silently admit every row")
 }

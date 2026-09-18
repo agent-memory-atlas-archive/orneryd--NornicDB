@@ -5071,6 +5071,14 @@ func hnswPairSliceIterator(pairs []hnswBuildPair) hnswBuildIterator {
 }
 
 func hnswVectorFileStoreIterator(vfs *VectorFileStore, seedNodeIDs map[string]struct{}) hnswBuildIterator {
+	return hnswVectorChunkIterator(vfs.IterateChunked, seedNodeIDs)
+}
+
+func hnswVectorReadLeaseIterator(lease *vectorFileReadLease, seedNodeIDs map[string]struct{}) hnswBuildIterator {
+	return hnswVectorChunkIterator(lease.IterateChunked, seedNodeIDs)
+}
+
+func hnswVectorChunkIterator(iterate func(int, func([]string, [][]float32) error) error, seedNodeIDs map[string]struct{}) hnswBuildIterator {
 	return func(batchSize int, fn func([]hnswBuildPair) error) error {
 		addChunk := func(ids []string, vecs [][]float32, seedOnly bool) error {
 			batch := make([]hnswBuildPair, 0, len(ids))
@@ -5090,13 +5098,13 @@ func hnswVectorFileStoreIterator(vfs *VectorFileStore, seedNodeIDs map[string]st
 			return fn(batch)
 		}
 		if len(seedNodeIDs) > 0 {
-			if err := vfs.IterateChunked(batchSize, func(ids []string, vecs [][]float32) error {
+			if err := iterate(batchSize, func(ids []string, vecs [][]float32) error {
 				return addChunk(ids, vecs, true)
 			}); err != nil {
 				return err
 			}
 		}
-		return vfs.IterateChunked(batchSize, func(ids []string, vecs [][]float32) error {
+		return iterate(batchSize, func(ids []string, vecs [][]float32) error {
 			return addChunk(ids, vecs, false)
 		})
 	}
@@ -5469,8 +5477,25 @@ func (s *Service) getOrCreateHNSWIndex(ctx context.Context, dimensions int) (*HN
 	if vfs != nil && vfs.Count() > 0 {
 		total := vfs.Count()
 		s.logPrintf("[HNSW] 🔨 Building from file store: %d vectors (chunk size 10k)", total)
+		lookup := s.getVectorLookup()
+		iterator := hnswVectorFileStoreIterator(vfs, seedNodeIDs)
+		lease, leaseErr := vfs.beginReadLease()
+		if leaseErr == nil {
+			lookup = lease.Lookup
+			iterator = hnswVectorReadLeaseIterator(lease, seedNodeIDs)
+		} else {
+			s.logPrintf("[HNSW] read-only vector mapping unavailable; using copied reads: %v", leaseErr)
+		}
 		var err error
-		built, buildStats, err = buildHNSWWithOptionalGPU(ctx, dimensions, config, s.getVectorLookup(), total, hnswVectorFileStoreIterator(vfs, seedNodeIDs), nil)
+		built, buildStats, err = buildHNSWWithOptionalGPU(ctx, dimensions, config, lookup, total, iterator, nil)
+		if built != nil && lease != nil {
+			// The lease accelerates construction only. Runtime lookup retains the
+			// owning-copy contract so compaction and close cannot invalidate views.
+			built.SetVectorLookup(s.getVectorLookup())
+		}
+		if lease != nil {
+			_ = lease.Close()
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -6877,9 +6902,8 @@ func (s *Service) filterByProperties(ctx context.Context, results []indexResult,
 }
 
 // filterByTypeAndProperties combines type and property filtering into a single pass,
-// fetching each candidate node exactly once via BatchGetNodes to avoid the redundant
-// per-candidate GetNode calls that occur when filterByType and filterByProperties are
-// called sequentially. Falls back to individual fetches if the batch call fails.
+// fetching each candidate node exactly once without decoding stored chunk embeddings.
+// Falls back to embedding-free individual fetches when the batch capability is absent.
 func (s *Service) filterByTypeAndProperties(
 	ctx context.Context,
 	results []indexResult,
@@ -6907,7 +6931,7 @@ func (s *Service) filterByTypeAndProperties(
 		}
 	}
 
-	nodes, err := s.engine.BatchGetNodes(ids)
+	nodes, err := s.batchGetNodesWithoutEmbeddings(ids)
 	if err != nil {
 		// Batch unavailable – fall back to the individual-fetch helpers.
 		if len(types) > 0 {

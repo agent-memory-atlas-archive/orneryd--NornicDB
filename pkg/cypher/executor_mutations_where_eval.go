@@ -876,16 +876,6 @@ func (e *StorageExecutor) resolveReturnItem(ctx context.Context, item returnItem
 			return nil
 		}
 
-		// Handle special "id" property - return node's internal ID
-		if propName == "id" {
-			// Check if there's an "id" property first
-			if val, ok := node.Properties["id"]; ok {
-				return val
-			}
-			// Fall back to internal node ID
-			return string(node.ID)
-		}
-
 		// has_embedding is stored in EmbedMeta by the managed embedding system
 		// This supports queries like: WHERE f.has_embedding = true
 		if propName == "has_embedding" {

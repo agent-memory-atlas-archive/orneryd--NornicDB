@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Isolate packaged Snowball runtimes so multiple language plugins can coexist,
   quarantine unrelated broken plugins, and document Snowball v3.1.1 with the
   current `-P` compiler syntax.
+- Restore Neo4j-compatible row expression and compound-clause semantics for
+  chained `WITH`, `UNWIND`, `EXISTS`, `CREATE`, `MERGE`, and `SET` queries;
+  missing properties now return `null`, and acknowledged async writes are
+  visible when a subsequent explicit transaction begins.
+- Avoid decoding chunk embeddings while applying search candidate filters and
+  use a read-only mapped vector lease during file-backed HNSW construction,
+  eliminating per-neighbor reads and allocations without changing the public
+  owning-vector accessor.
 - Log query-embedding fallback at warning level and expose a stable,
   sanitized `fallback_reason` through HTTP, native gRPC, Cypher/Bolt, MCP,
   Heimdall, and durable continuation responses.

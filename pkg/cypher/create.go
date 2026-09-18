@@ -3038,7 +3038,7 @@ func (e *StorageExecutor) executeMultipleCreates(ctx context.Context, cypher str
 				if item.alias != "" {
 					alias = item.alias
 				}
-				val, ok := projectFromRow(row, item.expr)
+				val, ok := e.evaluateRowExpression(item.expr, row)
 				if !ok {
 					return nil, localizedError(localization.CypherResidualCreateWithExpressionInvalid(item.expr), nil)
 				}

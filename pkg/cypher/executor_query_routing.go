@@ -496,7 +496,8 @@ func needsUnwindMutationPipeline(cypher string) bool {
 // sync. Compound mutation pipelines must retain bindings across every clause;
 // simpler UNWIND statements continue through the specialized handler.
 func (e *StorageExecutor) executeTopLevelUnwind(ctx context.Context, cypher string) (*ExecuteResult, error) {
-	if needsUnwindMutationPipeline(cypher) {
+	if needsUnwindMutationPipeline(cypher) || unwindProjectionPrecedesMutation(cypher) ||
+		unwindNeedsRowPipeline(cypher) || hasSubqueryPattern(cypher, existsSubqueryRe) {
 		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
 			return result, err
 		}

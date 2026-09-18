@@ -19,14 +19,15 @@ var firstUseGraphPattern = regexp.MustCompile(`(?is)\bUSE\s+([A-Za-z_][A-Za-z0-9
 
 // TransactionContext holds the active transaction for a Cypher session.
 type TransactionContext struct {
-	tx              interface{} // *storage.BadgerTransaction (MemoryEngine now wraps BadgerEngine)
-	engine          storage.Engine
-	active          bool
-	wal             *storage.WAL
-	walSeqStart     uint64
-	database        string
-	txID            string
-	fabricRemoteExe *fabric.RemoteFragmentExecutor
+	tx                interface{} // *storage.BadgerTransaction (MemoryEngine now wraps BadgerEngine)
+	engine            storage.Engine
+	active            bool
+	wal               *storage.WAL
+	walSeqStart       uint64
+	database          string
+	txID              string
+	fabricRemoteExe   *fabric.RemoteFragmentExecutor
+	releaseAsyncFlush func()
 }
 
 // parseTransactionStatement checks if query is BEGIN/COMMIT/ROLLBACK.
@@ -49,6 +50,32 @@ func (e *StorageExecutor) parseTransactionStatement(cypher string) (*ExecuteResu
 func (e *StorageExecutor) handleBegin() (*ExecuteResult, error) {
 	if e.txContext != nil && e.txContext.active {
 		return nil, localizedError(localization.CypherTransactionsAlreadyActive(), nil)
+	}
+
+	// Establish the acknowledged-write visibility boundary before opening the
+	// underlying snapshot. Explicit transactions previously unwrapped the async
+	// engine directly, so recently acknowledged writes remained only in its
+	// cache and were invisible until the background flush fired.
+	engines := e.resolveImplicitTxEngines()
+	releaseAsyncFlush := func() {}
+	releaseOwned := true
+	defer func() {
+		if releaseOwned {
+			releaseAsyncFlush()
+		}
+	}()
+	if engines.asyncEngine != nil {
+		if err := engines.asyncEngine.Flush(); err != nil {
+			return nil, localizedError(localization.CypherTransactionsStartFailed(err), err)
+		}
+		release := engines.asyncEngine.HoldFlush()
+		released := false
+		releaseAsyncFlush = func() {
+			if !released {
+				release()
+				released = true
+			}
+		}
 	}
 
 	// Unwrap engine wrappers (Async/WAL/Namespaced) recursively.
@@ -83,10 +110,12 @@ func (e *StorageExecutor) handleBegin() (*ExecuteResult, error) {
 	// This supports explicit BEGIN/COMMIT/ROLLBACK at API level for composite routes.
 	if _, ok := engine.(*storage.CompositeEngine); ok {
 		e.txContext = &TransactionContext{
-			tx:     fabric.NewFabricTransaction(fmt.Sprintf("fabtx-%d", time.Now().UnixNano())),
-			engine: engine,
-			active: true,
+			tx:                fabric.NewFabricTransaction(fmt.Sprintf("fabtx-%d", time.Now().UnixNano())),
+			engine:            engine,
+			active:            true,
+			releaseAsyncFlush: releaseAsyncFlush,
 		}
+		releaseOwned = false
 		return &ExecuteResult{
 			Columns: []string{"status"},
 			Rows:    [][]interface{}{{"Transaction started"}},
@@ -122,10 +151,11 @@ func (e *StorageExecutor) handleBegin() (*ExecuteResult, error) {
 		return nil, localizedError(localization.CypherTransactionsConfigureFailed(err), err)
 	}
 	txCtx := &TransactionContext{
-		tx:     tx,
-		engine: engine,
-		active: true,
-		txID:   tx.ID,
+		tx:                tx,
+		engine:            engine,
+		active:            true,
+		txID:              tx.ID,
+		releaseAsyncFlush: releaseAsyncFlush,
 	}
 	if wal, dbName := e.resolveWALAndDatabase(); wal != nil {
 		walSeq, walErr := wal.AppendTxBegin(dbName, tx.ID, nil)
@@ -138,6 +168,7 @@ func (e *StorageExecutor) handleBegin() (*ExecuteResult, error) {
 		txCtx.database = dbName
 	}
 	e.txContext = txCtx
+	releaseOwned = false
 
 	return &ExecuteResult{
 		Columns: []string{"status"},
@@ -150,6 +181,12 @@ func (e *StorageExecutor) handleCommit() (*ExecuteResult, error) {
 	if e.txContext == nil || !e.txContext.active {
 		return nil, localizedError(localization.CypherTransactionsNoActive(), nil)
 	}
+	txContext := e.txContext
+	defer func() {
+		if txContext.releaseAsyncFlush != nil {
+			txContext.releaseAsyncFlush()
+		}
+	}()
 
 	// Commit based on transaction type
 	// All engines now use BadgerTransaction (MemoryEngine wraps BadgerEngine)
@@ -225,6 +262,12 @@ func (e *StorageExecutor) handleRollback() (*ExecuteResult, error) {
 	if e.txContext == nil || !e.txContext.active {
 		return nil, localizedError(localization.CypherTransactionsNoActive(), nil)
 	}
+	txContext := e.txContext
+	defer func() {
+		if txContext.releaseAsyncFlush != nil {
+			txContext.releaseAsyncFlush()
+		}
+	}()
 
 	// Rollback based on transaction type
 	// All engines now use BadgerTransaction (MemoryEngine wraps BadgerEngine)

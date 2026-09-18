@@ -3018,6 +3018,31 @@ func (e *StorageExecutor) checkSubqueryMatch(ctx context.Context, node *storage.
 		return len(nodes) > 0
 	}
 
+	// Use the shared one-hop pattern parser so target labels, inline property
+	// maps, relationship bindings, and predicates all see the same complete
+	// correlated row. The older edge-only path below predates inline target
+	// properties and can only evaluate the target node in isolation.
+	if strings.Count(pattern, "-[") == 1 &&
+		!hasSubqueryPattern(innerWhere, existsSubqueryRe) &&
+		!hasSubqueryPattern(innerWhere, countSubqueryRe) {
+		relPattern := e.parseOptionalRelPattern(ctx, pattern)
+		if relPattern.sourceVar == variable {
+			for _, related := range e.findRelatedNodes(node, relPattern) {
+				values := map[string]interface{}{variable: node}
+				if relPattern.targetVar != "" {
+					values[relPattern.targetVar] = related.node
+				}
+				if relPattern.relVar != "" {
+					values[relPattern.relVar] = related.edge
+				}
+				if innerWhere == "" || e.evaluateRowPredicate(ctx, innerWhere, values) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
 	// Check for chained relationship pattern (e.g., (p)-[:KNOWS]->()-[:KNOWS]->())
 	// Count the number of relationship hops by counting relationship brackets [-
 	// Each hop has one -[...]-

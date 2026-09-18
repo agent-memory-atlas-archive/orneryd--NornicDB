@@ -2259,8 +2259,12 @@ func TestResolveReturnItemVariants(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Alice", result.Rows[0][0])
 
-	// Return id
+	// Missing properties are null; internal identity is available through id().
 	result, err = exec.Execute(ctx, "MATCH (n:Person) RETURN n.id", nil)
+	require.NoError(t, err)
+	assert.Nil(t, result.Rows[0][0])
+
+	result, err = exec.Execute(ctx, "MATCH (n:Person) RETURN id(n)", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "return-test", result.Rows[0][0])
 
