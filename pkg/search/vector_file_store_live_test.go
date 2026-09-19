@@ -1,6 +1,8 @@
 package search
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -59,4 +61,50 @@ func TestEnablingVectorPersistenceMigratesExistingLiveVectors(t *testing.T) {
 		require.True(t, ok, "missing migrated vector %q", id)
 	}
 	require.Zero(t, svc.vectorIndex.Count())
+}
+
+func TestLiveVectorIndexSurvivesRestartWithoutStorageRebuild(t *testing.T) {
+	engine := newNamespacedEngine(t)
+	node := &storage.Node{
+		ID:              "live-node",
+		Labels:          []string{"Document"},
+		ChunkEmbeddings: [][]float32{{1, 0}},
+		Properties: map[string]any{
+			"text":      "live persisted document",
+			"embedding": []float32{1, 0},
+		},
+	}
+	_, err := engine.CreateNode(node)
+	require.NoError(t, err)
+
+	indexDir := t.TempDir()
+	fulltextPath := filepath.Join(indexDir, "bm25")
+	vectorPath := filepath.Join(indexDir, "vectors")
+	first := NewServiceWithDimensions(engine, 2)
+	first.SetFulltextIndexPath(fulltextPath)
+	first.SetVectorIndexPath(vectorPath)
+	first.SetPersistenceEnabled(true)
+	require.NoError(t, first.IndexNode(node))
+	first.PersistIndexesToDisk()
+	require.NoError(t, first.Close())
+
+	restarted := NewServiceWithDimensions(&iteratorEngine{
+		Engine:     engine,
+		iterateErr: errors.New("persisted live index must not rebuild from storage"),
+	}, 2)
+	t.Cleanup(func() { require.NoError(t, restarted.Close()) })
+	restarted.SetFulltextIndexPath(fulltextPath)
+	restarted.SetVectorIndexPath(vectorPath)
+	restarted.SetPersistenceEnabled(true)
+
+	require.NoError(t, restarted.BuildIndexes(context.Background()))
+	require.Equal(t, 2, restarted.EmbeddingCount())
+	results, err := restarted.VectorQueryNodes(context.Background(), []float32{1, 0}, VectorQuerySpec{
+		Label:    "Document",
+		Property: "embedding",
+		Limit:    1,
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "live-node", results[0].ID)
 }
