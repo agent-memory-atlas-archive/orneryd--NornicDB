@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Buffer large MessagePack search-index snapshots and atomically replace files
+  only after a successful encode and fsync. The durable storage clean-shutdown
+  marker is now recorded before potentially slow search persistence, so an
+  orchestrator timeout cannot force an unrelated storage-index rebuild.
+- Reuse persisted BM25 indexes across stemmer plugin binary rebuilds when the
+  tokenizer, stemmer algorithm, plugin API, source version, indexed properties,
+  schema, and index format are unchanged.
 - Bound decoded MVCC node bodies by retained bytes, keep separately stored
   embeddings out of the cache, and rehydrate them only for full-node reads.
   Search responses now use an O(1) LRU with a retained-byte budget as well as

@@ -23,7 +23,6 @@ import (
 	"github.com/orneryd/nornicdb/pkg/math/vector"
 	"github.com/orneryd/nornicdb/pkg/security"
 	"github.com/orneryd/nornicdb/pkg/util"
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 const (
@@ -560,8 +559,7 @@ func (v *VectorFileStore) Save() error {
 	if err != nil {
 		return err
 	}
-	enc := msgpack.NewEncoder(f)
-	if err := enc.Encode(&VectorFileStoreMeta{
+	if err := encodeMsgpackBuffered(f, &VectorFileStoreMeta{
 		Version:               vecFileVersion,
 		Dimensions:            dim,
 		IDToOrdinal:           idToOrdinalCopy,

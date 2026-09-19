@@ -2573,6 +2573,16 @@ func TestSearchHelpers_BM25SeedAndSettingsEquivalence(t *testing.T) {
 		current,
 		bm25V2FormatVersion,
 	))
+	assert.True(t, bm25SettingsEquivalent(
+		"schema=3;format="+bm25V2FormatVersion+";tokenizer=unicode-nfkc-casefold-v1;stemmer=snowball.russian;stemmer_api=1;stemmer_version=3.1.1;stemmer_sha256=old-build;props=title,text",
+		"schema=3;format="+bm25V2FormatVersion+";tokenizer=unicode-nfkc-casefold-v1;stemmer=snowball.russian;stemmer_api=1;stemmer_version=3.1.1;stemmer_sha256=new-build;props=title,text",
+		bm25V2FormatVersion,
+	), "plugin binary identity must not invalidate equivalent tokenization")
+	assert.False(t, bm25SettingsEquivalent(
+		"schema=3;format="+bm25V2FormatVersion+";tokenizer=unicode-nfkc-casefold-v1;stemmer=snowball.russian;stemmer_api=1;stemmer_version=3.1.0;stemmer_sha256=same;props=title,text",
+		"schema=3;format="+bm25V2FormatVersion+";tokenizer=unicode-nfkc-casefold-v1;stemmer=snowball.russian;stemmer_api=1;stemmer_version=3.1.1;stemmer_sha256=same;props=title,text",
+		bm25V2FormatVersion,
+	), "stemmer source-version changes must invalidate the index")
 	assert.False(t, bm25SettingsEquivalent(
 		"schema=3;format="+fulltextIndexFormatVersion+";"+defaultAnalyzerSettings+";props=title",
 		current,

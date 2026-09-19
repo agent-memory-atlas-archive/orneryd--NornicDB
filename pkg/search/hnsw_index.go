@@ -37,7 +37,6 @@ import (
 	"github.com/orneryd/nornicdb/pkg/math/vector"
 	"github.com/orneryd/nornicdb/pkg/security"
 	"github.com/orneryd/nornicdb/pkg/util"
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 var errHNSWIndexFull = errors.New("hnsw index full")
@@ -871,7 +870,7 @@ func (h *HNSWIndex) Save(path string) error {
 		HasEntryPoint:     hasEntryPoint,
 		MaxLevel:          maxLevel,
 	}
-	if err := msgpack.NewEncoder(tmpFile).Encode(&snap); err != nil {
+	if err := encodeMsgpackBuffered(tmpFile, &snap); err != nil {
 		return err
 	}
 	if err := tmpFile.Sync(); err != nil {

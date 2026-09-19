@@ -5942,14 +5942,19 @@ func bm25SettingsEquivalent(saved, current, currentFormat string) bool {
 		savedKV["props"] != currentKV["props"] {
 		return false
 	}
-	for _, key := range []string{"tokenizer", "stemmer", "stemmer_api", "stemmer_version", "stemmer_sha256"} {
+	// The plugin binary digest changes whenever a Go plugin is rebuilt with a
+	// new server toolchain or dependency graph. Tokenization compatibility is
+	// determined by the stable algorithm ID, API, and source release instead.
+	for _, key := range []string{"tokenizer", "stemmer", "stemmer_api", "stemmer_version"} {
 		if savedKV[key] == "" || savedKV[key] != currentKV[key] {
 			return false
 		}
 	}
-	return savedKV["format"] == fulltextIndexFormatVersion &&
-		currentKV["format"] == currentFormat &&
-		currentFormat == bm25V2FormatVersion
+	if currentKV["format"] != currentFormat {
+		return false
+	}
+	return savedKV["format"] == currentFormat ||
+		(savedKV["format"] == fulltextIndexFormatVersion && currentFormat == bm25V2FormatVersion)
 }
 
 func envDurationMs(key string, fallbackMs int) time.Duration {

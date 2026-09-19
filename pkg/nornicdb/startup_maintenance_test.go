@@ -112,6 +112,15 @@ func TestCleanShutdownFlushesWritesBeforeRecordingMarker(t *testing.T) {
 	require.Equal(t, []string{"flush", "mark"}, engine.shutdownOperations)
 }
 
+func TestDerivedIndexPersistenceStartsAfterCleanStorageMarker(t *testing.T) {
+	engine := &startupMaintenanceEngine{Engine: storage.NewMemoryEngine()}
+
+	require.NoError(t, persistDerivedAfterStorageBoundary(engine, true, func() {
+		engine.shutdownOperations = append(engine.shutdownOperations, "persist-search")
+	}))
+	require.Equal(t, []string{"flush", "mark", "persist-search"}, engine.shutdownOperations)
+}
+
 func TestCleanShutdownDoesNotRecordMarkerAfterFlushFailure(t *testing.T) {
 	flushErr := errors.New("flush failed")
 	engine := &startupMaintenanceEngine{Engine: storage.NewMemoryEngine(), flushErr: flushErr}

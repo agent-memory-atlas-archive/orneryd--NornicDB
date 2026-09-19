@@ -10,7 +10,6 @@ import (
 	"github.com/orneryd/nornicdb/pkg/envutil"
 	"github.com/orneryd/nornicdb/pkg/security"
 	"github.com/orneryd/nornicdb/pkg/util"
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 const (
@@ -76,15 +75,7 @@ func saveSearchBuildSettings(path string, snap searchBuildSettingsSnapshot) erro
 	if path == "" {
 		return nil
 	}
-	if err := security.EnsureRootedParent(path, 0o755); err != nil {
-		return err
-	}
-	f, err := security.CreateRootedFile(path, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return msgpack.NewEncoder(f).Encode(&snap)
+	return writeMsgpackSnapshot(path, &snap)
 }
 
 func (s *Service) currentSearchBuildSettings() searchBuildSettingsSnapshot {

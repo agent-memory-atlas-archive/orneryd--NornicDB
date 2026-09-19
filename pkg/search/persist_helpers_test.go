@@ -1,12 +1,70 @@
 package search
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/vmihailenco/msgpack/v5"
 )
+
+type countingWriter struct {
+	writes int
+	bytes.Buffer
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	return w.Buffer.Write(p)
+}
+
+func TestMsgpackSnapshotEncodingCoalescesWrites(t *testing.T) {
+	w := &countingWriter{}
+	payload := make([]string, 50_000)
+	for i := range payload {
+		payload[i] = "search-index-term"
+	}
+
+	require.NoError(t, encodeMsgpackBuffered(w, payload))
+	require.Less(t, w.writes, 10, "large snapshots must not issue one write per msgpack element")
+
+	var decoded []string
+	require.NoError(t, decodeMsgpackReader(bytes.NewReader(w.Bytes()), &decoded))
+	require.Equal(t, payload, decoded)
+}
+
+func BenchmarkMsgpackSnapshotEncoding(b *testing.B) {
+	payload := make([]string, 100_000)
+	for i := range payload {
+		payload[i] = "search-index-term"
+	}
+	file, err := os.CreateTemp(b.TempDir(), "snapshot-*.msgpack")
+	require.NoError(b, err)
+	defer file.Close()
+
+	reset := func() {
+		require.NoError(b, file.Truncate(0))
+		_, err := file.Seek(0, 0)
+		require.NoError(b, err)
+	}
+	b.Run("unbuffered", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reset()
+			require.NoError(b, msgpack.NewEncoder(file).Encode(payload))
+		}
+	})
+	b.Run("buffered", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			reset()
+			require.NoError(b, encodeMsgpackBuffered(file, payload))
+		}
+	})
+}
 
 func TestWriteMsgpackSnapshots(t *testing.T) {
 	dir := t.TempDir()
@@ -48,6 +106,27 @@ func TestWriteMsgpackSnapshot_ErrorOnInvalidParent(t *testing.T) {
 
 	err := writeMsgpackSnapshot(filepath.Join(parentFile, "snapshot.msgpack"), map[string]any{"x": 1})
 	require.Error(t, err)
+}
+
+func TestWriteMsgpackSnapshotPreservesPreviousFileWhenEncodingFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.msgpack")
+	require.NoError(t, writeMsgpackSnapshot(path, map[string]any{"version": 1}))
+
+	err := writeMsgpackSnapshot(path, map[string]any{"invalid": make(chan int)})
+	require.Error(t, err)
+
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	defer file.Close()
+	var snapshot map[string]any
+	require.NoError(t, decodeMsgpackReader(file, &snapshot))
+	require.EqualValues(t, 1, snapshot["version"])
+	_, err = os.Stat(path + ".tmp")
+	require.True(t, os.IsNotExist(err))
+}
+
+func decodeMsgpackReader(reader io.Reader, target any) error {
+	return msgpack.NewDecoder(reader).Decode(target)
 }
 
 func TestWriteMsgpackSnapshotsAndAtomic_ErrorPaths(t *testing.T) {

@@ -73,37 +73,9 @@ func (db *DB) closeInternal() error {
 	db.bgWg.Wait()
 
 	var errs []error
-	if db.retentionManager != nil && db.config != nil {
-		if err := db.retentionManager.SavePolicies(db.retentionPoliciesPath()); err != nil {
-			log.Printf("⚠️  Failed to save retention policies: %v", err)
-		}
-	}
-	if db.config != nil && db.config.Database.PersistSearchIndexes && db.config.Database.DataDir != "" {
-		db.searchServicesMu.RLock()
-		for _, entry := range db.searchServices {
-			if entry != nil && entry.svc != nil {
-				entry.svc.PersistIndexesToDisk()
-			}
-		}
-		db.searchServicesMu.RUnlock()
-	}
-
-	db.searchServicesMu.RLock()
-	for _, entry := range db.searchServices {
-		if entry != nil && entry.svc != nil {
-			if err := entry.svc.Close(); err != nil {
-				errs = append(errs, err)
-			}
-		}
-	}
-	db.searchServicesMu.RUnlock()
-	db.searchContinuationMu.Lock()
-	if db.searchContinuation != nil {
-		db.searchContinuation.Close()
-		db.searchContinuation = nil
-	}
-	db.searchContinuationMu.Unlock()
-
+	// Stop every component that can still mutate graph storage before recording
+	// the durable storage boundary. Search snapshots are derived artifacts and
+	// may take much longer to save; they must not delay this marker.
 	if db.accessFlusher != nil {
 		db.accessFlusher.Stop()
 	}
@@ -122,11 +94,48 @@ func (db *DB) closeInternal() error {
 			errs = append(errs, err)
 		}
 	}
+	if db.retentionManager != nil && db.config != nil {
+		if err := db.retentionManager.SavePolicies(db.retentionPoliciesPath()); err != nil {
+			log.Printf("⚠️  Failed to save retention policies: %v", err)
+		}
+	}
+	var markerEngine storage.Engine
+	if len(errs) == 0 {
+		markerEngine = db.baseStorage
+	}
+	markErr := persistDerivedAfterStorageBoundary(markerEngine, db.derivedIndexesHealthy, func() {
+		if db.config == nil || !db.config.Database.PersistSearchIndexes || db.config.Database.DataDir == "" {
+			return
+		}
+		db.searchServicesMu.RLock()
+		defer db.searchServicesMu.RUnlock()
+		for _, entry := range db.searchServices {
+			if entry != nil && entry.svc != nil {
+				entry.svc.PersistIndexesToDisk()
+			}
+		}
+	})
+	if markErr != nil {
+		errs = append(errs, markErr)
+	}
+
+	db.searchServicesMu.RLock()
+	for _, entry := range db.searchServices {
+		if entry != nil && entry.svc != nil {
+			if err := entry.svc.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	db.searchServicesMu.RUnlock()
+	db.searchContinuationMu.Lock()
+	if db.searchContinuation != nil {
+		db.searchContinuation.Close()
+		db.searchContinuation = nil
+	}
+	db.searchContinuationMu.Unlock()
 
 	if db.baseStorage != nil {
-		if err := markStorageCleanShutdown(db.baseStorage, db.derivedIndexesHealthy); err != nil {
-			errs = append(errs, err)
-		}
 		if err := db.baseStorage.Close(); err != nil {
 			errs = append(errs, err)
 		}
@@ -135,6 +144,18 @@ func (db *DB) closeInternal() error {
 		return localizedError(localization.NornicDBCoreCloseFailed(fmt.Sprint(errs)), errors.Join(errs...))
 	}
 	return nil
+}
+
+// persistDerivedAfterStorageBoundary records the durable graph-storage state
+// before starting potentially slow derived-index persistence. The marker does
+// not claim search snapshots are current; each search snapshot validates and
+// rebuilds independently when absent or incompatible.
+func persistDerivedAfterStorageBoundary(engine storage.Engine, derivedIndexesHealthy bool, persist func()) error {
+	err := markStorageCleanShutdown(engine, derivedIndexesHealthy)
+	if persist != nil {
+		persist()
+	}
+	return err
 }
 
 // prepareDerivedIndexes consumes the one-use clean-shutdown marker before

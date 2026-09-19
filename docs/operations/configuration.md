@@ -719,7 +719,8 @@ database:
 **Behavior:**
 
 - Indexes are written under `data_dir/search/<database_name>/` (e.g. `bm25.gob`, `vectors`, `hnsw`).
-- After node index/remove operations, changes are persisted after a short debounce delay (configurable via `NORNICDB_SEARCH_INDEX_PERSIST_DELAY_SEC`); on graceful shutdown, indexes are flushed to disk.
+- After node index/remove operations, changes are persisted after a short debounce delay (configurable via `NORNICDB_SEARCH_INDEX_PERSIST_DELAY_SEC`); on graceful shutdown, indexes are flushed to disk. Snapshot files are buffered and atomically replaced, so interruption leaves the previous valid snapshot available.
+- The durable storage clean-shutdown marker is written after graph writers stop and storage flushes, before search-index persistence begins. If a platform terminates the remaining search save, the next startup validates or rebuilds search snapshots without unnecessarily rebuilding storage's temporal and MVCC indexes.
 - On startup, if both index files exist and are compatible with the current format version, they are loaded and the full storage iteration is skipped; otherwise indexes are rebuilt as usual.
 - Storage recovery (WAL) runs first; search indexes are built or loaded after storage is consistent.
 

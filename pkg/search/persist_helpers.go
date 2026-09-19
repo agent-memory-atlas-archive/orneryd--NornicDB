@@ -1,26 +1,66 @@
 package search
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/orneryd/nornicdb/pkg/security"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-// writeMsgpackSnapshot creates parent directories, writes snapshot to file, and encodes msgpack.
+const msgpackSnapshotBufferBytes = 1 << 20
+
+var msgpackSnapshotWriterPool = sync.Pool{
+	New: func() any {
+		return bufio.NewWriterSize(io.Discard, msgpackSnapshotBufferBytes)
+	},
+}
+
+// encodeMsgpackBuffered coalesces the encoder's many small writes into large
+// sequential writes. This is shared by every large search snapshot format.
+func encodeMsgpackBuffered(writer io.Writer, snapshot any) error {
+	buffered := msgpackSnapshotWriterPool.Get().(*bufio.Writer)
+	buffered.Reset(writer)
+	defer func() {
+		buffered.Reset(io.Discard)
+		msgpackSnapshotWriterPool.Put(buffered)
+	}()
+	if err := msgpack.NewEncoder(buffered).Encode(snapshot); err != nil {
+		return err
+	}
+	return buffered.Flush()
+}
+
+// writeMsgpackSnapshot atomically replaces a snapshot after buffered encoding
+// and fsync. An interrupted or failed save leaves the prior snapshot intact.
 func writeMsgpackSnapshot(path string, snapshot any) error {
 	if err := security.EnsureRootedParent(path, 0o755); err != nil {
 		return err
 	}
-	file, err := security.CreateRootedFile(path, 0o644)
+	tmpPath := path + ".tmp"
+	file, err := security.CreateRootedFile(tmpPath, 0o644)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	return msgpack.NewEncoder(file).Encode(snapshot)
+	defer func() {
+		_ = file.Close()
+		_ = security.RemoveRootedPath(tmpPath)
+	}()
+	if err := encodeMsgpackBuffered(file, snapshot); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return security.RenameRootedFile(tmpPath, path)
 }
 
 // writeMsgpackSnapshots writes multiple msgpack snapshots under one directory.
