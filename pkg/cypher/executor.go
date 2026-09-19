@@ -2178,27 +2178,6 @@ func (e *StorageExecutor) executeWithImplicitTransaction(ctx context.Context, cy
 		return result, nil
 	}
 
-	// IMPORTANT: If using AsyncEngine with pending writes, flush its cache BEFORE
-	// starting the transaction. This ensures the BadgerTransaction can see all
-	// previously written data. Without this, MATCH queries in compound statements
-	// (MATCH...CREATE) would fail to find nodes in AsyncEngine's cache.
-	// We use HasPendingWrites() first as a cheap check to avoid unnecessary flushes.
-	if asyncEngine != nil && asyncEngine.HasPendingWrites() {
-		asyncEngine.Flush()
-	}
-	releaseAsyncFlushHold := func() {}
-	if asyncEngine != nil {
-		release := asyncEngine.HoldFlush()
-		held := true
-		releaseAsyncFlushHold = func() {
-			if held {
-				release()
-				held = false
-			}
-		}
-		defer releaseAsyncFlushHold()
-	}
-
 	// Start implicit transaction
 	if engines.namespace != "" {
 		if primer, ok := txEngine.(interface{ EnsureNamespaceMVCC(string) error }); ok {
@@ -2207,7 +2186,7 @@ func (e *StorageExecutor) executeWithImplicitTransaction(ctx context.Context, cy
 			}
 		}
 	}
-	tx, err := txEngine.BeginTransaction()
+	tx, err := beginTransactionSnapshot(asyncEngine, txEngine)
 	if err != nil {
 		return nil, localizedError(localization.CypherCoreImplicitTransactionStartFailed(err), err)
 	}
@@ -2347,7 +2326,6 @@ func (e *StorageExecutor) executeWithImplicitTransaction(ctx context.Context, cy
 
 	// Flush if needed for durability
 	if !e.deferFlush && asyncEngine != nil {
-		releaseAsyncFlushHold()
 		asyncEngine.Flush()
 	}
 

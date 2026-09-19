@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -171,4 +172,52 @@ func TestAsyncEngine_FlushBlocksWhileHoldFlushActive(t *testing.T) {
 	node, err := base.GetNode("nornic:guarded-node")
 	require.NoError(t, err)
 	require.NotNil(t, node)
+}
+
+func TestAsyncEngineFlushBeforeSnapshotReleasesGuardAfterSnapshotOpens(t *testing.T) {
+	base := NewMemoryEngine()
+	t.Cleanup(func() { _ = base.Close() })
+	ae := NewAsyncEngine(base, &AsyncEngineConfig{
+		FlushInterval: time.Hour,
+	})
+	t.Cleanup(func() { _ = ae.Close() })
+
+	_, err := ae.CreateNode(&Node{ID: "nornic:before-snapshot", Labels: []string{"N"}})
+	require.NoError(t, err)
+
+	opened := false
+	err = ae.FlushBeforeSnapshot(func() error {
+		opened = true
+		node, getErr := base.GetNode("nornic:before-snapshot")
+		require.NoError(t, getErr)
+		require.NotNil(t, node)
+		return nil
+	})
+	require.NoError(t, err)
+	require.True(t, opened)
+
+	_, err = ae.CreateNode(&Node{ID: "nornic:after-snapshot", Labels: []string{"N"}})
+	require.NoError(t, err)
+	flushDone := make(chan error, 1)
+	go func() { flushDone <- ae.Flush() }()
+	select {
+	case err = <-flushDone:
+		require.NoError(t, err)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("flush guard remained held after snapshot creation")
+	}
+}
+
+func TestAsyncEngineFlushBeforeSnapshotReleasesGuardAfterOpenFailure(t *testing.T) {
+	base := NewMemoryEngine()
+	t.Cleanup(func() { _ = base.Close() })
+	ae := NewAsyncEngine(base, &AsyncEngineConfig{FlushInterval: time.Hour})
+	t.Cleanup(func() { _ = ae.Close() })
+
+	openErr := errors.New("snapshot unavailable")
+	require.ErrorIs(t, ae.FlushBeforeSnapshot(func() error { return openErr }), openErr)
+
+	_, err := ae.CreateNode(&Node{ID: "nornic:retry", Labels: []string{"N"}})
+	require.NoError(t, err)
+	require.NoError(t, ae.Flush())
 }

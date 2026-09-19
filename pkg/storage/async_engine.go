@@ -112,11 +112,9 @@ type AsyncEngine struct {
 }
 
 // HoldFlush acquires a shared flush guard and returns a release function.
-//
-// While held, background or manual Flush calls block on flushMu.Lock(), which is
-// useful when a higher-level transaction needs a stable committed view for its
-// full lifetime. Regular async writes still queue into memory and will flush once
-// the returned release function is called.
+// It is intended for short storage maintenance operations and deterministic
+// concurrency tests. Transaction snapshots must use FlushBeforeSnapshot so
+// an open transaction never blocks later flushes for its lifetime.
 func (ae *AsyncEngine) HoldFlush() func() {
 	if ae == nil {
 		return func() {}
@@ -406,14 +404,38 @@ func (r FlushResult) isStorageClosedOnly() bool {
 // flushMu.Lock() entirely. In seed-heavy workloads the implicit-txn
 // path flushes the cache inline before starting each transaction, so by
 // the time the background ticker fires the cache is almost always
-// empty. Skipping the lock here keeps transaction-path HoldFlush
-// RLockers from queueing behind a no-op write lock acquisition.
+// empty. Skipping the lock here keeps short storage maintenance readers from
+// queueing behind a no-op write lock acquisition.
 func (ae *AsyncEngine) Flush() error {
 	if ae.pendingWriteCount() == 0 {
 		return nil
 	}
 	ae.flushMu.Lock()
 	defer ae.flushMu.Unlock()
+	return ae.flushLocked()
+}
+
+// FlushBeforeSnapshot persists writes acknowledged before this admission
+// boundary and opens a storage snapshot before another flush can interleave.
+// The exclusive flush lock is released as soon as openSnapshot returns; it is
+// never retained for the lifetime of the resulting transaction.
+func (ae *AsyncEngine) FlushBeforeSnapshot(openSnapshot func() error) error {
+	if openSnapshot == nil {
+		return ErrInvalidData
+	}
+	if ae == nil {
+		return openSnapshot()
+	}
+	ae.flushMu.Lock()
+	defer ae.flushMu.Unlock()
+	if err := ae.flushLocked(); err != nil {
+		return err
+	}
+	return openSnapshot()
+}
+
+// flushLocked flushes pending writes while the caller holds flushMu.Lock.
+func (ae *AsyncEngine) flushLocked() error {
 	// Re-check inside the lock: another goroutine may have flushed
 	// between our initial check and taking the write lock.
 	if ae.pendingWriteCount() == 0 {

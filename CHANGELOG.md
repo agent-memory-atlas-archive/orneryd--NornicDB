@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Open explicit transactions no longer retain the async flush lock. Transaction
+  admission now flushes acknowledged writes and opens the MVCC snapshot under
+  one short boundary, preventing concurrent `BEGIN` and count-query stalls.
 - Reserve pending embedding nodes in memory across provider calls so concurrent
   workers cannot submit the same structured document twice. Batch multimodal
   documents for providers that support structured batch requests.
