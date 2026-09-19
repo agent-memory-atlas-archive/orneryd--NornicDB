@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve batched embedding-free node reads through Namespaced, Async, and WAL
+  storage wrappers so search filters do not decode or copy stored vectors.
 - Open explicit transactions no longer retain the async flush lock. Transaction
   admission now flushes acknowledged writes and opens the MVCC snapshot under
   one short boundary, preventing concurrent `BEGIN` and count-query stalls.

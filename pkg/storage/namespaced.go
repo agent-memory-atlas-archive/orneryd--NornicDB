@@ -306,8 +306,7 @@ func (n *NamespacedEngine) BatchGetNodesWithoutEmbeddings(ids []NodeID) (map[Nod
 }
 
 func (n *NamespacedEngine) BatchGetNodesWithoutEmbeddingsSupported() bool {
-	_, ok := n.inner.(BatchNodeWithoutEmbeddingsReader)
-	return ok
+	return batchNodeWithoutEmbeddingsSupported(n.inner)
 }
 
 // StreamNodesByLabelProjected iterates projected label matches in this namespace.

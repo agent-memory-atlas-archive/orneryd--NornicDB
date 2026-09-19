@@ -766,6 +766,16 @@ func (w *WALEngine) GetNode(id NodeID) (*Node, error) {
 	return w.engine.GetNode(id)
 }
 
+// GetNodeWithoutEmbeddings delegates an embedding-free node read when the
+// wrapped engine supports it. The full read fallback preserves compatibility
+// for engines that do not expose the optional projection contract.
+func (w *WALEngine) GetNodeWithoutEmbeddings(id NodeID) (*Node, error) {
+	if reader, ok := w.engine.(NodeWithoutEmbeddingsReader); ok {
+		return reader.GetNodeWithoutEmbeddings(id)
+	}
+	return w.engine.GetNode(id)
+}
+
 // GetEdge delegates to underlying engine.
 func (w *WALEngine) GetEdge(id EdgeID) (*Edge, error) {
 	return w.engine.GetEdge(id)
@@ -803,6 +813,22 @@ func (w *WALEngine) GetFirstNodeByLabel(label string) (*Node, error) {
 // BatchGetNodes delegates to underlying engine.
 func (w *WALEngine) BatchGetNodes(ids []NodeID) (map[NodeID]*Node, error) {
 	return w.engine.BatchGetNodes(ids)
+}
+
+// BatchGetNodesWithoutEmbeddings forwards a batched embedding-free read
+// without materializing vectors in the WAL wrapper.
+func (w *WALEngine) BatchGetNodesWithoutEmbeddings(ids []NodeID) (map[NodeID]*Node, error) {
+	reader, ok := w.engine.(BatchNodeWithoutEmbeddingsReader)
+	if !ok {
+		return nil, ErrNotImplemented
+	}
+	return reader.BatchGetNodesWithoutEmbeddings(ids)
+}
+
+// BatchGetNodesWithoutEmbeddingsSupported reports the wrapped engine's real
+// capability rather than the presence of this forwarding method.
+func (w *WALEngine) BatchGetNodesWithoutEmbeddingsSupported() bool {
+	return batchNodeWithoutEmbeddingsSupported(w.engine)
 }
 
 // GetOutgoingEdges delegates to underlying engine.
