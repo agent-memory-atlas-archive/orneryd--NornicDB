@@ -31,6 +31,12 @@ var _ storage.MVCCIndexedVisibilityEngine = (*sizeTrackingEngine)(nil)
 var _ storage.MVCCHeadEngine = (*sizeTrackingEngine)(nil)
 var _ storage.MVCCLifecycleEngine = (*sizeTrackingEngine)(nil)
 
+func (t *sizeTrackingEngine) ensureStorageSizeInitialized() error {
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+	return t.manager.ensureStorageSizeInitialized(t.dbName, t.Engine)
+}
+
 func newSizeTrackingEngine(engine storage.Engine, manager *DatabaseManager, dbName string, checkers ...*databaseLimitChecker) storage.Engine {
 	wrapped := &sizeTrackingEngine{
 		Engine:  engine,
@@ -287,8 +293,12 @@ func (t *sizeTrackingEngine) CreateNode(node *storage.Node) (storage.NodeID, err
 	if err := t.checkWrite("create_node", node, nil); err != nil {
 		return "", err
 	}
-	if err := t.manager.ensureStorageSizeInitialized(t.dbName, t.Engine); err != nil {
+	initialized, err := t.manager.storageSizeInitialized(t.dbName)
+	if err != nil {
 		return "", err
+	}
+	if !initialized {
+		return t.Engine.CreateNode(node)
 	}
 	id, err := t.Engine.CreateNode(node)
 	if err != nil {
@@ -314,8 +324,12 @@ func (t *sizeTrackingEngine) UpdateNode(node *storage.Node) error {
 	if err := t.checkWrite("update_node", node, nil); err != nil {
 		return err
 	}
-	if err := t.manager.ensureStorageSizeInitialized(t.dbName, t.Engine); err != nil {
+	initialized, err := t.manager.storageSizeInitialized(t.dbName)
+	if err != nil {
 		return err
+	}
+	if !initialized {
+		return t.Engine.UpdateNode(node)
 	}
 	existing, getErr := t.Engine.GetNode(node.ID)
 	if getErr != nil {
@@ -350,8 +364,12 @@ func (t *sizeTrackingEngine) DeleteNode(id storage.NodeID) error {
 	if err := t.checkWrite("delete_node", nil, nil); err != nil {
 		return err
 	}
-	if err := t.manager.ensureStorageSizeInitialized(t.dbName, t.Engine); err != nil {
+	initialized, err := t.manager.storageSizeInitialized(t.dbName)
+	if err != nil {
 		return err
+	}
+	if !initialized {
+		return t.Engine.DeleteNode(id)
 	}
 	existing, getErr := t.Engine.GetNode(id)
 	if getErr != nil {
@@ -380,8 +398,12 @@ func (t *sizeTrackingEngine) CreateEdge(edge *storage.Edge) error {
 	if err := t.checkWrite("create_edge", nil, edge); err != nil {
 		return err
 	}
-	if err := t.manager.ensureStorageSizeInitialized(t.dbName, t.Engine); err != nil {
+	initialized, err := t.manager.storageSizeInitialized(t.dbName)
+	if err != nil {
 		return err
+	}
+	if !initialized {
+		return t.Engine.CreateEdge(edge)
 	}
 	if err := t.Engine.CreateEdge(edge); err != nil {
 		return err
@@ -406,8 +428,12 @@ func (t *sizeTrackingEngine) UpdateEdge(edge *storage.Edge) error {
 	if err := t.checkWrite("update_edge", nil, edge); err != nil {
 		return err
 	}
-	if err := t.manager.ensureStorageSizeInitialized(t.dbName, t.Engine); err != nil {
+	initialized, err := t.manager.storageSizeInitialized(t.dbName)
+	if err != nil {
 		return err
+	}
+	if !initialized {
+		return t.Engine.UpdateEdge(edge)
 	}
 	existing, getErr := t.Engine.GetEdge(edge.ID)
 	if getErr != nil {
@@ -442,8 +468,12 @@ func (t *sizeTrackingEngine) DeleteEdge(id storage.EdgeID) error {
 	if err := t.checkWrite("delete_edge", nil, nil); err != nil {
 		return err
 	}
-	if err := t.manager.ensureStorageSizeInitialized(t.dbName, t.Engine); err != nil {
+	initialized, err := t.manager.storageSizeInitialized(t.dbName)
+	if err != nil {
 		return err
+	}
+	if !initialized {
+		return t.Engine.DeleteEdge(id)
 	}
 	existing, getErr := t.Engine.GetEdge(id)
 	if getErr != nil {

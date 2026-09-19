@@ -87,3 +87,28 @@ func BenchmarkStartupStorageSizeReconciliation(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkStartupDatabaseManagerWithoutSizeScan measures the normal restart
+// path. Storage size reconciliation remains available as the benchmark above,
+// but is deferred until a byte limit or explicit size query needs it.
+func BenchmarkStartupDatabaseManagerWithoutSizeScan(b *testing.B) {
+	engine := newStartupBenchmarkEngine(b, true)
+	if _, err := NewDatabaseManager(engine, nil); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for iteration := 0; iteration < b.N; iteration++ {
+		manager, err := NewDatabaseManager(engine, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		manager.mu.RLock()
+		info := manager.databases[manager.DefaultDatabaseName()]
+		manager.mu.RUnlock()
+		if info == nil || info.sizeInitialized {
+			b.Fatal("restart eagerly initialized storage size")
+		}
+	}
+}

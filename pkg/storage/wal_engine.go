@@ -79,6 +79,22 @@ func (w *WALEngine) RebuildTemporalIndexes(ctx context.Context) error {
 	return nil
 }
 
+// ConsumeCleanShutdownMarker delegates startup recovery state to storage.
+func (w *WALEngine) ConsumeCleanShutdownMarker(ctx context.Context) (bool, error) {
+	if provider, ok := w.engine.(StartupMaintenanceStateEngine); ok {
+		return provider.ConsumeCleanShutdownMarker(ctx)
+	}
+	return false, ErrNotImplemented
+}
+
+// MarkCleanShutdown delegates the durable shutdown boundary to storage.
+func (w *WALEngine) MarkCleanShutdown(ctx context.Context) error {
+	if provider, ok := w.engine.(StartupMaintenanceStateEngine); ok {
+		return provider.MarkCleanShutdown(ctx)
+	}
+	return ErrNotImplemented
+}
+
 // PruneTemporalHistory delegates temporal pruning to the wrapped engine when supported.
 func (w *WALEngine) PruneTemporalHistory(ctx context.Context, opts TemporalPruneOptions) (int64, error) {
 	if maint, ok := w.engine.(TemporalMaintenanceEngine); ok {

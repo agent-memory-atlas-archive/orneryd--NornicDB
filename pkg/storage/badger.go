@@ -87,6 +87,11 @@ const (
 	// prefixMVCCMetaLabelCount stores one namespace-scoped label count as:
 	//   [prefixMVCCMeta, prefixMVCCMetaLabelCount, namespace bytes..., 0x00, lower(label)] -> uint64 count
 	prefixMVCCMetaLabelCount = byte(0x07)
+	// prefixMVCCMetaCleanShutdown is present only after the owning DB has
+	// stopped writers, flushed async state, and completed a graceful shutdown.
+	// Startup consumes it before accepting work, so a crash always leaves the
+	// next process on the conservative derived-index rebuild path.
+	prefixMVCCMetaCleanShutdown = byte(0x08)
 )
 
 // maxNodeSize is the maximum size for a node to be stored inline (50KB to leave room for BadgerDB overhead)

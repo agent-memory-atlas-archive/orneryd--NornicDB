@@ -29,6 +29,22 @@ func (ae *AsyncEngine) RebuildTemporalIndexes(ctx context.Context) error {
 	return nil
 }
 
+// ConsumeCleanShutdownMarker delegates startup recovery state to storage.
+func (ae *AsyncEngine) ConsumeCleanShutdownMarker(ctx context.Context) (bool, error) {
+	if provider, ok := ae.engine.(StartupMaintenanceStateEngine); ok {
+		return provider.ConsumeCleanShutdownMarker(ctx)
+	}
+	return false, ErrNotImplemented
+}
+
+// MarkCleanShutdown delegates the durable shutdown boundary to storage.
+func (ae *AsyncEngine) MarkCleanShutdown(ctx context.Context) error {
+	if provider, ok := ae.engine.(StartupMaintenanceStateEngine); ok {
+		return provider.MarkCleanShutdown(ctx)
+	}
+	return ErrNotImplemented
+}
+
 // PruneTemporalHistory delegates temporal pruning to the wrapped engine when supported.
 func (ae *AsyncEngine) PruneTemporalHistory(ctx context.Context, opts TemporalPruneOptions) (int64, error) {
 	if maint, ok := ae.engine.(TemporalMaintenanceEngine); ok {

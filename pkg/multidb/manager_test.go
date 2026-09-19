@@ -634,7 +634,7 @@ func TestDatabaseManager_GetStorage(t *testing.T) {
 	})
 }
 
-func TestNewDatabaseManagerReconcilesStorageSizesAtStartup(t *testing.T) {
+func TestDatabaseManagerLazilyReconcilesStorageSizes(t *testing.T) {
 	base := storage.NewMemoryEngine()
 	seed, err := NewDatabaseManager(base, nil)
 	require.NoError(t, err)
@@ -656,10 +656,19 @@ func TestNewDatabaseManagerReconcilesStorageSizesAtStartup(t *testing.T) {
 	restarted.mu.RUnlock()
 	require.NotNil(t, info)
 	info.sizeMu.RLock()
-	defer info.sizeMu.RUnlock()
+	require.False(t, info.sizeInitialized)
+	info.sizeMu.RUnlock()
+
+	totalSize, nodeSize, edgeSize := restarted.GetStorageSize(restarted.DefaultDatabaseName())
+	require.Equal(t, wantNodeSize, totalSize)
+	require.Equal(t, wantNodeSize, nodeSize)
+	require.Zero(t, edgeSize)
+
+	info.sizeMu.RLock()
 	require.True(t, info.sizeInitialized)
 	require.Equal(t, wantNodeSize, info.nodeSize)
 	require.Equal(t, wantNodeSize, info.totalSize)
+	info.sizeMu.RUnlock()
 }
 
 func TestDatabaseManager_GetStorage_NotFound(t *testing.T) {

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Use the transaction's pinned label and relationship-type indexes for
+  snapshot reads, preserving read-your-writes and Neo4j snapshot semantics
+  while avoiding database-wide node/edge decoding in explicit transactions
+  and writing statements.
+- Record a one-use clean-shutdown boundary after flushing acknowledged writes,
+  allowing clean restarts to skip temporal-index and MVCC-head reconstruction.
+  Multi-database byte accounting is now initialized only when a byte limit or
+  explicit size query needs it, eliminating its unconditional startup scan and
+  avoiding a deferred scan on ordinary writes.
 - Feed the already-computed BM25 result prefix into HNSW as multiple layer-zero
   entry points, and preserve compact high-IDF rank/topic signatures during graph
   construction for deterministic diversity tie-breaking. The integration is

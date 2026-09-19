@@ -207,9 +207,6 @@ func NewDatabaseManager(inner storage.Engine, config *Config) (*DatabaseManager,
 			}
 		}
 		log.Printf("ℹ️  multidb: storage is read-only; skipping metadata writes and migrations")
-		if err := m.reconcileStorageSizes(); err != nil {
-			return nil, fmt.Errorf("failed to reconcile database storage sizes: %w", err)
-		}
 		return m, nil
 	}
 
@@ -228,29 +225,8 @@ func NewDatabaseManager(inner storage.Engine, config *Config) (*DatabaseManager,
 	// namespace as "defaultDb:system:<...>". Remove those leaked nodes so normal
 	// queries against the default database don't show system internals.
 	m.cleanupLeakedSystemNodes()
-	if err := m.reconcileStorageSizes(); err != nil {
-		return nil, fmt.Errorf("failed to reconcile database storage sizes: %w", err)
-	}
 
 	return m, nil
-}
-
-func (m *DatabaseManager) reconcileStorageSizes() error {
-	m.mu.RLock()
-	names := make([]string, 0, len(m.databases))
-	for name, info := range m.databases {
-		if info.Type == "standard" || info.Type == "system" {
-			names = append(names, name)
-		}
-	}
-	m.mu.RUnlock()
-	for _, name := range names {
-		engine := storage.NewNamespacedEngine(m.inner, name)
-		if err := m.ensureStorageSizeInitialized(name, engine); err != nil {
-			return fmt.Errorf("database %q: %w", name, err)
-		}
-	}
-	return nil
 }
 
 func (m *DatabaseManager) cleanupLeakedSystemNodes() {
@@ -1067,7 +1043,11 @@ func (m *DatabaseManager) GetStorageSize(databaseName string) (int64, int64, int
 		return 0, 0, 0
 	}
 
-	_ = m.ensureStorageSizeInitialized(databaseName, engine)
+	if tracker, ok := engine.(*sizeTrackingEngine); ok {
+		_ = tracker.ensureStorageSizeInitialized()
+	} else {
+		_ = m.ensureStorageSizeInitialized(databaseName, engine)
+	}
 
 	info.sizeMu.RLock()
 	defer info.sizeMu.RUnlock()

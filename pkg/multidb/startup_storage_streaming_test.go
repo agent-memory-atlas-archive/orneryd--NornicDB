@@ -187,3 +187,51 @@ func TestStorageSizeReconciliationStreamsEntities(t *testing.T) {
 	require.Equal(t, 1, engine.nodeStreamCalls)
 	require.Equal(t, 1, engine.edgeStreamCalls)
 }
+
+func TestDatabaseManagerRestartDefersStorageSizeScan(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = base.Close() })
+
+	first, err := NewDatabaseManager(base, nil)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	_, err = base.CreateNode(&storage.Node{
+		ID:         "nornic:large-node",
+		Labels:     []string{"Document"},
+		Properties: map[string]any{"payload": strings.Repeat("x", 4096)},
+	})
+	require.NoError(t, err)
+
+	engine := &startupStreamingEngine{MemoryEngine: base}
+	restarted, err := NewDatabaseManager(engine, nil)
+	require.NoError(t, err)
+	require.NotNil(t, restarted)
+	require.Zero(t, engine.nodeStreamCalls)
+	require.Zero(t, engine.edgeStreamCalls)
+}
+
+func TestWriteDoesNotForceDeferredStorageSizeScanWithoutByteLimit(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = base.Close() })
+	_, err := NewDatabaseManager(base, nil)
+	require.NoError(t, err)
+	_, err = base.CreateNode(&storage.Node{ID: "nornic:existing", Labels: []string{"Document"}})
+	require.NoError(t, err)
+
+	engine := &startupStreamingEngine{MemoryEngine: base}
+	restarted, err := NewDatabaseManager(engine, nil)
+	require.NoError(t, err)
+	engine.prefixes = nil // Ignore the narrowly scoped leaked-metadata cleanup.
+	database, err := restarted.GetDefaultStorage()
+	require.NoError(t, err)
+	_, err = database.CreateNode(&storage.Node{ID: "new", Labels: []string{"Document"}})
+	require.NoError(t, err)
+	require.Zero(t, engine.nodeStreamCalls)
+	require.Zero(t, engine.edgeStreamCalls)
+	require.Empty(t, engine.prefixes)
+
+	total, _, _ := restarted.GetStorageSize(restarted.DefaultDatabaseName())
+	require.Positive(t, total)
+	require.NotEmpty(t, engine.prefixes)
+	require.Equal(t, 1, engine.edgeStreamCalls)
+}

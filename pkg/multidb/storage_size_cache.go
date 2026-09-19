@@ -7,6 +7,23 @@ import (
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
+// storageSizeInitialized reports whether incremental byte accounting is
+// active. Ordinary writes must not force the deferred full-corpus scan; a
+// MaxBytes check or an explicit GetStorageSize call initializes it when exact
+// accounting is actually needed.
+func (m *DatabaseManager) storageSizeInitialized(databaseName string) (bool, error) {
+	m.mu.RLock()
+	info, exists := m.databases[databaseName]
+	m.mu.RUnlock()
+	if !exists || info == nil {
+		return false, ErrDatabaseNotFound
+	}
+	info.sizeMu.RLock()
+	initialized := info.sizeInitialized
+	info.sizeMu.RUnlock()
+	return initialized, nil
+}
+
 // ensureStorageSizeInitialized performs one-time exact size calculation from storage
 // and caches the result for O(1) future reads.
 func (m *DatabaseManager) ensureStorageSizeInitialized(databaseName string, engine storage.Engine) error {

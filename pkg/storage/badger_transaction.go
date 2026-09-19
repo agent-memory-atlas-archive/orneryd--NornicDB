@@ -1495,7 +1495,13 @@ func (tx *BadgerTransaction) GetEdgesByType(edgeType string) ([]*Edge, error) {
 		return nil, err
 	}
 
-	committed, err := tx.engine.GetEdgesByType(edgeType)
+	var committed []*Edge
+	var err error
+	if tx.readTS.IsZero() {
+		committed, err = tx.engine.GetEdgesByType(edgeType)
+	} else {
+		committed, err = tx.engine.getEdgesByTypeVisibleAtSnapshotWithView(edgeType, tx.readTS, tx.withSnapshotViewLocked)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2147,7 +2153,7 @@ func (tx *BadgerTransaction) getNodesByLabelLocked(label string) ([]*Node, error
 	if tx.readTS.IsZero() {
 		return tx.engine.GetNodesByLabel(label)
 	}
-	return tx.engine.getNodesByLabelVisibleAtWithView(label, tx.readTS, tx.withSnapshotViewLocked)
+	return tx.engine.getNodesByLabelVisibleAtSnapshotWithView(label, tx.readTS, tx.withSnapshotViewLocked)
 }
 
 // nodeExists checks if a node exists (pending or storage).

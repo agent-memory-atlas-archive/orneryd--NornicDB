@@ -1,0 +1,193 @@
+package nornicdb
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"path/filepath"
+	"strings"
+
+	"github.com/orneryd/nornicdb/pkg/localization"
+	"github.com/orneryd/nornicdb/pkg/storage"
+)
+
+// Close closes the database.
+func (db *DB) Close() error {
+	db.mu.Lock()
+	if db.closed {
+		db.mu.Unlock()
+		return nil
+	}
+	db.closed = true
+	db.mu.Unlock()
+
+	return db.closeInternal()
+}
+
+// HealthCheck reports whether the underlying storage engine is responsive.
+func (db *DB) HealthCheck(ctx context.Context) error {
+	if db == nil {
+		return localizedError(localization.NornicDBCoreNilDatabase(), nil)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if db.storage == nil {
+		return localizedError(localization.NornicDBCoreStorageEngineNotInitialized(), nil)
+	}
+	if _, err := db.storage.NodeCount(); err != nil {
+		return localizedError(localization.NornicDBCoreStorageProbeFailed(err), err)
+	}
+	return nil
+}
+
+func (db *DB) retentionPoliciesPath() string {
+	if db == nil || db.config == nil {
+		return "retention-policies.json"
+	}
+	if path := strings.TrimSpace(db.config.Retention.PoliciesFile); path != "" {
+		return path
+	}
+	dataDir := strings.TrimSpace(db.config.Database.DataDir)
+	if dataDir == "" {
+		return "retention-policies.json"
+	}
+	return filepath.Join(dataDir, "retention-policies.json")
+}
+
+// closeInternal performs cleanup without requiring the lock.
+// Used during initialization failures and normal close.
+func (db *DB) closeInternal() error {
+	db.mu.Lock()
+	db.closed = true
+	db.mu.Unlock()
+
+	db.stopClusteringTimer()
+	if db.buildCancel != nil {
+		db.buildCancel()
+	}
+	if db.embedQueue != nil {
+		db.embedQueue.Close()
+	}
+	db.bgWg.Wait()
+
+	var errs []error
+	if db.retentionManager != nil && db.config != nil {
+		if err := db.retentionManager.SavePolicies(db.retentionPoliciesPath()); err != nil {
+			log.Printf("⚠️  Failed to save retention policies: %v", err)
+		}
+	}
+	if db.config != nil && db.config.Database.PersistSearchIndexes && db.config.Database.DataDir != "" {
+		db.searchServicesMu.RLock()
+		for _, entry := range db.searchServices {
+			if entry != nil && entry.svc != nil {
+				entry.svc.PersistIndexesToDisk()
+			}
+		}
+		db.searchServicesMu.RUnlock()
+	}
+
+	db.searchServicesMu.RLock()
+	for _, entry := range db.searchServices {
+		if entry != nil && entry.svc != nil {
+			if err := entry.svc.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	db.searchServicesMu.RUnlock()
+	db.searchContinuationMu.Lock()
+	if db.searchContinuation != nil {
+		db.searchContinuation.Close()
+		db.searchContinuation = nil
+	}
+	db.searchContinuationMu.Unlock()
+
+	if db.accessFlusher != nil {
+		db.accessFlusher.Stop()
+	}
+	if db.replicator != nil {
+		if err := db.replicator.Shutdown(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if db.replicationTrans != nil {
+		if err := db.replicationTrans.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if db.replicationAdapter != nil {
+		if err := db.replicationAdapter.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if db.baseStorage != nil {
+		if err := markStorageCleanShutdown(db.baseStorage, db.derivedIndexesHealthy); err != nil {
+			errs = append(errs, err)
+		}
+		if err := db.baseStorage.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return localizedError(localization.NornicDBCoreCloseFailed(fmt.Sprint(errs)), errors.Join(errs...))
+	}
+	return nil
+}
+
+// prepareDerivedIndexes consumes the one-use clean-shutdown marker before
+// traffic can start. Missing or invalid state conservatively rebuilds.
+func prepareDerivedIndexes(ctx context.Context, engine storage.Engine) bool {
+	if state, ok := engine.(storage.StartupMaintenanceStateEngine); ok {
+		clean, err := state.ConsumeCleanShutdownMarker(ctx)
+		if err != nil && !errors.Is(err, storage.ErrNotImplemented) {
+			log.Printf("⚠️  Clean-shutdown state check failed; rebuilding derived indexes: %v", err)
+		} else if clean {
+			log.Printf("✅ Clean shutdown detected; derived storage indexes are current")
+			return true
+		}
+	}
+
+	healthy := true
+	if maint, ok := engine.(storage.TemporalMaintenanceEngine); ok {
+		log.Printf("🕰️ Rebuilding temporal indexes before serving traffic...")
+		if err := maint.RebuildTemporalIndexes(ctx); err != nil && !errors.Is(err, storage.ErrNotImplemented) {
+			log.Printf("⚠️  Temporal index rebuild failed: %v", err)
+			healthy = false
+		}
+	}
+	if maint, ok := engine.(storage.MVCCMaintenanceEngine); ok {
+		log.Printf("🧾 Rebuilding MVCC heads before serving traffic...")
+		if err := maint.RebuildMVCCHeads(ctx); err != nil && !errors.Is(err, storage.ErrNotImplemented) {
+			log.Printf("⚠️  MVCC head rebuild failed: %v", err)
+			healthy = false
+		}
+	}
+	return healthy
+}
+
+// markStorageCleanShutdown flushes acknowledged asynchronous writes before
+// recording the durable marker.
+func markStorageCleanShutdown(engine storage.Engine, derivedIndexesHealthy bool) error {
+	if !derivedIndexesHealthy {
+		return nil
+	}
+	state, ok := engine.(storage.StartupMaintenanceStateEngine)
+	if !ok {
+		return nil
+	}
+	if flusher, ok := engine.(interface{ Flush() error }); ok {
+		if err := flusher.Flush(); err != nil {
+			return fmt.Errorf("flush storage before clean shutdown: %w", err)
+		}
+	}
+	if err := state.MarkCleanShutdown(context.Background()); err != nil {
+		if errors.Is(err, storage.ErrNotImplemented) {
+			return nil
+		}
+		return fmt.Errorf("mark clean storage shutdown: %w", err)
+	}
+	return nil
+}

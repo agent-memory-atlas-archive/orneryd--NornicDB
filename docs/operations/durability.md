@@ -262,6 +262,18 @@ On startup, NornicDB scans the WAL and:
 3. 🔄 **Rolls back partial transactions** - No commit marker found
 4. 🔁 **Regenerates embeddings** - Corrupted embedding entries skipped (safe to regenerate)
 
+After an orderly shutdown, NornicDB also consumes a durable, one-use clean
+shutdown marker. Because acknowledged asynchronous writes are flushed before
+that marker is recorded, temporal indexes and MVCC heads can be reused without
+scanning every node and relationship. The marker is removed before traffic is
+accepted. A crash, failed flush, failed reconstruction, or second process start
+therefore falls back to conservative index reconstruction.
+
+Multi-database storage-byte accounting is independent of recovery. Its exact
+full-corpus calculation is deferred until a configured byte limit or an
+explicit storage-size query requires it; ordinary reads and writes do not pay
+that scan after restart.
+
 The sync mode only affects **how much data** might be lost on crash:
 
 | Mode | Maximum Data Loss | Recovery Time |

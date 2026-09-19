@@ -201,6 +201,10 @@ type DB struct {
 	// buildCtx is cancelled when the DB closes so startup index build stops promptly.
 	buildCtx    context.Context
 	buildCancel context.CancelFunc
+	// derivedIndexesHealthy is false when startup reconstruction failed. A
+	// failed startup must not leave a clean-shutdown marker that would suppress
+	// reconstruction on the next restart.
+	derivedIndexesHealthy bool
 
 	// Replication / HA (optional; enabled when NORNICDB_CLUSTER_MODE != standalone)
 	replicator         replication.Replicator
@@ -1245,7 +1249,7 @@ func Open(dataDir string, config *Config) (*DB, error) {
 	if db.accessFlusher != nil {
 		db.accessFlusher.Start(db.buildCtx)
 	}
-	// Temporal index + MVCC head rebuild MUST complete before Open() returns.
+	// Temporal index + MVCC head recovery MUST complete before Open() returns.
 	// Both ops touch the same key prefixes that user mutations write to, so
 	// running them concurrently with the first user CreateNode/UpdateNode
 	// produces races where the rebuild rewrites the head a user txn just
@@ -1254,18 +1258,7 @@ func Open(dataDir string, config *Config) (*DB, error) {
 	// Both rebuild ops are fast (single-pass scans) on a fresh DB; on a
 	// recovered DB they are bounded by node/edge count.
 	bootstrapCtx, bootstrapCancel := context.WithTimeout(db.buildCtx, 4*time.Hour)
-	if maint, ok := db.baseStorage.(storage.TemporalMaintenanceEngine); ok {
-		log.Printf("🕰️ Rebuilding temporal indexes before serving traffic...")
-		if err := maint.RebuildTemporalIndexes(bootstrapCtx); err != nil {
-			log.Printf("⚠️  Temporal index rebuild failed: %v", err)
-		}
-	}
-	if maint, ok := db.baseStorage.(storage.MVCCMaintenanceEngine); ok {
-		log.Printf("🧾 Rebuilding MVCC heads before serving traffic...")
-		if err := maint.RebuildMVCCHeads(bootstrapCtx); err != nil {
-			log.Printf("⚠️  MVCC head rebuild failed: %v", err)
-		}
-	}
+	db.derivedIndexesHealthy = prepareDerivedIndexes(bootstrapCtx, db.baseStorage)
 	bootstrapCancel()
 
 	_ = db.startBackgroundTask(func() {
@@ -1889,63 +1882,6 @@ func (db *DB) startBackgroundTask(fn func()) bool {
 	return true
 }
 
-// Close closes the database.
-func (db *DB) Close() error {
-	db.mu.Lock()
-	if db.closed {
-		db.mu.Unlock()
-		return nil
-	}
-	db.closed = true
-	db.mu.Unlock()
-
-	return db.closeInternal()
-}
-
-// HealthCheck reports whether the underlying storage engine is responsive.
-//
-// Phase 1 (M1) implementation: probes the namespaced storage engine via
-// NodeCount(), which is the cheapest synchronous Engine accessor that
-// returns storage.ErrStorageClosed when the engine has been Closed
-// (contract verified in pkg/storage/badger_test.go — "NodeCount returns
-// ErrStorageClosed").
-//
-// Why NodeCount and not a Begin/Discard round-trip:
-//   - NodeCount is a stat read; no Badger txn allocation.
-//   - The Engine interface guarantees it; both BadgerEngine and
-//     MemoryEngine implement it. AsyncEngine forwards to the underlying
-//     engine.
-//   - The closed-engine sentinel path is already covered by an existing
-//     test, so we inherit that contract for free.
-//
-// Future phases may extend with deeper liveness probes (replication peer
-// reachability, MVCC scheduler health, etc.) — the contract stays
-// "nil iff process can serve queries right now."
-//
-// Used by pkg/observability.Health via cmd/nornicdb/main.go:
-//
-//	obs.Health().Register("storage", db.HealthCheck)
-//
-// The signature matches observability.CheckFunc exactly so registration
-// is a direct method-value pass.
-func (db *DB) HealthCheck(ctx context.Context) error {
-	if db == nil {
-		return localizedError(localization.NornicDBCoreNilDatabase(), nil)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if db.storage == nil {
-		return localizedError(localization.NornicDBCoreStorageEngineNotInitialized(), nil)
-	}
-	// Real probe: NodeCount returns storage.ErrStorageClosed on a closed
-	// engine; treat any error as "not responsive right now."
-	if _, err := db.storage.NodeCount(); err != nil {
-		return localizedError(localization.NornicDBCoreStorageProbeFailed(err), err)
-	}
-	return nil
-}
-
 // GetRetentionManager returns the retention manager or nil when retention is disabled.
 func (db *DB) GetRetentionManager() *retention.Manager {
 	return db.retentionManager
@@ -1954,115 +1890,6 @@ func (db *DB) GetRetentionManager() *retention.Manager {
 // SetRetentionAuditCallback installs a callback invoked after retention archive/delete actions.
 func (db *DB) SetRetentionAuditCallback(fn func(action, recordID, category string)) {
 	db.onRetentionAction = fn
-}
-
-func (db *DB) retentionPoliciesPath() string {
-	if db == nil || db.config == nil {
-		return "retention-policies.json"
-	}
-	if path := strings.TrimSpace(db.config.Retention.PoliciesFile); path != "" {
-		return path
-	}
-	dataDir := strings.TrimSpace(db.config.Database.DataDir)
-	if dataDir == "" {
-		return "retention-policies.json"
-	}
-	return filepath.Join(dataDir, "retention-policies.json")
-}
-
-// closeInternal performs cleanup without requiring the lock.
-// Used during initialization failures and normal close.
-func (db *DB) closeInternal() error {
-	db.mu.Lock()
-	db.closed = true
-	db.mu.Unlock()
-
-	// Stop clustering timer first (before waiting for goroutines)
-	db.stopClusteringTimer()
-
-	// Cancel build context so startup index-build goroutine exits promptly (e.g. on SIGINT/SIGTERM).
-	if db.buildCancel != nil {
-		db.buildCancel()
-	}
-
-	// Close embed queue first so workers stop before we persist indexes.
-	// Otherwise embeddings keep running during the (slow) persist and after "Shutting down".
-	if db.embedQueue != nil {
-		db.embedQueue.Close()
-	}
-
-	// Wait for background goroutines to complete
-	db.bgWg.Wait()
-
-	var errs []error
-
-	if db.retentionManager != nil && db.config != nil {
-		if err := db.retentionManager.SavePolicies(db.retentionPoliciesPath()); err != nil {
-			log.Printf("⚠️  Failed to save retention policies: %v", err)
-		}
-	}
-
-	// Persist search indexes on shutdown only when persistence is enabled.
-	if db.config != nil && db.config.Database.PersistSearchIndexes && db.config.Database.DataDir != "" {
-		db.searchServicesMu.RLock()
-		for _, entry := range db.searchServices {
-			if entry != nil && entry.svc != nil {
-				entry.svc.PersistIndexesToDisk()
-			}
-		}
-		db.searchServicesMu.RUnlock()
-	}
-
-	db.searchServicesMu.RLock()
-	for _, entry := range db.searchServices {
-		if entry != nil && entry.svc != nil {
-			if err := entry.svc.Close(); err != nil {
-				errs = append(errs, err)
-			}
-		}
-	}
-	db.searchServicesMu.RUnlock()
-	db.searchContinuationMu.Lock()
-	if db.searchContinuation != nil {
-		db.searchContinuation.Close()
-		db.searchContinuation = nil
-	}
-	db.searchContinuationMu.Unlock()
-
-	if db.accessFlusher != nil {
-		db.accessFlusher.Stop()
-	}
-
-	// Stop replication before closing storage.
-	if db.replicator != nil {
-		if err := db.replicator.Shutdown(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if db.replicationTrans != nil {
-		if err := db.replicationTrans.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if db.replicationAdapter != nil {
-		if err := db.replicationAdapter.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-
-	// Close the underlying storage chain to release Badger directory locks and stop
-	// background goroutines (AsyncEngine flush loop, WAL auto-compaction, etc).
-	// NamespacedEngine.Close() intentionally does NOT close its inner engine.
-	if db.baseStorage != nil {
-		if err := db.baseStorage.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-
-	if len(errs) > 0 {
-		return localizedError(localization.NornicDBCoreCloseFailed(fmt.Sprint(errs)), errors.Join(errs...))
-	}
-	return nil
 }
 
 // EmbedQueueStats returns statistics about the async embedding queue.

@@ -752,6 +752,13 @@ type MVCCMaintenanceEngine interface {
 	PruneMVCCVersions(ctx context.Context, opts MVCCPruneOptions) (int64, error)
 }
 
+// StartupMaintenanceStateEngine persists and consumes the clean-shutdown
+// boundary used to decide whether derived temporal/MVCC indexes need recovery.
+type StartupMaintenanceStateEngine interface {
+	ConsumeCleanShutdownMarker(ctx context.Context) (bool, error)
+	MarkCleanShutdown(ctx context.Context) error
+}
+
 // MVCCLatestEffectiveEngine is an optional extension interface for wrapper-level
 // latest reads that merge pending, in-flight, and persisted state.
 type MVCCLatestEffectiveEngine interface {
