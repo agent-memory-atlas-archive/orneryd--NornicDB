@@ -100,6 +100,33 @@ func (t *TracedEmbedder) EmbedDocumentPropertyChunks(ctx context.Context, fallba
 	return t.EmbedDocumentChunks(ctx, fallbackText, maxTokens, overlap)
 }
 
+// EmbedDocumentPropertyBatchChunks traces and preserves structured provider
+// batches through the instrumentation wrapper.
+func (t *TracedEmbedder) EmbedDocumentPropertyBatchChunks(ctx context.Context, fallbackTexts []string, properties []map[string]any, maxTokens, overlap int) ([]*DocumentChunkResult, error) {
+	ctx, span := otel.Tracer("nornicdb/embed").Start(ctx, "nornicdb.embed.document_property_batch",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("embed.model", t.inner.Model()),
+			attribute.String("embed.backend", t.inner.Backend()),
+			attribute.Int("embed.batch_size", len(fallbackTexts)),
+		),
+	)
+	defer span.End()
+
+	var results []*DocumentChunkResult
+	var err error
+	if provider, ok := t.inner.(DocumentPropertyBatchChunkEmbedder); ok && provider.UsesDocumentProperties() {
+		results, err = provider.EmbedDocumentPropertyBatchChunks(ctx, fallbackTexts, properties, maxTokens, overlap)
+	} else {
+		results, err = embedDocumentPropertyBatchFallback(ctx, fallbackTexts, properties, maxTokens, overlap, t.EmbedDocumentPropertyChunks)
+	}
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		span.RecordError(err)
+	}
+	return results, err
+}
+
 // EmbedDocumentBatchChunks traces a cross-document provider batch while
 // retaining provider-managed contextual chunking when the inner embedder has it.
 func (t *TracedEmbedder) EmbedDocumentBatchChunks(ctx context.Context, texts []string, maxTokens, overlap int) ([]*DocumentChunkResult, error) {

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -13,6 +14,12 @@ type embeddingFreeReadSpy struct {
 	fullBatchReads  int
 	lightReads      int
 	lightBatchReads int
+	projectedScans  int
+}
+
+func (s *embeddingFreeReadSpy) StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, visit func(*Node) error) error {
+	s.projectedScans++
+	return s.Engine.(PrefixNodeWithoutEmbeddingsReader).StreamNodesByPrefixWithoutEmbeddings(ctx, prefix, visit)
 }
 
 func (s *embeddingFreeReadSpy) GetNode(id NodeID) (*Node, error) {
@@ -106,6 +113,43 @@ func TestEmbeddingFreeSingleReadsTraverseAsyncWALStack(t *testing.T) {
 	require.Empty(t, light.ChunkEmbeddings)
 	require.Equal(t, 1, spy.lightReads)
 	require.Zero(t, spy.fullReads)
+}
+
+func TestEmbeddingFreePrefixScansTraverseNamespacedAsyncWALStack(t *testing.T) {
+	badger := createTestBadgerEngine(t)
+	spy := &embeddingFreeReadSpy{Engine: badger}
+	walLog, err := NewWAL(t.TempDir(), &WALConfig{SyncMode: "none"})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, walLog.Close()) })
+	async := NewAsyncEngine(NewWALEngine(spy, walLog), &AsyncEngineConfig{FlushInterval: time.Hour})
+	t.Cleanup(func() { require.NoError(t, async.Close()) })
+	tenant := NewNamespacedEngine(async, "library")
+
+	for _, node := range []*Node{
+		{ID: "persisted", Properties: map[string]any{"keep": "yes", "drop": "large"}, EmbedMeta: map[string]any{"embedding_failed": true}, ChunkEmbeddings: [][]float32{make([]float32, 4096)}},
+		{ID: "pending", Properties: map[string]any{"keep": "also", "drop": "large"}, EmbedMeta: map[string]any{"embedding_failed": true}, ChunkEmbeddings: [][]float32{make([]float32, 4096)}},
+	} {
+		_, err = tenant.CreateNode(node)
+		require.NoError(t, err)
+		if node.ID == "persisted" {
+			require.NoError(t, async.Flush())
+		}
+	}
+
+	seen := make(map[NodeID]*Node)
+	err = tenant.StreamNodesByPrefixWithoutEmbeddings(context.Background(), "", func(node *Node) error {
+		seen[node.ID] = node
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, seen, 2)
+	for _, node := range seen {
+		require.Empty(t, node.ChunkEmbeddings)
+		require.Empty(t, node.NamedEmbeddings)
+		require.Empty(t, node.Properties)
+		require.Equal(t, true, node.EmbedMeta["embedding_failed"])
+	}
+	require.Equal(t, 1, spy.projectedScans)
 }
 
 func TestEmbeddingFreeBatchCapabilityRejectsUnsupportedInnerEngine(t *testing.T) {

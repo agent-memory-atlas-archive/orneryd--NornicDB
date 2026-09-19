@@ -173,6 +173,8 @@ func (s *Server) registerNornicDBRoutes(mux *http.ServeMux) {
 	// Embedding control (NornicDB-specific)
 	mux.HandleFunc("/nornicdb/embed/trigger", s.withAuth(s.handleEmbedTrigger, auth.PermWrite))
 	mux.HandleFunc("/nornicdb/embed/stats", s.withAuth(s.handleEmbedStats, auth.PermRead))
+	mux.HandleFunc("/nornicdb/embed/failures", s.withAuth(s.handleEmbedFailures, auth.PermRead))
+	mux.HandleFunc("/nornicdb/embed/retry-failures", s.withAuth(s.handleEmbedFailureRetry, auth.PermWrite))
 	mux.HandleFunc("/nornicdb/embed/clear", s.withAuth(s.handleEmbedClear, auth.PermAdmin))
 	mux.HandleFunc("/nornicdb/search/rebuild", s.withAuth(s.handleSearchRebuild, auth.PermWrite))
 }

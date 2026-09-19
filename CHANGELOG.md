@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve labeled-count fast paths inside explicit transactions, falling back
+  to transaction-visible counting only after a node mutation is staged.
+- Preserve structured multimodal batching through cache and tracing wrappers,
+  preventing one provider request per image in production wrapper stacks.
+- Keep transient embedding failures pending across retry exhaustion and
+  restarts, apply provider-wide exponential cooldowns (including Voyage
+  `Retry-After`), and avoid recursively bisecting provider-wide outages.
+  Terminal failures remain parked and can be listed or explicitly requeued.
 - Preserve batched embedding-free node reads through Namespaced, Async, and WAL
   storage wrappers so search filters do not decode or copy stored vectors.
 - Open explicit transactions no longer retain the async flush lock. Transaction
@@ -26,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Ranked continuations now reuse prior rerank scores instead of resubmitting
   the growing candidate prefix on every depth expansion.
 - Batch pending documents across embedding-provider requests, pace requests
-  instead of individual nodes, isolate rejected inputs, and park permanent or
-  retry-exhausted failures without blocking the queue. Voyage contextualized
+  instead of individual nodes, isolate rejected inputs, and park permanent
+  failures without blocking the queue. Voyage contextualized
   embeddings now split oversized documents into bounded, boundary-aligned
   segments that retain provider auto-chunking; default contextualized chunks
   to 512 tokens while preserving explicit sizes; and distinguish omitted

@@ -527,6 +527,26 @@ func (w *transactionStorageWrapper) NodeCount() (int64, error) {
 	return w.underlying.NodeCount()
 }
 
+// NodeCountByLabel keeps the count-only MATCH fast path available inside an
+// explicit transaction. A mutation-free snapshot can use the storage label
+// counter directly; once the transaction stages node changes, count its
+// transaction-visible label result so uncommitted creates and deletes retain
+// Neo4j-compatible visibility.
+func (w *transactionStorageWrapper) NodeCountByLabel(label string) (int64, error) {
+	if !w.tx.HasPendingNodeMutations() {
+		if counter, ok := w.underlying.(interface {
+			NodeCountByLabel(string) (int64, error)
+		}); ok {
+			return counter.NodeCountByLabel(label)
+		}
+	}
+	nodes, err := w.GetNodesByLabel(label)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(nodes)), nil
+}
+
 func (w *transactionStorageWrapper) EdgeCount() (int64, error) {
 	return w.underlying.EdgeCount()
 }

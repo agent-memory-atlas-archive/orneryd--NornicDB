@@ -19,6 +19,12 @@ type orderedEmbeddingQueue struct {
 	pending []storage.NodeID
 }
 
+type delayedTransientEmbeddingError struct{ delay time.Duration }
+
+func (e delayedTransientEmbeddingError) Error() string             { return "provider asked for a cooldown" }
+func (e delayedTransientEmbeddingError) Retryable() bool           { return true }
+func (e delayedTransientEmbeddingError) RetryDelay() time.Duration { return e.delay }
+
 func BenchmarkPendingDocumentsProviderBatching(b *testing.B) {
 	for _, batchSize := range []int{1, 32} {
 		b.Run(fmt.Sprintf("batch_size_%d", batchSize), func(b *testing.B) {
@@ -110,10 +116,14 @@ type recordingDocumentBatchEmbedder struct {
 	rejectingContentEmbedder
 	batchCalls   int
 	rejectPoison bool
+	transient    bool
 }
 
 func (e *recordingDocumentBatchEmbedder) EmbedDocumentBatchChunks(_ context.Context, texts []string, _, _ int) ([]*embed.DocumentChunkResult, error) {
 	e.batchCalls++
+	if e.transient {
+		return nil, &embed.ProviderError{Provider: "test", StatusCode: 503, Body: "temporarily unavailable"}
+	}
 	if e.rejectPoison {
 		for _, text := range texts {
 			if strings.Contains(text, "poison") {
@@ -126,6 +136,85 @@ func (e *recordingDocumentBatchEmbedder) EmbedDocumentBatchChunks(_ context.Cont
 		results[i] = &embed.DocumentChunkResult{Chunks: []string{text}, Embeddings: [][]float32{{float32(i + 1), 0, 0}}}
 	}
 	return results, nil
+}
+
+func TestTransientDocumentBatchFailureDoesNotBisectProviderOutage(t *testing.T) {
+	provider := &recordingDocumentBatchEmbedder{
+		rejectingContentEmbedder: rejectingContentEmbedder{calls: make(map[string]int)},
+		transient:                true,
+	}
+	worker := NewEmbedWorker(provider, storage.NewMemoryEngine(), &EmbedWorkerConfig{
+		NumWorkers: 0, MaxRetries: 1, ChunkSize: 512, EmbedBatchSize: 8, DeferWorkerStart: true,
+	})
+	t.Cleanup(worker.Close)
+
+	results, errs := worker.embedDocumentBatchIsolated(provider, []string{"one", "two", "three", "four"})
+	require.Equal(t, 1, provider.batchCalls, "a provider-wide transient failure must not be retried once per document")
+	require.Len(t, results, 4)
+	require.Len(t, errs, 4)
+	for _, err := range errs {
+		require.Error(t, err)
+		require.True(t, isRetryableEmbeddingError(err))
+	}
+}
+
+func TestTransientProviderCooldownIsSharedAndHonorsRequestedDelay(t *testing.T) {
+	provider := &recordingDocumentBatchEmbedder{rejectingContentEmbedder: rejectingContentEmbedder{calls: make(map[string]int)}}
+	worker := NewEmbedWorker(provider, storage.NewMemoryEngine(), &EmbedWorkerConfig{
+		NumWorkers:              0,
+		DeferWorkerStart:        true,
+		ProviderRetryBackoff:    5 * time.Millisecond,
+		ProviderRetryBackoffMax: 20 * time.Millisecond,
+	})
+	t.Cleanup(worker.Close)
+
+	worker.recordProviderFailure(provider, delayedTransientEmbeddingError{delay: 50 * time.Millisecond})
+	state := worker.providerRetries[providerRetryKey(provider)]
+	require.Equal(t, 1, state.failures)
+	require.GreaterOrEqual(t, time.Until(state.retryAt), 40*time.Millisecond)
+
+	started := time.Now()
+	require.True(t, worker.waitForProviderRetry(provider))
+	require.GreaterOrEqual(t, time.Since(started), 35*time.Millisecond)
+	worker.clearProviderFailure(provider)
+	require.Empty(t, worker.providerRetries)
+}
+
+func TestTerminalEmbeddingFailuresRemainDiscoverableAndRetryableAfterWorkerRestart(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	store := storage.NewNamespacedEngine(base, "embedding-failure-recovery")
+	_, err := store.CreateNode(&storage.Node{
+		ID:         "picture",
+		Labels:     []string{"Image"},
+		Properties: map[string]any{"caption": "recover me"},
+	})
+	require.NoError(t, err)
+
+	first := NewEmbedWorker(nil, store, &EmbedWorkerConfig{NumWorkers: 0, DeferWorkerStart: true})
+	first.markNodeEmbeddingFailed("picture", &embed.ProviderError{Provider: "test", StatusCode: 400, Body: "invalid image"})
+	first.Close()
+
+	restarted := NewEmbedWorker(nil, store, &EmbedWorkerConfig{NumWorkers: 0, DeferWorkerStart: true})
+	t.Cleanup(restarted.Close)
+	failures, err := restarted.ParkedEmbeddingFailures(context.Background(), 10)
+	require.NoError(t, err)
+	require.Len(t, failures, 1)
+	require.Equal(t, []EmbeddingFailure{{
+		NodeID:   "picture",
+		Error:    "test returned 400: invalid image",
+		FailedAt: failures[0].FailedAt,
+	}}, failures)
+	require.NotEmpty(t, failures[0].FailedAt)
+	require.Equal(t, 1, restarted.Stats().Parked)
+
+	retried, err := restarted.RetryParkedEmbeddingFailures(context.Background(), []storage.NodeID{"picture"})
+	require.NoError(t, err)
+	require.Equal(t, 1, retried)
+	require.Zero(t, restarted.Stats().Parked)
+	node, err := store.GetNode("picture")
+	require.NoError(t, err)
+	require.True(t, storage.NodeNeedsEmbedding(node))
+	require.Nil(t, node.EmbedMeta)
 }
 
 func TestRejectedDocumentIsIsolatedFromBatchNeighbors(t *testing.T) {

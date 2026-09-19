@@ -1109,18 +1109,20 @@ func Open(dataDir string, config *Config) (*DB, error) {
 		config.EmbeddingWorker.ChunkOverlapSet,
 	)
 	db.embedWorkerConfig = &EmbedWorkerConfig{
-		NumWorkers:           config.EmbeddingWorker.NumWorkers,
-		ScanInterval:         config.EmbeddingWorker.ScanInterval,
-		BatchDelay:           config.EmbeddingWorker.BatchDelay,
-		TriggerDebounceDelay: config.EmbeddingWorker.TriggerDebounceDelay,
-		MaxRetries:           config.EmbeddingWorker.MaxRetries,
-		ChunkSize:            embedChunkSize,
-		ChunkOverlap:         embedChunkOverlap,
-		ClusterDebounceDelay: 30 * time.Second, // Wait 30s after last embedding before k-means
-		ClusterMinBatchSize:  10,               // Need at least 10 embeddings to trigger k-means
-		PropertiesInclude:    config.EmbeddingWorker.PropertiesInclude,
-		PropertiesExclude:    config.EmbeddingWorker.PropertiesExclude,
-		IncludeLabels:        config.EmbeddingWorker.IncludeLabels,
+		NumWorkers:              config.EmbeddingWorker.NumWorkers,
+		ScanInterval:            config.EmbeddingWorker.ScanInterval,
+		BatchDelay:              config.EmbeddingWorker.BatchDelay,
+		TriggerDebounceDelay:    config.EmbeddingWorker.TriggerDebounceDelay,
+		MaxRetries:              config.EmbeddingWorker.MaxRetries,
+		ProviderRetryBackoff:    2 * time.Second,
+		ProviderRetryBackoffMax: time.Minute,
+		ChunkSize:               embedChunkSize,
+		ChunkOverlap:            embedChunkOverlap,
+		ClusterDebounceDelay:    30 * time.Second, // Wait 30s after last embedding before k-means
+		ClusterMinBatchSize:     10,               // Need at least 10 embeddings to trigger k-means
+		PropertiesInclude:       config.EmbeddingWorker.PropertiesInclude,
+		PropertiesExclude:       config.EmbeddingWorker.PropertiesExclude,
+		IncludeLabels:           config.EmbeddingWorker.IncludeLabels,
 	}
 
 	// Initialize search service config (per-database services are created lazily).
@@ -2071,6 +2073,23 @@ func (db *DB) EmbedQueueStats() *QueueStats {
 	}
 	stats := db.embedQueue.Stats()
 	return &stats
+}
+
+// EmbeddingFailures lists nodes parked after terminal embedding errors.
+func (db *DB) EmbeddingFailures(ctx context.Context, limit int) ([]EmbeddingFailure, error) {
+	if db.embedQueue == nil {
+		return nil, localizedError(localization.NornicDBCoreAutoEmbedNotEnabled(), nil)
+	}
+	return db.embedQueue.ParkedEmbeddingFailures(ctx, limit)
+}
+
+// RetryEmbeddingFailures clears terminal failure state and requeues the
+// selected nodes. An empty ID list retries all parked nodes.
+func (db *DB) RetryEmbeddingFailures(ctx context.Context, ids []storage.NodeID) (int, error) {
+	if db.embedQueue == nil {
+		return 0, localizedError(localization.NornicDBCoreAutoEmbedNotEnabled(), nil)
+	}
+	return db.embedQueue.RetryParkedEmbeddingFailures(ctx, ids)
 }
 
 // PendingEmbeddingsCount returns the current size of the pending-embeddings index.

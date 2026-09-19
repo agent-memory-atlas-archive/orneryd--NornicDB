@@ -1187,6 +1187,23 @@ func (n *NamespacedEngine) StreamNodesByPrefixProjected(ctx context.Context, pre
 	})
 }
 
+// StreamNodesByPrefixWithoutEmbeddings streams lightweight nodes in this
+// namespace and returns user-visible IDs.
+func (n *NamespacedEngine) StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, fn func(node *Node) error) error {
+	if fn == nil {
+		return ErrInvalidData
+	}
+	physicalPrefix := n.namespace + n.separator + prefix
+	if reader, ok := n.inner.(PrefixNodeWithoutEmbeddingsReader); ok {
+		return reader.StreamNodesByPrefixWithoutEmbeddings(ctx, physicalPrefix, func(node *Node) error {
+			return fn(n.toUserNode(node))
+		})
+	}
+	return n.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
+		return fn(copyNodeWithoutEmbeddings(node))
+	})
+}
+
 // StreamEdges streams edges in the namespace.
 func (n *NamespacedEngine) StreamEdges(ctx context.Context, fn func(edge *Edge) error) error {
 	if streamer, ok := n.inner.(StreamingEngine); ok {

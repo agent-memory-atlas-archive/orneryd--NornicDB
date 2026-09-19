@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -189,6 +191,56 @@ func (s *Server) handleEmbedStats(w http.ResponseWriter, r *http.Request) {
 		"vector_index_dimensions": vectorIndexDims,
 	}
 	s.writeJSON(w, http.StatusOK, response)
+}
+
+// handleEmbedFailures lists durable terminal embedding failures without
+// returning node properties or embedding vectors.
+func (s *Server) handleEmbedFailures(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeNeo4jMethodNotAllowed(w, r, "Neo.ClientError.Request.Invalid")
+		return
+	}
+	limit := 100
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 1000 {
+			s.writeNeo4jError(w, http.StatusBadRequest, "Neo.ClientError.Request.Invalid", "limit must be between 1 and 1000")
+			return
+		}
+		limit = parsed
+	}
+	failures, err := s.db.EmbeddingFailures(r.Context(), limit)
+	if err != nil {
+		s.writeBoundaryNeo4jError(w, r, http.StatusInternalServerError, "Neo.DatabaseError.General.UnknownError", err)
+		return
+	}
+	total := len(failures)
+	if stats := s.db.EmbedQueueStats(); stats != nil {
+		total = stats.Parked
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"failures": failures, "count": total, "returned": len(failures)})
+}
+
+// handleEmbedFailureRetry restores selected terminal failures to the durable
+// pending queue. An empty request body or node_ids list retries all failures.
+func (s *Server) handleEmbedFailureRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeNeo4jPostRequired(w, r, "Neo.ClientError.Request.Invalid")
+		return
+	}
+	var request struct {
+		NodeIDs []storage.NodeID `json:"node_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+		s.writeNeo4jError(w, http.StatusBadRequest, "Neo.ClientError.Request.Invalid", "invalid retry request")
+		return
+	}
+	retried, err := s.db.RetryEmbeddingFailures(r.Context(), request.NodeIDs)
+	if err != nil {
+		s.writeBoundaryNeo4jError(w, r, http.StatusInternalServerError, "Neo.DatabaseError.General.UnknownError", err)
+		return
+	}
+	s.writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "retried": retried})
 }
 
 // handleEmbedClear clears all embeddings from nodes (admin only).

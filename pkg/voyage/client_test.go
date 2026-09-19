@@ -187,6 +187,14 @@ func TestClientRetriesRetryableStatus(t *testing.T) {
 	require.Equal(t, 2, calls)
 }
 
+func TestParseRetryAfterSupportsSecondsAndHTTPDate(t *testing.T) {
+	now := time.Date(2026, time.September, 18, 12, 0, 0, 0, time.UTC)
+	require.Equal(t, 7*time.Second, parseRetryAfter("7", now))
+	require.Equal(t, 12*time.Second, parseRetryAfter(now.Add(12*time.Second).Format(http.TimeFormat), now))
+	require.Zero(t, parseRetryAfter("invalid", now))
+	require.Zero(t, parseRetryAfter("0", now))
+}
+
 func TestClientNegativeRetriesDisableRetry(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -279,6 +279,16 @@ func (c *CachedEmbedder) EmbedDocumentPropertyChunks(ctx context.Context, fallba
 	return c.EmbedDocumentChunks(ctx, fallbackText, maxTokens, overlap)
 }
 
+// EmbedDocumentPropertyBatchChunks preserves structured provider batching
+// through the cache wrapper. Structured payloads deliberately bypass the text
+// cache because images and mixed content are not represented by fallbackText.
+func (c *CachedEmbedder) EmbedDocumentPropertyBatchChunks(ctx context.Context, fallbackTexts []string, properties []map[string]any, maxTokens, overlap int) ([]*DocumentChunkResult, error) {
+	if provider, ok := c.base.(DocumentPropertyBatchChunkEmbedder); ok && provider.UsesDocumentProperties() {
+		return provider.EmbedDocumentPropertyBatchChunks(ctx, fallbackTexts, properties, maxTokens, overlap)
+	}
+	return embedDocumentPropertyBatchFallback(ctx, fallbackTexts, properties, maxTokens, overlap, c.EmbedDocumentPropertyChunks)
+}
+
 // EmbedDocumentBatchChunks preserves provider-managed batching when available
 // and otherwise batches deterministic chunks from several documents together.
 func (c *CachedEmbedder) EmbedDocumentBatchChunks(ctx context.Context, texts []string, maxTokens, overlap int) ([]*DocumentChunkResult, error) {

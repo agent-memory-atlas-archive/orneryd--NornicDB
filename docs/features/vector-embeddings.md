@@ -185,6 +185,23 @@ curl -X POST http://localhost:7474/nornicdb/embed/trigger?regenerate=true \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+### Recover Terminal Failures
+
+Transient provider failures remain in the durable pending queue and retry
+after a provider-wide exponential cooldown. Request-validation errors are
+parked instead of blocking other nodes. List and retry those terminal failures:
+
+```bash
+curl 'http://localhost:7474/nornicdb/embed/failures?limit=100' \
+  -H "Authorization: Bearer $TOKEN"
+
+# Retry selected nodes. Use an empty body or empty node_ids to retry all.
+curl -X POST http://localhost:7474/nornicdb/embed/retry-failures \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"node_ids":["picture-123"]}'
+```
+
 ## Manual Embedding
 
 ### Embed Query

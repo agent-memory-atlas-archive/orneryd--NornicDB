@@ -3078,6 +3078,108 @@ func (ae *AsyncEngine) StreamNodesByPrefix(ctx context.Context, prefix string, f
 	return nil
 }
 
+// StreamNodesByPrefixProjected merges pending async writes with an
+// embedding-free projected scan from the wrapped engine.
+func (ae *AsyncEngine) StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, fn func(node *Node) error) error {
+	if fn == nil {
+		return ErrInvalidData
+	}
+	ae.mu.RLock()
+	cachedIDs := make(map[NodeID]bool, len(ae.nodeCache))
+	deletedIDs := make(map[NodeID]bool, len(ae.deleteNodes))
+	cachedCopies := make([]*Node, 0, len(ae.nodeCache))
+	for id, node := range ae.nodeCache {
+		cachedIDs[id] = true
+		if !ae.deleteNodes[id] && strings.HasPrefix(string(id), prefix) {
+			cachedCopies = append(cachedCopies, copyNodeProjectedWithoutEmbeddings(node, properties))
+		}
+	}
+	for id := range ae.deleteNodes {
+		deletedIDs[id] = true
+	}
+	ae.mu.RUnlock()
+
+	visit := func(node *Node) error {
+		if cachedIDs[node.ID] || deletedIDs[node.ID] {
+			return nil
+		}
+		return fn(node)
+	}
+	for _, node := range cachedCopies {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err := fn(node); err != nil {
+			if err == ErrIterationStopped {
+				return nil
+			}
+			return err
+		}
+	}
+	if reader, ok := ae.engine.(ProjectedPrefixNodeReader); ok {
+		return reader.StreamNodesByPrefixProjected(ctx, prefix, properties, visit)
+	}
+	return ae.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
+		if cachedIDs[node.ID] || deletedIDs[node.ID] {
+			return nil
+		}
+		return fn(copyNodeProjectedWithoutEmbeddings(node, properties))
+	})
+}
+
+// StreamNodesByPrefixWithoutEmbeddings merges pending writes with the wrapped
+// engine's lightweight prefix scan.
+func (ae *AsyncEngine) StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, fn func(node *Node) error) error {
+	if fn == nil {
+		return ErrInvalidData
+	}
+	ae.mu.RLock()
+	cachedIDs := make(map[NodeID]bool, len(ae.nodeCache))
+	deletedIDs := make(map[NodeID]bool, len(ae.deleteNodes))
+	cachedCopies := make([]*Node, 0, len(ae.nodeCache))
+	for id, node := range ae.nodeCache {
+		cachedIDs[id] = true
+		if !ae.deleteNodes[id] && strings.HasPrefix(string(id), prefix) {
+			cachedCopies = append(cachedCopies, copyNodeProjectedWithoutEmbeddings(node, []string{}))
+		}
+	}
+	for id := range ae.deleteNodes {
+		deletedIDs[id] = true
+	}
+	ae.mu.RUnlock()
+
+	for _, node := range cachedCopies {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err := fn(node); err != nil {
+			if err == ErrIterationStopped {
+				return nil
+			}
+			return err
+		}
+	}
+	visit := func(node *Node) error {
+		if cachedIDs[node.ID] || deletedIDs[node.ID] {
+			return nil
+		}
+		return fn(node)
+	}
+	if reader, ok := ae.engine.(PrefixNodeWithoutEmbeddingsReader); ok {
+		return reader.StreamNodesByPrefixWithoutEmbeddings(ctx, prefix, visit)
+	}
+	return ae.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
+		if cachedIDs[node.ID] || deletedIDs[node.ID] {
+			return nil
+		}
+		return fn(copyNodeProjectedWithoutEmbeddings(node, []string{}))
+	})
+}
+
 // StreamEdges implements StreamingEngine.StreamEdges by delegating to the underlying engine.
 func (ae *AsyncEngine) StreamEdges(ctx context.Context, fn func(edge *Edge) error) error {
 	ae.mu.RLock()

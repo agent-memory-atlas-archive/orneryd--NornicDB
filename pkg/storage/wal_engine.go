@@ -1125,6 +1125,28 @@ func (w *WALEngine) StreamNodesByPrefix(ctx context.Context, prefix string, fn f
 	})
 }
 
+// StreamNodesByPrefixProjected preserves embedding-free projected scans
+// through the WAL decorator.
+func (w *WALEngine) StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, fn func(node *Node) error) error {
+	if reader, ok := w.engine.(ProjectedPrefixNodeReader); ok {
+		return reader.StreamNodesByPrefixProjected(ctx, prefix, properties, fn)
+	}
+	return w.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
+		return fn(copyNodeProjectedWithoutEmbeddings(node, properties))
+	})
+}
+
+// StreamNodesByPrefixWithoutEmbeddings preserves lightweight scans through
+// the WAL decorator.
+func (w *WALEngine) StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, fn func(node *Node) error) error {
+	if reader, ok := w.engine.(PrefixNodeWithoutEmbeddingsReader); ok {
+		return reader.StreamNodesByPrefixWithoutEmbeddings(ctx, prefix, fn)
+	}
+	return w.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
+		return fn(copyNodeWithoutEmbeddings(node))
+	})
+}
+
 // StreamEdges implements StreamingEngine.StreamEdges by delegating to the underlying engine.
 func (w *WALEngine) StreamEdges(ctx context.Context, fn func(edge *Edge) error) error {
 	if streamer, ok := w.engine.(StreamingEngine); ok {

@@ -1928,6 +1928,7 @@ func (e *permanentFailureEmbedder) ChunkText(text string, maxTokens, overlap int
 type retryableDocumentFailureEmbedder struct {
 	dims      int
 	callCount int
+	failing   bool
 }
 
 func (e *retryableDocumentFailureEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
@@ -1940,7 +1941,14 @@ func (e *retryableDocumentFailureEmbedder) EmbedBatch(ctx context.Context, texts
 
 func (e *retryableDocumentFailureEmbedder) EmbedDocumentChunks(ctx context.Context, text string, maxTokens, overlap int) (*embed.DocumentChunkResult, error) {
 	e.callCount++
-	return nil, errors.New("temporary document provider failure")
+	if e.failing {
+		return nil, errors.New("temporary document provider failure")
+	}
+	return &embed.DocumentChunkResult{
+		Chunks:     []string{text},
+		Embeddings: [][]float32{{1, 0, 0}},
+		Model:      e.Model(),
+	}, nil
 }
 
 func (e *retryableDocumentFailureEmbedder) Model() string { return "retryable-document-failure" }
@@ -2146,7 +2154,7 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 		require.Equal(t, []storage.NodeID{"ghost"}, qe.marked)
 	})
 
-	t.Run("processNextBatch parks a node after its retry budget", func(t *testing.T) {
+	t.Run("processNextBatch retains local batch work after bounded request retries", func(t *testing.T) {
 		base := storage.NewMemoryEngine()
 		engine := storage.NewNamespacedEngine(base, "test")
 		node := &storage.Node{
@@ -2172,10 +2180,9 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 		didWork := ew.processNextBatch()
 		require.True(t, didWork)
 		require.Equal(t, int64(1), ew.failed.Load())
-		require.Empty(t, qe.added)
-		require.Equal(t, int64(1), ew.parked.Load())
-		require.NotNil(t, qe.updatedEmbedding)
-		require.Equal(t, true, qe.updatedEmbedding.EmbedMeta["embedding_failed"])
+		require.Equal(t, []storage.NodeID{node.ID}, qe.added)
+		require.Zero(t, ew.parked.Load())
+		require.Nil(t, qe.updatedEmbedding)
 	})
 
 	t.Run("processNextBatch marks non-retryable embed failures permanent", func(t *testing.T) {
@@ -2214,7 +2221,7 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 		require.Contains(t, qe.updatedEmbedding.EmbedMeta["embedding_error"], "invalid embedding request")
 	})
 
-	t.Run("processNextBatch caps provider-managed document retries", func(t *testing.T) {
+	t.Run("processNextBatch retains retryable document work until provider recovery", func(t *testing.T) {
 		base := storage.NewMemoryEngine()
 		engine := storage.NewNamespacedEngine(base, "test")
 		node := &storage.Node{
@@ -2225,7 +2232,7 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 		_, err := engine.CreateNode(node)
 		require.NoError(t, err)
 
-		emb := &retryableDocumentFailureEmbedder{dims: 3}
+		emb := &retryableDocumentFailureEmbedder{dims: 3, failing: true}
 		qe := &queueBranchEngine{Engine: engine, findNode: &storage.Node{ID: node.ID}}
 		ew := &EmbedWorker{
 			embedder: emb,
@@ -2238,17 +2245,19 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 		for attempt := 1; attempt <= 3; attempt++ {
 			qe.findReturned = false
 			require.True(t, ew.processNextBatch())
-			if attempt < 3 {
-				require.Len(t, qe.added, attempt, "retryable failure should be requeued while budget remains")
-			} else {
-				require.Len(t, qe.added, 2, "the exhausted failure must not be requeued")
-			}
+			require.Len(t, qe.added, attempt, "retryable failure must remain pending after an attempt budget is exhausted")
 		}
 		require.Equal(t, 3, emb.callCount)
 		require.Equal(t, int64(3), ew.failed.Load())
+		require.Nil(t, qe.updatedEmbedding, "transient failures must not persist terminal failure metadata")
+
+		emb.failing = false
+		qe.findReturned = false
+		require.True(t, ew.processNextBatch())
+		require.Equal(t, 4, emb.callCount)
 		require.NotNil(t, qe.updatedEmbedding)
-		require.Equal(t, true, qe.updatedEmbedding.EmbedMeta["embedding_failed"])
-		require.Contains(t, qe.updatedEmbedding.EmbedMeta["embedding_error"], "retry limit (3) reached")
+		require.Len(t, qe.updatedEmbedding.ChunkEmbeddings, 1)
+		require.NotEqual(t, true, qe.updatedEmbedding.EmbedMeta["embedding_failed"])
 	})
 
 	t.Run("processNextBatch uses deterministic chunker from embedder", func(t *testing.T) {

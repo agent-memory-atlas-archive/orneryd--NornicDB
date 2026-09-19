@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -397,6 +398,7 @@ func (c *Client) postJSON(ctx context.Context, path string, request any, respons
 type apiError struct {
 	StatusCode int
 	Body       string
+	RetryAfter time.Duration
 }
 
 func (e apiError) Error() string {
@@ -413,6 +415,11 @@ func (e apiError) Retryable() bool {
 	return e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
 }
 
+// RetryDelay returns the server-requested cooldown, when Voyage supplied a
+// Retry-After header. Queue-level retry coordination uses this after the
+// client's bounded in-request retries are exhausted.
+func (e apiError) RetryDelay() time.Duration { return e.RetryAfter }
+
 func (c *Client) postOnce(ctx context.Context, path string, body []byte, response any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
@@ -427,12 +434,34 @@ func (c *Client) postOnce(ctx context.Context, path string, body []byte, respons
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return apiError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(raw))}
+		return apiError{
+			StatusCode: resp.StatusCode,
+			Body:       strings.TrimSpace(string(raw)),
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(response); err != nil {
 		return fmt.Errorf("decode voyage response: %w", err)
 	}
 	return nil
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	when, err := http.ParseTime(value)
+	if err != nil || !when.After(now) {
+		return 0
+	}
+	return when.Sub(now)
 }
 
 func isRetryable(err error) bool {

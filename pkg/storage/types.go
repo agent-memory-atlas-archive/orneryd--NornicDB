@@ -530,6 +530,12 @@ type ProjectedPrefixNodeReader interface {
 	StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, visit func(*Node) error) error
 }
 
+// PrefixNodeWithoutEmbeddingsReader streams lightweight nodes by ID prefix
+// while guaranteeing that no embedding vectors are decoded or copied.
+type PrefixNodeWithoutEmbeddingsReader interface {
+	StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, visit func(*Node) error) error
+}
+
 // NamespaceLister is an optional extension interface that reports the known
 // database namespaces stored in an engine.
 //

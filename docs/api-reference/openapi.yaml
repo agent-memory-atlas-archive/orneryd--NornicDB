@@ -916,6 +916,53 @@ paths:
                     type: string
                     example: "All embeddings cleared"
 
+  /nornicdb/embed/failures:
+    get:
+      tags:
+        - Embeddings
+      summary: List terminal embedding failures
+      description: Lists nodes parked after non-retryable provider errors without returning node properties or vectors
+      operationId: listEmbeddingFailures
+      security:
+        - bearerAuth: []
+        - basicAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+      responses:
+        "200":
+          description: Durable terminal embedding failures
+
+  /nornicdb/embed/retry-failures:
+    post:
+      tags:
+        - Embeddings
+      summary: Retry terminal embedding failures
+      description: Clears terminal failure state and requeues selected nodes; an empty list retries all parked nodes
+      operationId: retryEmbeddingFailures
+      security:
+        - bearerAuth: []
+        - basicAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                node_ids:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "202":
+          description: Failures restored to the pending queue
+
   /nornicdb/search/rebuild:
     post:
       tags:

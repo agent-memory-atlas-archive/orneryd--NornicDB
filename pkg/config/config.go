@@ -538,7 +538,7 @@ type ServerConfig struct {
 //   - NORNICDB_EMBED_SCAN_INTERVAL: How often to scan for unembedded nodes (default: 15m)
 //   - NORNICDB_EMBED_BATCH_DELAY: Delay between processing nodes (default: 500ms)
 //   - NORNICDB_EMBED_TRIGGER_DEBOUNCE: Delay before write-triggered scans fire (default: 2s)
-//   - NORNICDB_EMBED_MAX_RETRIES: Max retry attempts per node (default: 3)
+//   - NORNICDB_EMBED_MAX_RETRIES: Max attempts within one provider request cycle (default: 3)
 //   - NORNICDB_EMBED_CHUNK_SIZE: Max tokens per chunk (default: 8192; contextualized Voyage: 512)
 //   - NORNICDB_EMBED_CHUNK_OVERLAP: Tokens to overlap between chunks (default: 50;
 //     unset uses the provider default for contextualized Voyage)
@@ -556,7 +556,8 @@ type EmbeddingWorkerConfig struct {
 	BatchDelay time.Duration
 	// TriggerDebounceDelay delays write-triggered scans until mutation bursts settle.
 	TriggerDebounceDelay time.Duration
-	// MaxRetries is the max retry attempts per node
+	// MaxRetries bounds retries within one provider request cycle. Exhausting
+	// it leaves transiently failed nodes pending for a later cooldown cycle.
 	MaxRetries int
 	// ChunkSize is max tokens per chunk.
 	ChunkSize int

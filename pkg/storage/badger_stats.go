@@ -714,6 +714,14 @@ func (b *BadgerEngine) StreamNodesByPrefixProjected(ctx context.Context, prefix 
 	})
 }
 
+// StreamNodesByPrefixWithoutEmbeddings streams node metadata without loading
+// separate or legacy inline vector payloads.
+func (b *BadgerEngine) StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, fn func(node *Node) error) error {
+	return b.StreamNodesByPrefixProjected(ctx, prefix, []string{}, func(node *Node) error {
+		return fn(copyNodeWithoutEmbeddings(node))
+	})
+}
+
 // StreamEdges implements StreamingEngine.StreamEdges for memory-efficient iteration.
 // Iterates through all edges one at a time without loading all into memory.
 func (b *BadgerEngine) StreamEdges(ctx context.Context, fn func(edge *Edge) error) error {
