@@ -288,11 +288,11 @@ type BadgerEngine struct {
 	revealAll     atomic.Bool
 	revealQueryMu sync.RWMutex
 
-	// labelCountWriteMu serializes transactions that mutate namespace label-count
-	// metadata. The metadata is intentionally one key per namespace+label, so
-	// concurrent same-label writes would otherwise conflict in Badger even when
-	// the node IDs themselves are independent.
-	labelCountWriteMu sync.Mutex
+	// labelCountWriteMu orders node commits with their derived namespace-label
+	// count updates and keeps count readers from observing the publication gap.
+	// User transactions accumulate deltas locally; the shared count keys never
+	// participate in their optimistic conflict sets.
+	labelCountWriteMu sync.RWMutex
 
 	// embeddingsEnabled gates the pending-embed index write on node creates.
 	// When false, new nodes skip the pendingEmbed marker since no embed worker

@@ -207,31 +207,64 @@ func (b *BadgerEngine) adjustLabelCountInTxn(txn *badger.Txn, namespace, label s
 }
 
 func (b *BadgerEngine) adjustNodeLabelCountsInTxn(txn *badger.Txn, namespace string, oldLabels, newLabels []string) error {
-	oldSet := labelSet(oldLabels)
-	newSet := labelSet(newLabels)
-	for label := range newSet {
-		if _, ok := oldSet[label]; ok {
-			continue
-		}
-		if err := b.adjustLabelCountInTxn(txn, namespace, label, 1); err != nil {
-			return err
-		}
-	}
-	for label := range oldSet {
-		if _, ok := newSet[label]; ok {
-			continue
-		}
-		if err := b.adjustLabelCountInTxn(txn, namespace, label, -1); err != nil {
+	for label, delta := range nodeLabelCountDeltas(oldLabels, newLabels) {
+		if err := b.adjustLabelCountInTxn(txn, namespace, label, delta); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func nodeLabelCountDeltas(oldLabels, newLabels []string) map[string]int64 {
+	oldSet := labelSet(oldLabels)
+	newSet := labelSet(newLabels)
+	deltas := make(map[string]int64, len(oldSet)+len(newSet))
+	for label := range newSet {
+		if _, ok := oldSet[label]; ok {
+			continue
+		}
+		deltas[label] = 1
+	}
+	for label := range oldSet {
+		if _, ok := newSet[label]; ok {
+			continue
+		}
+		deltas[label] = -1
+	}
+	return deltas
+}
+
+// applyLabelCountDeltasLocked persists transaction-local derived count deltas.
+// The caller must hold labelCountWriteMu across both the user-data commit and
+// this metadata update so count changes retain the same order as node changes.
+func (b *BadgerEngine) applyLabelCountDeltasLocked(deltas map[namespaceLabel]int64) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	return b.withUpdate(func(txn *badger.Txn) error {
+		for key, delta := range deltas {
+			if err := b.adjustLabelCountInTxn(txn, key.namespace, key.label, delta); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (b *BadgerEngine) rebuildAuthoritativeLabelCountsLocked() error {
+	counts, err := b.collectAuthoritativeLabelCounts()
+	if err != nil {
+		return err
+	}
+	return b.rebuildLabelCounts(counts)
+}
+
 func (b *BadgerEngine) NodeCountByLabelInNamespace(namespace, label string) (int64, error) {
 	if err := b.ensureOpen(); err != nil {
 		return 0, err
 	}
+	b.labelCountWriteMu.RLock()
+	defer b.labelCountWriteMu.RUnlock()
 	var count int64
 	err := b.withView(func(txn *badger.Txn) error {
 		var err error
@@ -245,6 +278,8 @@ func (b *BadgerEngine) NodeCountByLabel(label string) (int64, error) {
 	if err := b.ensureOpen(); err != nil {
 		return 0, err
 	}
+	b.labelCountWriteMu.RLock()
+	defer b.labelCountWriteMu.RUnlock()
 	needle := []byte(normalizeCountLabel(label))
 	var total int64
 	err := b.withView(func(txn *badger.Txn) error {
@@ -412,75 +447,19 @@ func (b *BadgerEngine) ensureLabelCounts() error {
 	return b.rebuildLabelCounts(actual)
 }
 
-func (tx *BadgerTransaction) readBufferedLabelCount(namespace, label string) (int64, error) {
-	key := labelCountKey(namespace, label)
-	keyStr := string(key)
-	if tx.pendingDeletes[keyStr] {
-		return 0, nil
-	}
-	if val, ok := tx.pendingWrites[keyStr]; ok {
-		return decodeLabelCount(val)
-	}
-	item, err := tx.badgerTx.Get(key)
-	if err == badger.ErrKeyNotFound {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	var count int64
-	if err := item.Value(func(val []byte) error {
-		decoded, decodeErr := decodeLabelCount(val)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		count = decoded
-		return nil
-	}); err != nil {
-		return 0, err
-	}
-	return count, nil
-}
-
-func (tx *BadgerTransaction) bufferAdjustLabelCount(namespace, label string, delta int64) error {
+func (tx *BadgerTransaction) bufferAdjustLabelCount(namespace, label string, delta int64) {
 	if delta == 0 || namespace == "" || label == "" {
-		return nil
+		return
 	}
-	count, err := tx.readBufferedLabelCount(namespace, label)
-	if err != nil {
-		return err
+	key := namespaceLabel{namespace: namespace, label: normalizeCountLabel(label)}
+	tx.pendingLabelCountDeltas[key] += delta
+	if tx.pendingLabelCountDeltas[key] == 0 {
+		delete(tx.pendingLabelCountDeltas, key)
 	}
-	next := count + delta
-	if next < 0 {
-		return fmt.Errorf("label count underflow for %s:%s", namespace, label)
-	}
-	key := labelCountKey(namespace, label)
-	if next == 0 {
-		tx.bufferDelete(key)
-		return nil
-	}
-	tx.bufferSet(key, encodeLabelCount(next))
-	return nil
 }
 
-func (tx *BadgerTransaction) bufferAdjustNodeLabelCounts(namespace string, oldLabels, newLabels []string) error {
-	oldSet := labelSet(oldLabels)
-	newSet := labelSet(newLabels)
-	for label := range newSet {
-		if _, ok := oldSet[label]; ok {
-			continue
-		}
-		if err := tx.bufferAdjustLabelCount(namespace, label, 1); err != nil {
-			return err
-		}
+func (tx *BadgerTransaction) bufferAdjustNodeLabelCounts(namespace string, oldLabels, newLabels []string) {
+	for label, delta := range nodeLabelCountDeltas(oldLabels, newLabels) {
+		tx.bufferAdjustLabelCount(namespace, label, delta)
 	}
-	for label := range oldSet {
-		if _, ok := newSet[label]; ok {
-			continue
-		}
-		if err := tx.bufferAdjustLabelCount(namespace, label, -1); err != nil {
-			return err
-		}
-	}
-	return nil
 }

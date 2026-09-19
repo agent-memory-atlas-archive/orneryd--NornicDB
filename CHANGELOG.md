@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remove shared per-label count keys from explicit transactions' optimistic
+  conflict sets. Transactions now accumulate label deltas locally and publish
+  derived counts in commit order, so independent same-label creates and label
+  changes commit concurrently without false `Transaction.Outdated` failures.
 - Pack contextualized document batches into multiple Voyage requests when the
   worker batch exceeds the provider byte or input-count budget, preserving
   document order instead of retrying one locally rejected batch forever.

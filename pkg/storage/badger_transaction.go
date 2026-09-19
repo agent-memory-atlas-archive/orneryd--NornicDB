@@ -75,6 +75,11 @@ type BadgerTransaction struct {
 	// This batches all writes together for better performance while maintaining ACID guarantees
 	pendingWrites  map[string][]byte // key -> value for Set operations
 	pendingDeletes map[string]bool   // key -> true for Delete operations
+	// pendingLabelCountDeltas keeps derived count metadata out of Badger's
+	// optimistic user transaction. Independent node writes commonly share a
+	// label, but they must not conflict merely because their derived counters
+	// target the same metadata key.
+	pendingLabelCountDeltas map[namespaceLabel]int64
 	// When true, skip per-operation constraint checks and validate at commit only.
 	deferConstraintValidation bool
 	// When true, skip read-before-write existence checks for CREATE operations.
@@ -149,23 +154,24 @@ func (b *BadgerEngine) BeginTransaction() (*BadgerTransaction, error) {
 	badgerTx := badgerDB.NewTransaction(true)
 
 	return &BadgerTransaction{
-		ID:                 txID,
-		StartTime:          startTime,
-		Status:             TxStatusActive,
-		readTS:             readTS,
-		beginSnapshot:      beginSnapshot,
-		badgerTx:           badgerTx,
-		snapshotTx:         snapshotTx,
-		engine:             b,
-		pendingNodes:       make(map[NodeID]*Node),
-		pendingEdges:       make(map[EdgeID]*Edge),
-		deletedNodes:       make(map[NodeID]struct{}),
-		deletedEdges:       make(map[EdgeID]struct{}),
-		operations:         make([]Operation, 0),
-		pendingWrites:      make(map[string][]byte),
-		pendingDeletes:     make(map[string]bool),
-		Metadata:           make(map[string]interface{}),
-		snapshotReaderInfo: SnapshotReaderInfo{ReaderID: txID, SnapshotVersion: readTS, StartTime: startTime},
+		ID:                      txID,
+		StartTime:               startTime,
+		Status:                  TxStatusActive,
+		readTS:                  readTS,
+		beginSnapshot:           beginSnapshot,
+		badgerTx:                badgerTx,
+		snapshotTx:              snapshotTx,
+		engine:                  b,
+		pendingNodes:            make(map[NodeID]*Node),
+		pendingEdges:            make(map[EdgeID]*Edge),
+		deletedNodes:            make(map[NodeID]struct{}),
+		deletedEdges:            make(map[EdgeID]struct{}),
+		operations:              make([]Operation, 0),
+		pendingWrites:           make(map[string][]byte),
+		pendingDeletes:          make(map[string]bool),
+		pendingLabelCountDeltas: make(map[namespaceLabel]int64),
+		Metadata:                make(map[string]interface{}),
+		snapshotReaderInfo:      SnapshotReaderInfo{ReaderID: txID, SnapshotVersion: readTS, StartTime: startTime},
 	}, nil
 }
 
@@ -236,6 +242,7 @@ func (tx *BadgerTransaction) closeLocked(status TransactionStatus, discard bool,
 	}
 	tx.pendingWrites = make(map[string][]byte)
 	tx.pendingDeletes = make(map[string]bool)
+	tx.pendingLabelCountDeltas = make(map[namespaceLabel]int64)
 	tx.Status = status
 	tx.closedErr = closedErr
 	if tx.snapshotDeregister != nil {
@@ -570,9 +577,7 @@ func (tx *BadgerTransaction) CreateNode(node *Node) (NodeID, error) {
 		}
 		tx.bufferSet(indexKey, []byte{})
 	}
-	if err := tx.bufferAdjustNodeLabelCounts(tx.namespace, nil, node.Labels); err != nil {
-		return "", err
-	}
+	tx.bufferAdjustNodeLabelCounts(tx.namespace, nil, node.Labels)
 
 	// Add to pending embeddings index if needed
 	if tx.engine.shouldIndexPendingEmbed(node) {
@@ -690,9 +695,7 @@ func (tx *BadgerTransaction) UpdateNode(node *Node) error {
 			tx.bufferDelete(indexKey)
 		}
 	}
-	if err := tx.bufferAdjustNodeLabelCounts(tx.namespace, oldNode.Labels, node.Labels); err != nil {
-		return err
-	}
+	tx.bufferAdjustNodeLabelCounts(tx.namespace, oldNode.Labels, node.Labels)
 
 	// Track for read-your-writes
 	nodeCopy := copyNode(node)
@@ -798,9 +801,7 @@ func (tx *BadgerTransaction) deleteNodeBuffered(nodeID NodeID, oldNode *Node) (e
 			tx.bufferDelete(lblKey)
 		}
 	}
-	if err := tx.bufferAdjustNodeLabelCounts(tx.namespace, deletedNode.Labels, nil); err != nil {
-		return 0, nil, err
-	}
+	tx.bufferAdjustNodeLabelCounts(tx.namespace, deletedNode.Labels, nil)
 
 	// Delete outgoing edges (and track count). Lookup-only prefix — a
 	// missing numID means no outgoing edges were ever indexed.
@@ -1751,10 +1752,50 @@ func (tx *BadgerTransaction) Commit() error {
 		return fmt.Errorf("refreshing temporal current pointers: %w", err)
 	}
 
+	// Serialize only the commit publication window for transactions that change
+	// label counts. The derived count key is no longer in badgerTx, so this does
+	// not create optimistic conflicts; holding the lock through the follow-up
+	// delta write preserves mutation order and prevents count readers from
+	// observing the committed node without its derived metadata.
+	labelCountsLocked := len(tx.pendingLabelCountDeltas) > 0
+	if labelCountsLocked {
+		tx.engine.labelCountWriteMu.Lock()
+	}
+
 	// Commit Badger transaction (atomic!)
 	if err := tx.badgerTx.Commit(); err != nil {
+		if labelCountsLocked {
+			tx.engine.labelCountWriteMu.Unlock()
+		}
 		tx.closeLocked(TxStatusRolledBack, false, nil)
 		return normalizeTransactionCommitError(err)
+	}
+
+	// Label counts are derived metadata, not part of the user transaction's
+	// conflict set. Apply the accumulated deltas only after the entity and
+	// index writes commit, serializing the short read-modify-write transaction
+	// with non-transactional node mutations. A metadata failure must not turn a
+	// successful user commit into an apparent rollback. Rebuild from committed
+	// node bodies immediately if a malformed or unavailable count blocks the
+	// delta; startup verification remains the final recovery boundary.
+	if err := tx.engine.applyLabelCountDeltasLocked(tx.pendingLabelCountDeltas); err != nil {
+		if repairErr := tx.engine.rebuildAuthoritativeLabelCountsLocked(); repairErr != nil {
+			tx.engine.log.Error("failed to repair derived label counts after transaction commit",
+				"subsystem", "transaction",
+				"transaction_id", tx.ID,
+				slog.Any("update_error", err),
+				slog.Any("repair_error", repairErr),
+			)
+		} else {
+			tx.engine.log.Warn("repaired derived label counts after delta update failed",
+				"subsystem", "transaction",
+				"transaction_id", tx.ID,
+				slog.Any("error", err),
+			)
+		}
+	}
+	if labelCountsLocked {
+		tx.engine.labelCountWriteMu.Unlock()
 	}
 
 	// Persist the namespace's MVCC sequence and the staged ID
