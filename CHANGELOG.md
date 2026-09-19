@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Skip periodic WAL snapshots when no mutation has arrived since the previous
+  compaction, and stream snapshot nodes without loading separately stored
+  embeddings. The snapshot check interval is now configurable through
+  `NORNICDB_WAL_SNAPSHOT_INTERVAL` or `database.wal_snapshot_interval`.
+- Resolve search type/label candidate filters from compact in-memory metadata,
+  including the legacy string `type` property, before reading any document
+  properties. Type-only filtering no longer decodes candidate nodes, and
+  combined filters only read properties for candidates that pass the type.
 - Use the transaction's pinned label and relationship-type indexes for
   snapshot reads, preserving read-your-writes and Neo4j snapshot semantics
   while avoiding database-wide node/edge decoding in explicit transactions

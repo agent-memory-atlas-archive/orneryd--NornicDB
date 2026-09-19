@@ -15,6 +15,24 @@ type collectingSnapshotVisitor struct {
 	edges []*Edge
 }
 
+type embeddingFreeSnapshotSpy struct {
+	*MemoryEngine
+	fullNodeStreams  int
+	lightNodeStreams int
+}
+
+func (s *embeddingFreeSnapshotSpy) StreamNodes(ctx context.Context, fn func(*Node) error) error {
+	s.fullNodeStreams++
+	return s.MemoryEngine.StreamNodes(ctx, fn)
+}
+
+func (s *embeddingFreeSnapshotSpy) StreamNodesWithoutEmbeddings(ctx context.Context, fn func(*Node) error) error {
+	s.lightNodeStreams++
+	return s.MemoryEngine.StreamNodes(ctx, func(node *Node) error {
+		return fn(copyNodeWithoutEmbeddings(node))
+	})
+}
+
 func (v *collectingSnapshotVisitor) VisitNode(node *Node) error {
 	v.nodes = append(v.nodes, node)
 	return nil
@@ -47,6 +65,30 @@ func TestStreamingSnapshotRoundTripAndFooter(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestWriteSnapshotUsesEmbeddingFreeNodeStream(t *testing.T) {
+	engine := &embeddingFreeSnapshotSpy{MemoryEngine: NewMemoryEngine()}
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
+	_, err := engine.CreateNode(&Node{
+		ID:              "nornic:document",
+		Labels:          []string{"Document"},
+		Properties:      map[string]any{"body": "preserved"},
+		ChunkEmbeddings: [][]float32{{1, 2, 3}},
+	})
+	require.NoError(t, err)
+
+	var output bytes.Buffer
+	require.NoError(t, WriteSnapshot(context.Background(), engine, &output, SnapshotOptions{}))
+	require.Equal(t, 1, engine.lightNodeStreams)
+	require.Zero(t, engine.fullNodeStreams, "snapshot must not decode separately stored embeddings")
+
+	visitor := &collectingSnapshotVisitor{}
+	_, err = ReadSnapshot(&output, visitor)
+	require.NoError(t, err)
+	require.Len(t, visitor.nodes, 1)
+	require.Equal(t, "preserved", visitor.nodes[0].Properties["body"])
+	require.Empty(t, visitor.nodes[0].ChunkEmbeddings)
+}
+
 type materializingOnlyEngine struct{ Engine }
 
 type failingSnapshotVisitor struct {
@@ -64,6 +106,13 @@ type failingStreamingSnapshotEngine struct {
 }
 
 func (e *failingStreamingSnapshotEngine) StreamNodes(context.Context, func(*Node) error) error {
+	if e.nodeErr != nil {
+		return e.nodeErr
+	}
+	return nil
+}
+
+func (e *failingStreamingSnapshotEngine) StreamNodesWithoutEmbeddings(context.Context, func(*Node) error) error {
 	if e.nodeErr != nil {
 		return e.nodeErr
 	}

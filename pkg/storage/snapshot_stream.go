@@ -68,8 +68,12 @@ func WriteSnapshot(ctx context.Context, engine Engine, writer io.Writer, options
 		return err
 	}
 
+	nodeStream := streamer.StreamNodes
+	if lightweight, ok := engine.(NodeWithoutEmbeddingsStreamer); ok {
+		nodeStream = lightweight.StreamNodesWithoutEmbeddings
+	}
 	var nodeCount uint64
-	if err := streamer.StreamNodes(ctx, func(node *Node) error {
+	if err := nodeStream(ctx, func(node *Node) error {
 		if err := writeSnapshotFrame(buffered, streamSnapshotNode, node, maxRecordBytes); err != nil {
 			return err
 		}

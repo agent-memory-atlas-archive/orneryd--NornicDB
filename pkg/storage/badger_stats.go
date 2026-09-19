@@ -614,6 +614,47 @@ func (b *BadgerEngine) StreamNodes(ctx context.Context, fn func(node *Node) erro
 	})
 }
 
+// StreamNodesWithoutEmbeddings iterates complete node records without reading
+// the separate vector keyspace. User properties are retained for snapshots.
+func (b *BadgerEngine) StreamNodesWithoutEmbeddings(ctx context.Context, fn func(node *Node) error) error {
+	if err := b.ensureOpen(); err != nil {
+		return err
+	}
+	return b.withView(func(txn *badger.Txn) error {
+		prefix := []byte{prefixNode}
+		it := txn.NewIterator(badgerIterOptsPrefetchValues(prefix, 10))
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			item := it.Item()
+			var node *Node
+			err := item.Value(func(val []byte) error {
+				key := item.Key()
+				if len(key) <= 1 {
+					return nil
+				}
+				var decodeErr error
+				node, decodeErr = b.decodeNode(namespaceForNodeID(NodeID(key[1:])), val)
+				return decodeErr
+			})
+			if err != nil || node == nil {
+				continue
+			}
+			if err := fn(node); err != nil {
+				if err == ErrIterationStopped {
+					return nil
+				}
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // StreamNodesByPrefix streams nodes whose IDs start with prefix.
 // This is significantly faster than full StreamNodes + callback filtering when
 // tenants/databases share a physical store.

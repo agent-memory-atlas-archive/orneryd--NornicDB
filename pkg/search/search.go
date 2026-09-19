@@ -678,7 +678,7 @@ type Service struct {
 	mu                 sync.RWMutex
 	// indexMu serializes index mutation operations (IndexNode/RemoveNode/BuildIndexes batches)
 	// without blocking read paths that use s.mu for lightweight config/state reads.
-	indexMu        sync.Mutex
+	indexMu        sync.RWMutex
 	buildMu        sync.Mutex
 	ready          atomic.Bool
 	buildAttempted atomic.Bool
@@ -689,6 +689,7 @@ type Service struct {
 	// cypherMetadata is a small, in-memory view of node embedding availability and labels.
 	// It allows Cypher-compatible vector queries to execute without scanning storage.
 	nodeLabels       map[string][]string          // nodeID -> labels
+	nodeTypes        map[string]string            // nodeID -> lower-case legacy "type" property
 	nodeNamedVector  map[string]map[string]string // nodeID -> vectorName -> vectorID
 	nodePropVector   map[string]map[string]string // nodeID -> propertyKey -> vectorID
 	nodeChunkVectors map[string][]string          // nodeID -> vectorIDs (main + chunks)
@@ -1044,6 +1045,7 @@ func NewServiceWithDimensionsAndBM25EngineAndOptions(engine storage.Engine, dime
 		minEmbeddingsForClustering: DefaultMinEmbeddingsForClustering,
 		defaultMinSimilarity:       -1, // -1 = not set, use SearchOptions default
 		nodeLabels:                 make(map[string][]string, 1024),
+		nodeTypes:                  make(map[string]string, 1024),
 		nodeNamedVector:            make(map[string]map[string]string, 1024),
 		nodePropVector:             make(map[string]map[string]string, 1024),
 		nodeChunkVectors:           make(map[string][]string, 1024),
@@ -2156,8 +2158,10 @@ func (s *Service) persistVectorStoreBackground(vectorPath string, vfs *VectorFil
 }
 
 func (s *Service) persistVectorQueryMetadata(vfs *VectorFileStore) {
+	s.indexMu.RLock()
+	defer s.indexMu.RUnlock()
 	s.mu.RLock()
-	vfs.SetNodeQueryMetadata(s.nodeLabels, s.nodeNamedVector, s.nodePropVector, s.nodeChunkVectors)
+	vfs.SetNodeQueryMetadataWithTypes(s.nodeLabels, s.nodeTypes, s.nodeNamedVector, s.nodePropVector, s.nodeChunkVectors)
 	s.mu.RUnlock()
 }
 
@@ -2421,7 +2425,7 @@ func (s *Service) maybeAutoSetVectorDimensions(dimensions int) {
 		return
 	}
 
-	// Lock order: pipelineMu -> mu -> hnswMu, matching pipeline construction paths.
+	// Lock order: pipelineMu -> indexMu -> mu -> hnswMu, matching index mutation paths.
 	s.pipelineMu.Lock()
 	s.vectorPipeline = nil
 	s.pipelineMu.Unlock()
@@ -2469,6 +2473,7 @@ func (s *Service) ClearVectorIndex() {
 	s.vectorPipeline = nil
 	s.pipelineMu.Unlock()
 
+	s.indexMu.Lock()
 	s.mu.Lock()
 	if s.vectorFileStore != nil {
 		_ = s.vectorFileStore.Close()
@@ -2484,12 +2489,14 @@ func (s *Service) ClearVectorIndex() {
 		s.clusterIndex.Clear()
 	}
 	clear(s.nodeLabels)
+	clear(s.nodeTypes)
 	clear(s.nodeNamedVector)
 	clear(s.nodePropVector)
 	clear(s.nodeChunkVectors)
 	clear(s.edgeTypes)
 	clear(s.edgePropVector)
 	s.mu.Unlock()
+	s.indexMu.Unlock()
 
 	s.clusterHNSWMu.Lock()
 	s.clusterHNSW = nil
@@ -2771,6 +2778,11 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 		labelsCopy := make([]string, len(node.Labels))
 		copy(labelsCopy, node.Labels)
 		s.nodeLabels[nodeIDStr] = labelsCopy
+		if nodeType, ok := node.Properties["type"].(string); ok {
+			s.nodeTypes[nodeIDStr] = strings.ToLower(nodeType)
+		} else {
+			delete(s.nodeTypes, nodeIDStr)
+		}
 	}
 
 	// Per-DB master switch: when vector is disabled, skip every vector-side
@@ -3105,6 +3117,7 @@ func (s *Service) removeNodeLocked(nodeIDStr string) {
 	}
 
 	delete(s.nodeLabels, nodeIDStr)
+	delete(s.nodeTypes, nodeIDStr)
 
 	// Remove property vectors tracked for Cypher compatibility.
 	if props := s.nodePropVector[nodeIDStr]; len(props) > 0 {
@@ -3566,14 +3579,17 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 				if loadErr := vfs.Load(); loadErr != nil {
 					s.logPrintf("⚠️ VectorFileStore load failed; rebuilding from 0: %v", loadErr)
 					_ = vfs.Close()
-				} else if labels, named, properties, chunks, ok := vfs.NodeQueryMetadata(); ok {
+				} else if labels, types, named, properties, chunks, ok := vfs.NodeQueryMetadataWithTypes(); ok {
+					s.indexMu.Lock()
 					s.mu.Lock()
 					s.vectorFileStore = vfs
 					s.nodeLabels = labels
+					s.nodeTypes = types
 					s.nodeNamedVector = named
 					s.nodePropVector = properties
 					s.nodeChunkVectors = chunks
 					s.mu.Unlock()
+					s.indexMu.Unlock()
 				} else if storageNodeCount == 0 {
 					s.logPrintf("BuildIndexes: vector metadata missing and storage empty; loading legacy vectors without query metadata")
 					s.mu.Lock()
@@ -6929,9 +6945,9 @@ func (s *Service) filterByProperties(ctx context.Context, results []indexResult,
 	return filtered
 }
 
-// filterByTypeAndProperties combines type and property filtering into a single pass,
-// fetching each candidate node exactly once without decoding stored chunk embeddings.
-// Falls back to embedding-free individual fetches when the batch capability is absent.
+// filterByTypeAndProperties resolves type predicates from compact index metadata
+// before fetching properties. Type-only filters perform no storage reads; combined
+// filters batch-read only candidates that passed the type predicate.
 func (s *Service) filterByTypeAndProperties(
 	ctx context.Context,
 	results []indexResult,
@@ -6943,10 +6959,22 @@ func (s *Service) filterByTypeAndProperties(
 		return results
 	}
 
-	// Build type set for O(1) lookup.
-	typeSet := make(map[string]struct{}, len(types))
-	for _, t := range types {
-		typeSet[strings.ToLower(t)] = struct{}{}
+	typesResolved := false
+	if len(types) > 0 {
+		if indexedResults, complete := s.filterByIndexedType(results, types); complete {
+			results = indexedResults
+			typesResolved = true
+			if len(results) == 0 || len(filters) == 0 {
+				return results
+			}
+		}
+	}
+	var typeSet map[string]struct{}
+	if !typesResolved {
+		typeSet = make(map[string]struct{}, len(types))
+		for _, nodeType := range types {
+			typeSet[strings.ToLower(nodeType)] = struct{}{}
+		}
 	}
 
 	// Collect unique node IDs for a single batch fetch.
@@ -6962,7 +6990,7 @@ func (s *Service) filterByTypeAndProperties(
 	nodes, err := s.batchGetNodesWithoutEmbeddings(ids)
 	if err != nil {
 		// Batch unavailable – fall back to the individual-fetch helpers.
-		if len(types) > 0 {
+		if len(types) > 0 && !typesResolved {
 			results = s.filterByType(ctx, results, types, seenOrphans)
 		}
 		if len(filters) > 0 {
@@ -6978,25 +7006,8 @@ func (s *Service) filterByTypeAndProperties(
 			s.handleOrphanedEmbedding(ctx, r.ID, fmt.Errorf("node not found: %s", r.ID), seenOrphans)
 			continue
 		}
-
-		if len(typeSet) > 0 {
-			matched := false
-			for _, label := range node.Labels {
-				if _, ok := typeSet[strings.ToLower(label)]; ok {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				if nodeType, ok := node.Properties["type"].(string); ok {
-					if _, ok := typeSet[strings.ToLower(nodeType)]; ok {
-						matched = true
-					}
-				}
-			}
-			if !matched {
-				continue
-			}
+		if len(typeSet) > 0 && !nodeMatchesType(node, typeSet) {
+			continue
 		}
 
 		if len(filters) > 0 && !nodeMatchesFilters(node, filters) {

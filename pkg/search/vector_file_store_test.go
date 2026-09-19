@@ -78,6 +78,31 @@ func TestVectorFileStore_CompactionReclaimsObsoleteRecords(t *testing.T) {
 	}
 }
 
+func TestVectorFileStorePersistsCandidateFilterMetadata(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "vectors")
+	store, err := NewVectorFileStore(base, 2)
+	require.NoError(t, err)
+	require.NoError(t, store.Add("document", []float32{1, 0}))
+	store.SetNodeQueryMetadataWithTypes(
+		map[string][]string{"document": {"Document"}},
+		map[string]string{"document": "article"},
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, store.Save())
+	require.NoError(t, store.Close())
+
+	loaded, err := NewVectorFileStore(base, 2)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, loaded.Close()) })
+	require.NoError(t, loaded.Load())
+	labels, types, _, _, _, ok := loaded.NodeQueryMetadataWithTypes()
+	require.True(t, ok)
+	require.Equal(t, []string{"Document"}, labels["document"])
+	require.Equal(t, "article", types["document"])
+}
+
 func TestVectorFileStore_FixedStridePayloadAndOrdinalReload(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "vectors")
 	vfs, err := NewVectorFileStore(base, 2)

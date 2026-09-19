@@ -46,13 +46,15 @@ type WALEngine struct {
 	mutationMu sync.RWMutex
 
 	// Automatic snapshot and compaction
-	snapshotDir      string
-	snapshotMu       sync.RWMutex // Protects snapshotTicker and stopSnapshot
-	snapshotTicker   *time.Ticker
-	stopSnapshot     chan struct{}
-	snapshotWg       sync.WaitGroup // Waits for auto-compaction goroutine to finish
-	lastSnapshotTime atomic.Int64
-	totalSnapshots   atomic.Int64
+	snapshotDir       string
+	snapshotMu        sync.RWMutex // Protects snapshotTicker and stopSnapshot
+	snapshotTicker    *time.Ticker
+	stopSnapshot      chan struct{}
+	snapshotWg        sync.WaitGroup // Waits for auto-compaction goroutine to finish
+	lastSnapshotTime  atomic.Int64
+	totalSnapshots    atomic.Int64
+	compactedSequence atomic.Uint64
+	hasCompacted      atomic.Bool
 }
 
 // ListNamespaces returns known namespaces from the wrapped engine, if supported.
@@ -279,10 +281,18 @@ func (w *WALEngine) GetEdgeCurrentHead(id EdgeID) (MVCCHead, error) {
 
 // NewWALEngine creates a WAL-backed storage engine.
 func NewWALEngine(engine Engine, wal *WAL) *WALEngine {
-	return &WALEngine{
+	w := &WALEngine{
 		engine: engine,
 		wal:    wal,
 	}
+	// Existing WAL state predates this process's compaction cadence. Treat it
+	// as the baseline so an idle restart does not rewrite the entire database;
+	// the first subsequent mutation advances the sequence and triggers a snapshot.
+	if wal != nil {
+		w.compactedSequence.Store(wal.sequence.Load())
+		w.hasCompacted.Store(true)
+	}
+	return w
 }
 
 // GetInnerEngine returns the wrapped storage engine.
@@ -411,6 +421,9 @@ func (w *WALEngine) createSnapshotAndCompact() error {
 		return ErrWALClosed
 	}
 	snapshotSequence := w.wal.sequence.Load()
+	if w.hasCompacted.Load() && snapshotSequence == w.compactedSequence.Load() {
+		return nil
+	}
 	if err := w.wal.Checkpoint(); err != nil {
 		return fmt.Errorf("failed to create snapshot checkpoint: %w", err)
 	}
@@ -444,6 +457,8 @@ func (w *WALEngine) createSnapshotAndCompact() error {
 	// Update stats
 	w.totalSnapshots.Add(1)
 	w.lastSnapshotTime.Store(time.Now().UnixNano())
+	w.compactedSequence.Store(w.wal.sequence.Load())
+	w.hasCompacted.Store(true)
 
 	return nil
 }
@@ -1119,6 +1134,17 @@ func (w *WALEngine) StreamNodes(ctx context.Context, fn func(node *Node) error) 
 		}
 	}
 	return nil
+}
+
+// StreamNodesWithoutEmbeddings preserves embedding-free snapshot scans through
+// the WAL decorator.
+func (w *WALEngine) StreamNodesWithoutEmbeddings(ctx context.Context, fn func(node *Node) error) error {
+	if streamer, ok := w.engine.(NodeWithoutEmbeddingsStreamer); ok {
+		return streamer.StreamNodesWithoutEmbeddings(ctx, fn)
+	}
+	return w.StreamNodes(ctx, func(node *Node) error {
+		return fn(copyNodeWithoutEmbeddings(node))
+	})
 }
 
 // StreamNodesByPrefix implements PrefixStreamingEngine by delegating prefix-scoped

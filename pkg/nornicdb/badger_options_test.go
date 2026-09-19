@@ -84,6 +84,7 @@ func TestResolveDurabilityOptions(t *testing.T) {
 			require.Equal(t, test.wantBadgerSync, badgerOptions.SyncWrites)
 			require.Equal(t, test.wantWALMode, walConfig.SyncMode)
 			require.Equal(t, test.wantWALInterval, walConfig.BatchSyncInterval)
+			require.Equal(t, cfg.Database.WALSnapshotInterval, walConfig.SnapshotInterval)
 			require.Equal(t, test.wantAsyncInterval, asyncConfig.FlushInterval)
 			require.Equal(t, cfg.Database.AsyncMaxNodeCacheSize, asyncConfig.MaxNodeCacheSize)
 			require.Equal(t, cfg.Database.AsyncMaxEdgeCacheSize, asyncConfig.MaxEdgeCacheSize)

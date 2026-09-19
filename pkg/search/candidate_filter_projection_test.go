@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/orneryd/nornicdb/pkg/storage"
@@ -17,6 +18,31 @@ type candidateFilterReadSpy struct {
 	lightBatchReads     int
 	lightReads          int
 	batchErr            error
+}
+
+func BenchmarkTypeOnlyCandidateFilterFromMetadata(b *testing.B) {
+	service := NewService(storage.NewMemoryEngine())
+	b.Cleanup(func() { require.NoError(b, service.engine.Close()) })
+	results := make([]indexResult, 1000)
+	for i := range results {
+		id := fmt.Sprintf("doc-%d", i)
+		results[i] = indexResult{ID: id}
+		if i&1 == 0 {
+			service.nodeLabels[id] = []string{"Document"}
+		} else {
+			service.nodeLabels[id] = []string{"Other"}
+		}
+	}
+	b.ReportAllocs()
+	scratch := make([]indexResult, len(results))
+	b.ResetTimer()
+	for range b.N {
+		copy(scratch, results)
+		got := service.filterByTypeAndProperties(context.Background(), scratch, []string{"Document"}, nil, nil)
+		if len(got) != 500 {
+			b.Fatalf("got %d matches", len(got))
+		}
+	}
 }
 
 func (s *candidateFilterReadSpy) BatchGetNodes(ids []storage.NodeID) (map[storage.NodeID]*storage.Node, error) {
@@ -62,6 +88,9 @@ func TestCandidateFiltersUseEmbeddingFreeBatchReads(t *testing.T) {
 		},
 	}
 	service := NewService(spy)
+	for _, node := range spy.lightNodes {
+		require.NoError(t, service.IndexNode(node))
+	}
 
 	got := service.filterByTypeAndProperties(
 		context.Background(),
@@ -76,4 +105,47 @@ func TestCandidateFiltersUseEmbeddingFreeBatchReads(t *testing.T) {
 	require.Zero(t, spy.fullBatchReads, "candidate filtering must not decode stored embeddings")
 	require.Zero(t, spy.fullIndividualReads, "candidate filtering must not decode stored embeddings")
 	require.Zero(t, spy.lightReads, "supported batch readers must not degrade to per-node reads")
+}
+
+func TestTypeOnlyCandidateFilterUsesInMemoryMetadata(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	spy := &candidateFilterReadSpy{
+		Engine: base,
+		lightNodes: map[storage.NodeID]*storage.Node{
+			"label-match": {
+				ID:         "label-match",
+				Labels:     []string{"Document"},
+				Properties: map[string]any{"body": "large document text"},
+			},
+			"property-match": {
+				ID:         "property-match",
+				Labels:     []string{"Legacy"},
+				Properties: map[string]any{"type": "Document", "body": "large document text"},
+			},
+			"miss": {
+				ID:         "miss",
+				Labels:     []string{"Other"},
+				Properties: map[string]any{"body": "large document text"},
+			},
+		},
+	}
+	service := NewService(spy)
+	for _, node := range spy.lightNodes {
+		require.NoError(t, service.IndexNode(node))
+	}
+
+	got := service.filterByTypeAndProperties(
+		context.Background(),
+		[]indexResult{{ID: "label-match"}, {ID: "property-match"}, {ID: "miss"}},
+		[]string{"document"},
+		nil,
+		map[string]bool{},
+	)
+
+	require.Equal(t, []indexResult{{ID: "label-match"}, {ID: "property-match"}}, got)
+	require.Zero(t, spy.lightBatchReads, "type-only filtering must not read document properties")
+	require.Zero(t, spy.lightReads, "type-only filtering must not read document properties")
+	require.Zero(t, spy.fullBatchReads, "type-only filtering must not decode stored nodes")
+	require.Zero(t, spy.fullIndividualReads, "type-only filtering must not decode stored nodes")
 }

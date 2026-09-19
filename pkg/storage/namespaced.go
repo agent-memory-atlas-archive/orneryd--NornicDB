@@ -1142,6 +1142,22 @@ func (n *NamespacedEngine) StreamNodes(ctx context.Context, fn func(node *Node) 
 	return nil
 }
 
+// StreamNodesWithoutEmbeddings streams complete lightweight nodes in this
+// namespace while preserving user-visible IDs.
+func (n *NamespacedEngine) StreamNodesWithoutEmbeddings(ctx context.Context, fn func(node *Node) error) error {
+	if streamer, ok := n.inner.(NodeWithoutEmbeddingsStreamer); ok {
+		return streamer.StreamNodesWithoutEmbeddings(ctx, func(node *Node) error {
+			if n.hasNodePrefix(node.ID) {
+				return fn(n.toUserNode(node))
+			}
+			return nil
+		})
+	}
+	return n.StreamNodes(ctx, func(node *Node) error {
+		return fn(copyNodeWithoutEmbeddings(node))
+	})
+}
+
 // StreamNodesByPrefix streams nodes in the namespace whose user-visible IDs
 // start with prefix.
 func (n *NamespacedEngine) StreamNodesByPrefix(ctx context.Context, prefix string, fn func(node *Node) error) error {

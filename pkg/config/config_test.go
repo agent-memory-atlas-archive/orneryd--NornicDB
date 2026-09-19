@@ -53,6 +53,9 @@ func TestLoadFromEnv_Defaults(t *testing.T) {
 	if cfg.Database.MaxConcurrentTransactions != 1000 {
 		t.Errorf("expected max concurrent tx 1000, got %d", cfg.Database.MaxConcurrentTransactions)
 	}
+	if cfg.Database.WALSnapshotInterval != 5*time.Minute {
+		t.Errorf("expected WAL snapshot interval 5m, got %v", cfg.Database.WALSnapshotInterval)
+	}
 
 	// Server defaults - Bolt
 	if !cfg.Server.BoltEnabled {
@@ -370,6 +373,7 @@ func TestLoadFromEnv_ComprehensiveAdditionalEnvCoverage(t *testing.T) {
 	t.Setenv("NORNICDB_TRANSACTION_TIMEOUT", "90")
 	t.Setenv("NORNICDB_MAX_TRANSACTIONS", "55")
 	t.Setenv("NORNICDB_WAL_AUTO_COMPACTION_ENABLED", "false")
+	t.Setenv("NORNICDB_WAL_SNAPSHOT_INTERVAL", "1020000")
 	t.Setenv("NORNICDB_WAL_RETENTION_MAX_SEGMENTS", "12")
 	t.Setenv("NORNICDB_WAL_RETENTION_MAX_AGE", "36h")
 	t.Setenv("NORNICDB_WAL_LEDGER_RETENTION_DEFAULTS", "true")
@@ -509,7 +513,7 @@ func TestLoadFromEnv_ComprehensiveAdditionalEnvCoverage(t *testing.T) {
 	if cfg.Database.TransactionTimeout != 90*time.Second || cfg.Database.MaxConcurrentTransactions != 55 {
 		t.Fatalf("unexpected transaction values: %+v", cfg.Database)
 	}
-	if cfg.Database.WALAutoCompactionEnabled || cfg.Database.WALRetentionMaxSegments != 12 || cfg.Database.WALRetentionMaxAge != 36*time.Hour {
+	if cfg.Database.WALAutoCompactionEnabled || cfg.Database.WALSnapshotInterval != 17*time.Minute || cfg.Database.WALRetentionMaxSegments != 12 || cfg.Database.WALRetentionMaxAge != 36*time.Hour {
 		t.Fatalf("unexpected wal retention config: %+v", cfg.Database)
 	}
 	if !cfg.Database.WALRetentionLedgerDefaults || cfg.Database.WALSnapshotRetentionMaxCount != 5 || cfg.Database.WALSnapshotRetentionMaxAge != 24*time.Hour {
@@ -1133,6 +1137,7 @@ database:
   wal_sync_mode: "none"
   wal_sync_interval: "2s"
   wal_auto_compaction_enabled: false
+  wal_snapshot_interval: 1380000
   wal_retention_max_segments: 10
   wal_retention_max_age: "48h"
   wal_ledger_retention_defaults: true
@@ -1293,6 +1298,7 @@ plugins:
 	require.Equal(t, "immediate", cfg.Database.WALSyncMode)
 	require.Equal(t, time.Duration(0), cfg.Database.WALSyncInterval)
 	require.False(t, cfg.Database.WALAutoCompactionEnabled)
+	require.Equal(t, 23*time.Minute, cfg.Database.WALSnapshotInterval)
 	require.Equal(t, 10, cfg.Database.WALRetentionMaxSegments)
 	require.Equal(t, 48*time.Hour, cfg.Database.WALRetentionMaxAge)
 	require.True(t, cfg.Database.WALRetentionLedgerDefaults)

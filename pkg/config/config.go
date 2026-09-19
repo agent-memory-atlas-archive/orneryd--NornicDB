@@ -248,6 +248,11 @@ type DatabaseConfig struct {
 	// Environment: NORNICDB_WAL_AUTO_COMPACTION_ENABLED
 	WALAutoCompactionEnabled bool
 
+	// WALSnapshotInterval controls how often auto-compaction checks for WAL
+	// mutations that need a new snapshot. Idle checks do not write a snapshot.
+	// Environment: NORNICDB_WAL_SNAPSHOT_INTERVAL (milliseconds)
+	WALSnapshotInterval time.Duration
+
 	// StrictDurability enables maximum safety settings (opt-in):
 	// - WAL: immediate sync (fsync every write)
 	// - Badger: SyncWrites=true
@@ -1480,6 +1485,7 @@ type YAMLConfig struct {
 		WALSyncMode                       string `yaml:"wal_sync_mode"`
 		WALSyncInterval                   string `yaml:"wal_sync_interval"`
 		WALAutoCompactionEnabled          *bool  `yaml:"wal_auto_compaction_enabled"`
+		WALSnapshotIntervalMillis         int64  `yaml:"wal_snapshot_interval"`
 		WALRetentionMaxSegments           int    `yaml:"wal_retention_max_segments"`
 		WALRetentionMaxAge                string `yaml:"wal_retention_max_age"`
 		WALRetentionLedgerDefaults        bool   `yaml:"wal_ledger_retention_defaults"`
@@ -1846,6 +1852,7 @@ func LoadDefaults() *Config {
 	config.Database.WALSyncMode = "batch"
 	config.Database.WALSyncInterval = 100 * time.Millisecond
 	config.Database.WALAutoCompactionEnabled = true
+	config.Database.WALSnapshotInterval = 5 * time.Minute
 	config.Database.WALRetentionMaxSegments = 0 // Unlimited by default
 	config.Database.WALRetentionMaxAge = 0      // Unlimited by default
 	config.Database.WALRetentionLedgerDefaults = false
@@ -2168,6 +2175,9 @@ func applyEnvVars(config *Config) error {
 	// WAL auto-compaction settings
 	if v, ok := envutil.LookupBoolLoose("NORNICDB_WAL_AUTO_COMPACTION_ENABLED"); ok {
 		config.Database.WALAutoCompactionEnabled = v
+	}
+	if v := getEnvInt("NORNICDB_WAL_SNAPSHOT_INTERVAL", 0); v > 0 {
+		config.Database.WALSnapshotInterval = time.Duration(v) * time.Millisecond
 	}
 
 	// WAL retention settings
@@ -3170,6 +3180,9 @@ func LoadFromFile(configPath string) (*Config, error) {
 	}
 	if yamlCfg.Database.WALRetentionMaxSegments > 0 {
 		config.Database.WALRetentionMaxSegments = yamlCfg.Database.WALRetentionMaxSegments
+	}
+	if yamlCfg.Database.WALSnapshotIntervalMillis > 0 {
+		config.Database.WALSnapshotInterval = time.Duration(yamlCfg.Database.WALSnapshotIntervalMillis) * time.Millisecond
 	}
 	if yamlCfg.Database.WALRetentionMaxAge != "" {
 		if d, err := time.ParseDuration(yamlCfg.Database.WALRetentionMaxAge); err == nil {

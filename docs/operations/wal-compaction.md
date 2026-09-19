@@ -27,7 +27,7 @@ Automatic compaction is the recommended approach for production deployments. Ena
 database:
   wal_dir: "data/wal"
   wal_sync_mode: "batch"
-  wal_snapshot_interval: "1h"       # Create snapshots hourly
+  wal_snapshot_interval: 300000     # Milliseconds; check every five minutes
   wal_auto_compaction_enabled: true  # Enabled by default
   wal_snapshot_dir: "data/snapshots"
 ```
@@ -35,13 +35,14 @@ database:
 **Environment variables:**
 
 ```bash
-export NORNICDB_WAL_SNAPSHOT_INTERVAL=1h
+export NORNICDB_WAL_SNAPSHOT_INTERVAL=300000
 export NORNICDB_WAL_AUTO_COMPACTION_ENABLED=true
 ```
 
 **Behavior:**
 
-- Snapshots created at configured interval (default: 1 hour)
+- WAL changes are checked at the configured interval (default: 5 minutes)
+- Idle intervals do not create snapshots, scan nodes, or append checkpoints
 - WAL truncated after each successful snapshot
 - Failures logged but don't crash the database
 - Automatic retry on next interval
@@ -217,7 +218,7 @@ Recovery time = Snapshot load + O(interval writes)
 | `wal_batch_sync_interval` | `100ms` | Batch sync frequency |
 | `wal_max_file_size` | `100MB` | File rotation trigger (bytes) |
 | `wal_max_entries` | `100000` | File rotation trigger (count) |
-| `wal_snapshot_interval` | `1h` | Auto-compaction frequency |
+| `wal_snapshot_interval` | `300000` | Milliseconds between WAL change checks |
 | `wal_auto_compaction_enabled` | `true` | Enable/disable auto-compaction |
 
 ### Tuning Snapshot Interval

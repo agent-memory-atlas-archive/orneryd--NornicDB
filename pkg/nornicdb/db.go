@@ -1476,7 +1476,10 @@ func resolveDurabilityOptions(dataDir string, config *Config) (storage.BadgerOpt
 	if walConfig.SyncMode != "batch" {
 		walConfig.BatchSyncInterval = 0
 	}
-	walConfig.SnapshotInterval = 5 * time.Minute
+	walConfig.SnapshotInterval = config.Database.WALSnapshotInterval
+	if walConfig.SnapshotInterval <= 0 {
+		walConfig.SnapshotInterval = 5 * time.Minute
+	}
 	walConfig.RetentionMaxSegments = config.Database.WALRetentionMaxSegments
 	walConfig.RetentionMaxAge = config.Database.WALRetentionMaxAge
 	if config.Database.WALRetentionLedgerDefaults && walConfig.RetentionMaxSegments == 0 && walConfig.RetentionMaxAge == 0 {

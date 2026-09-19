@@ -52,10 +52,12 @@ type VectorFileStore struct {
 	writeRecord           func(*os.File, string, []float32) error
 	idToOrdinal           map[string]int64
 	nodeLabels            map[string][]string
+	nodeTypes             map[string]string
 	nodeNamedVectors      map[string]map[string]string
 	nodePropertyVectors   map[string]map[string]string
 	nodeChunkVectors      map[string][]string
 	nodeMetadataPersisted bool
+	nodeTypesPersisted    bool
 	nextOrdinal           int64
 	buildIndexedCount     int64 // last checkpoint count; persisted in .meta for resume
 	obsoleteCount         int64 // approximate number of stale slots in .vec from updates/deletes
@@ -100,10 +102,12 @@ type VectorFileStoreMeta struct {
 	DataSlots             int64                        `msgpack:"slots"`
 	BuildIndexedCount     int64                        `msgpack:"build_count,omitempty"` // last checkpoint count during BuildIndexes; used for resume
 	NodeLabels            map[string][]string          `msgpack:"node_labels,omitempty"`
+	NodeTypes             map[string]string            `msgpack:"node_types,omitempty"`
 	NodeNamedVectors      map[string]map[string]string `msgpack:"node_named_vectors,omitempty"`
 	NodePropertyVectors   map[string]map[string]string `msgpack:"node_property_vectors,omitempty"`
 	NodeChunkVectors      map[string][]string          `msgpack:"node_chunk_vectors,omitempty"`
 	NodeMetadataPersisted bool                         `msgpack:"node_metadata_persisted,omitempty"`
+	NodeTypesPersisted    bool                         `msgpack:"node_types_persisted,omitempty"`
 }
 
 // NewVectorFileStore creates a new file-backed store and opens the vector file for append.
@@ -122,6 +126,7 @@ func NewVectorFileStore(vecBasePath string, dimensions int) (*VectorFileStore, e
 		metaPath:            metaPath,
 		idToOrdinal:         make(map[string]int64),
 		nodeLabels:          make(map[string][]string),
+		nodeTypes:           make(map[string]string),
 		nodeNamedVectors:    make(map[string]map[string]string),
 		nodePropertyVectors: make(map[string]map[string]string),
 		nodeChunkVectors:    make(map[string][]string),
@@ -535,10 +540,12 @@ func (v *VectorFileStore) Save() error {
 		idToOrdinalCopy[id] = ordinal
 	}
 	nodeLabels := cloneStringSlices(v.nodeLabels)
+	nodeTypes := cloneStringMap(v.nodeTypes)
 	nodeNamedVectors := cloneNestedStringMaps(v.nodeNamedVectors)
 	nodePropertyVectors := cloneNestedStringMaps(v.nodePropertyVectors)
 	nodeChunkVectors := cloneStringSlices(v.nodeChunkVectors)
 	nodeMetadataPersisted := v.nodeMetadataPersisted
+	nodeTypesPersisted := v.nodeTypesPersisted
 	file := v.file
 	v.mu.RUnlock()
 	if err := file.Sync(); err != nil {
@@ -561,10 +568,12 @@ func (v *VectorFileStore) Save() error {
 		DataSlots:             dataSlots,
 		BuildIndexedCount:     buildCount,
 		NodeLabels:            nodeLabels,
+		NodeTypes:             nodeTypes,
 		NodeNamedVectors:      nodeNamedVectors,
 		NodePropertyVectors:   nodePropertyVectors,
 		NodeChunkVectors:      nodeChunkVectors,
 		NodeMetadataPersisted: nodeMetadataPersisted,
+		NodeTypesPersisted:    nodeTypesPersisted,
 	}); err != nil {
 		_ = f.Close()
 		_ = security.RemoveRootedPath(tmpPath)
@@ -641,23 +650,37 @@ func (v *VectorFileStore) Load() error {
 	v.nextOrdinal = meta.DataSlots
 	v.buildIndexedCount = meta.BuildIndexedCount
 	v.nodeLabels = meta.NodeLabels
+	v.nodeTypes = meta.NodeTypes
 	v.nodeNamedVectors = meta.NodeNamedVectors
 	v.nodePropertyVectors = meta.NodePropertyVectors
 	v.nodeChunkVectors = meta.NodeChunkVectors
 	v.nodeMetadataPersisted = meta.NodeMetadataPersisted
+	v.nodeTypesPersisted = meta.NodeTypesPersisted
 	v.obsoleteCount = meta.DataSlots - int64(len(v.idToOrdinal))
 	return nil
 }
 
 // SetNodeQueryMetadata stores node-to-vector associations in the sidecar.
 func (v *VectorFileStore) SetNodeQueryMetadata(labels map[string][]string, named, properties map[string]map[string]string, chunks map[string][]string) {
+	v.setNodeQueryMetadata(labels, nil, named, properties, chunks, false)
+}
+
+// SetNodeQueryMetadataWithTypes also persists the legacy string type-property
+// projection used by metadata-only search candidate filtering.
+func (v *VectorFileStore) SetNodeQueryMetadataWithTypes(labels map[string][]string, types map[string]string, named, properties map[string]map[string]string, chunks map[string][]string) {
+	v.setNodeQueryMetadata(labels, types, named, properties, chunks, true)
+}
+
+func (v *VectorFileStore) setNodeQueryMetadata(labels map[string][]string, types map[string]string, named, properties map[string]map[string]string, chunks map[string][]string, typesPersisted bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.nodeLabels = cloneStringSlices(labels)
+	v.nodeTypes = cloneStringMap(types)
 	v.nodeNamedVectors = cloneNestedStringMaps(named)
 	v.nodePropertyVectors = cloneNestedStringMaps(properties)
 	v.nodeChunkVectors = cloneStringSlices(chunks)
 	v.nodeMetadataPersisted = true
+	v.nodeTypesPersisted = typesPersisted
 }
 
 // NodeQueryMetadata returns durable node-to-vector associations, if available.
@@ -665,6 +688,14 @@ func (v *VectorFileStore) NodeQueryMetadata() (map[string][]string, map[string]m
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	return cloneStringSlices(v.nodeLabels), cloneNestedStringMaps(v.nodeNamedVectors), cloneNestedStringMaps(v.nodePropertyVectors), cloneStringSlices(v.nodeChunkVectors), v.nodeMetadataPersisted
+}
+
+// NodeQueryMetadataWithTypes returns query metadata only when the sidecar has
+// the complete type-property projection required for storage-free filtering.
+func (v *VectorFileStore) NodeQueryMetadataWithTypes() (map[string][]string, map[string]string, map[string]map[string]string, map[string]map[string]string, map[string][]string, bool) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return cloneStringSlices(v.nodeLabels), cloneStringMap(v.nodeTypes), cloneNestedStringMaps(v.nodeNamedVectors), cloneNestedStringMaps(v.nodePropertyVectors), cloneStringSlices(v.nodeChunkVectors), v.nodeMetadataPersisted && v.nodeTypesPersisted
 }
 
 func cloneStringSlices(source map[string][]string) map[string][]string {
