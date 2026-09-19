@@ -189,24 +189,7 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		return grpcContinuationResponse(page, time.Since(start)), nil
 	}
 
-	limit := int(req.Limit)
-	if limit <= 0 {
-		limit = 10
-	}
-	if limit > s.maxLimit {
-		limit = s.maxLimit
-	}
-
-	opts := search.DefaultSearchOptions()
-	opts.Limit = limit
-	opts.RerankEnabled = s.rerankEnabled
-	if len(req.Labels) > 0 {
-		opts.Types = req.Labels
-	}
-	if req.MinSimilarity != nil {
-		v := float64(*req.MinSimilarity)
-		opts.MinSimilarity = &v
-	}
+	opts := searchOptions(req, s.maxLimit, s.rerankEnabled)
 
 	chunkQuery := search.ChunkQueryFunc(nil)
 	if dependencies.ChunkQuery != nil {
@@ -271,6 +254,8 @@ func searchOptions(req *gen.SearchTextRequest, maxLimit int, rerank bool) *searc
 	opts.Limit = limit
 	opts.RerankEnabled = rerank
 	opts.Types = append([]string(nil), req.Labels...)
+	opts.IncludeProperties = append([]string(nil), req.IncludeProperties...)
+	opts.ExcludeProperties = append([]string(nil), req.ExcludeProperties...)
 	if req.MinSimilarity != nil {
 		value := float64(*req.MinSimilarity)
 		opts.MinSimilarity = &value

@@ -88,11 +88,17 @@ Content-Type: application/json
   "labels": ["Image"],
   "mode": "ranked_then_id",
   "group_by": "asset_id",
+  "include_properties": ["title", "description", "asset_id"],
+  "exclude_properties": ["raw_payload"],
   "limit": 500,
   "ranked_limit": 5000,
   "n": 50
 }
 ```
+
+The initial request's property projection is retained by the continuation;
+pulls cannot broaden it. `exclude_properties` takes precedence when a key also
+appears in `include_properties`.
 
 Pull and discard use the same endpoint:
 
@@ -117,7 +123,9 @@ object containing `results`, `qid`,
 
 Set `SearchTextRequest.n` to start. Send `SearchTextResponse.qid` in a later
 request with a new `n`, or set `discard`. The additive request fields are
-`qid`, `n`, `discard`, `max_results`, `mode`, `group_by`, and `ranked_limit`.
+`qid`, `n`, `discard`, `max_results`, `mode`, `group_by`, `ranked_limit`,
+`include_properties`, and `exclude_properties`. The property projection from
+the start request is retained for every page; exclusion wins over inclusion.
 `SearchHit` adds `phase`, `group_key`, and repeated `passages`. Native gRPC
 uses the same `SearchHit` message for grouped child passages, so per-hit
 metadata is preserved on both parent and child results.

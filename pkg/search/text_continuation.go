@@ -386,6 +386,7 @@ func (s *Service) SearchTextContinuation(
 	}
 	page, err := registry.Start(ctx, scope, &searchMetadataStream{
 		Stream: stream, state: state, engine: s.engine, authorizeNode: request.AuthorizeNode,
+		projection: newResultPropertyProjection(ownedOptions.IncludeProperties, ownedOptions.ExcludeProperties),
 	}, request.N)
 	if err != nil {
 		return nil, err
@@ -474,6 +475,7 @@ type searchMetadataStream struct {
 	state         *searchContinuationState
 	engine        storage.Engine
 	authorizeNode NodeAuthorizationFunc
+	projection    resultPropertyProjection
 }
 
 func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int) (*resultstream.Page, error) {
@@ -492,7 +494,7 @@ func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int)
 		}
 		compact[index] = result
 	}
-	results, err := hydrateContinuationResults(s.engine, compact, s.authorizeNode)
+	results, err := hydrateContinuationResults(s.engine, compact, s.authorizeNode, s.projection)
 	if err != nil {
 		return nil, err
 	}
@@ -600,6 +602,8 @@ func searchPageFromResultStream(page *resultstream.Page) (*SearchContinuationPag
 func cloneContinuationSearchOptions(options *SearchOptions) SearchOptions {
 	clone := *options
 	clone.Types = append([]string(nil), options.Types...)
+	clone.IncludeProperties = append([]string(nil), options.IncludeProperties...)
+	clone.ExcludeProperties = append([]string(nil), options.ExcludeProperties...)
 	if options.MinSimilarity != nil {
 		value := *options.MinSimilarity
 		clone.MinSimilarity = &value

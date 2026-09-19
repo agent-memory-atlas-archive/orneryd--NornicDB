@@ -123,6 +123,8 @@ message SearchTextRequest {
   string mode = 10;           // ranked | ranked_then_id | id
   string group_by = 11;
   optional uint64 ranked_limit = 12;
+  repeated string include_properties = 13;
+  repeated string exclude_properties = 14;
 }
 
 message SearchTextResponse {
@@ -147,6 +149,10 @@ message SearchTextResponse {
   string fallback_reason = 19;
 }
 ```
+
+`include_properties` and `exclude_properties` project the property maps in
+returned hits without affecting filtering or ranking. Exclusion wins, and a
+continuation retains its initial projection across pulls.
 
 `ranked_pool_exhausted` is true only when the ranked branch is known to be
 fully exhausted. `completion="eligible_population_exhausted"` means the stream

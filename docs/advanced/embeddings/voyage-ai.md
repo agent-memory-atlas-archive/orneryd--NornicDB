@@ -93,6 +93,14 @@ For inline images, use `image_base64` with a PNG, JPEG, WEBP, or GIF data URI:
 [{"type":"image_base64","image_base64":"data:image/png;base64,..."}]
 ```
 
+The worker batches structured documents for the same configured provider and
+claims each node once across concurrent workers. Configure the provider-neutral
+`NORNICDB_SEARCH_BM25_PROPERTIES` allowlist to keep structured image inputs out
+of lexical indexing and rerank text, for example `title,text,description`.
+Search callers can independently use `include_properties` or
+`exclude_properties` to bound response properties; exclusion takes precedence
+when the same key is present in both lists.
+
 NornicDB validates the structured shape, supported data-URI media types, the
 20 MB decoded inline-image limit, and Voyage's 1,000-input request limit. It
 does not fetch remote images: Voyage fetches an `http` or `https` URL and

@@ -61,6 +61,14 @@ message SearchTextRequest {
 
   // Optional fixed ranked-prefix boundary for ranked_then_id mode.
   optional uint64 ranked_limit = 12;
+
+  // Optional response projection. When nonempty, only these node properties
+  // are returned. This does not change filtering, BM25 indexing, or ranking.
+  repeated string include_properties = 13;
+
+  // Properties omitted from returned nodes. Exclusion takes precedence over
+  // inclusion. Continuation streams retain the projection from their start.
+  repeated string exclude_properties = 14;
 }
 
 message SearchHit {

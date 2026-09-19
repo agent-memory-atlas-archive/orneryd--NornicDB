@@ -151,13 +151,19 @@ Results include RRF metadata so you can see how each ranking strategy contribute
 
 ### HTTP Search Request Fields
 
-| Field      | Default | Description                                         |
-| ---------- | ------- | --------------------------------------------------- |
-| `query`    | —       | The search text (required)                          |
-| `limit`    | 10      | Maximum number of results                           |
-| `labels`   | all     | Restrict results to nodes with any of these labels  |
-| `filters`  | none    | Property filters as `{"key": ["value1", "value2"]}` |
-| `database` | default | Logical database name to search                     |
+| Field                | Default | Description                                                        |
+| -------------------- | ------- | ------------------------------------------------------------------ |
+| `query`              | —       | The search text (required)                                         |
+| `limit`              | 10      | Maximum number of results                                          |
+| `labels`             | all     | Restrict results to nodes with any of these labels                 |
+| `filters`            | none    | Candidate filters as `{"key": ["value1", "value2"]}`              |
+| `include_properties` | all     | Return only these node property keys                               |
+| `exclude_properties` | none    | Omit these keys; exclusion wins over `include_properties`          |
+| `database`           | default | Logical database name to search                                    |
+
+Property projection changes only the returned `properties` map. It does not
+change matching or ranking. Use `NORNICDB_SEARCH_BM25_PROPERTIES` to control
+which stored properties enter BM25 and rerank text.
 
 RRF tuning constants (`k`, vector/BM25 weights) are applied internally by the search service and are not exposed as HTTP request fields. For programmatic control over fusion weights or k, use the embedded Go API or the MCP `discover` tool. Internal RRF defaults are `k = 60` with adaptive vector/BM25 weights driven by query length (see the table above).
 

@@ -385,6 +385,13 @@ type SearchOptions struct {
 	// Keys are property names; values are acceptable values (OR within a key, AND across keys).
 	// Scalar and array property values are both supported.
 	Filters map[string][]string
+
+	// IncludeProperties limits each returned result's Properties map to these
+	// keys. Empty includes every property unless excluded below.
+	IncludeProperties []string
+	// ExcludeProperties removes keys from each returned result's Properties
+	// map. Exclusion wins when a key appears in both lists.
+	ExcludeProperties []string
 }
 
 var defaultSearchOptionsTemplate = SearchOptions{
@@ -468,6 +475,10 @@ func searchCacheKey(query string, embedding []float32, opts *SearchOptions) stri
 	typesCopy := make([]string, len(opts.Types))
 	copy(typesCopy, opts.Types)
 	sort.Strings(typesCopy)
+	includeProperties := append([]string(nil), opts.IncludeProperties...)
+	excludeProperties := append([]string(nil), opts.ExcludeProperties...)
+	sort.Strings(includeProperties)
+	sort.Strings(excludeProperties)
 
 	// Build a stable representation of Filters: sorted keys, sorted values within each key.
 	filterKeys := make([]string, 0, len(opts.Filters))
@@ -508,6 +519,8 @@ func searchCacheKey(query string, embedding []float32, opts *SearchOptions) stri
 		strconv.FormatFloat(opts.OverfetchGrowthFactor, 'g', -1, 64),
 		strconv.Itoa(opts.MaxCandidateLimit),
 		strings.Join(filterParts, ";"),
+		strings.Join(includeProperties, "|"),
+		strings.Join(excludeProperties, "|"),
 	}, "\x00")
 }
 
@@ -4369,7 +4382,7 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	}
 
 	// Step 7: Convert to SearchResult and enrich with node data
-	results := s.enrichResults(ctx, fusedResults, opts.Limit, seenOrphans)
+	results := s.enrichResults(ctx, fusedResults, opts, seenOrphans)
 	fusionMs := int(time.Since(fusionStart).Milliseconds())
 	totalMs := int(time.Since(totalStart).Milliseconds())
 
@@ -6520,7 +6533,7 @@ func (s *Service) vectorSearchOnly(ctx context.Context, embedding []float32, opt
 			searchMethod, len(results), time.Since(searchStart))
 	}
 
-	searchResults := s.enrichIndexResults(ctx, results, opts.Limit, seenOrphans)
+	searchResults := s.enrichIndexResults(ctx, results, opts, seenOrphans)
 	// Vector-only: set vector_rank from position (1-based), bm25_rank = 0
 	for i := range searchResults {
 		searchResults[i].VectorRank = i + 1
@@ -6582,7 +6595,7 @@ func (s *Service) fullTextSearchOnly(ctx context.Context, query string, opts *Se
 	}
 	bm25Ms := int(time.Since(bm25Start).Milliseconds())
 
-	searchResults := s.enrichIndexResults(ctx, results, opts.Limit, seenOrphans)
+	searchResults := s.enrichIndexResults(ctx, results, opts, seenOrphans)
 	// Full-text only: set bm25_rank from position (1-based), vector_rank = 0
 	for i := range searchResults {
 		searchResults[i].VectorRank = 0
@@ -7021,13 +7034,14 @@ func (s *Service) filterByType(ctx context.Context, results []indexResult, types
 }
 
 // enrichResults converts RRF results to SearchResult with full node data.
-func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, limit int, seenOrphans map[string]bool) []SearchResult {
-	resultLimit := boundedResultLimit(len(rrfResults), limit)
+func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, opts *SearchOptions, seenOrphans map[string]bool) []SearchResult {
+	resultLimit := boundedResultLimit(len(rrfResults), opts.Limit)
 	if resultLimit == 0 {
 		return nil
 	}
+	projection := newResultPropertyProjection(opts.IncludeProperties, opts.ExcludeProperties)
 	if !s.supportsBatchNodesWithoutEmbeddings() {
-		return s.enrichResultsIndividually(ctx, rrfResults[:resultLimit], seenOrphans)
+		return s.enrichResultsIndividually(ctx, rrfResults[:resultLimit], seenOrphans, projection)
 	}
 
 	ids := make([]storage.NodeID, resultLimit)
@@ -7052,7 +7066,7 @@ func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, lim
 			ID:         rrf.ID,
 			NodeID:     node.ID,
 			Labels:     node.Labels,
-			Properties: node.Properties,
+			Properties: projection.apply(node.Properties),
 			Score:      rrf.RRFScore,
 			Similarity: rrf.OriginalScore,
 			RRFScore:   rrf.RRFScore,
@@ -7082,7 +7096,7 @@ func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, lim
 	return results
 }
 
-func (s *Service) enrichResultsIndividually(ctx context.Context, rrfResults []rrfResult, seenOrphans map[string]bool) []SearchResult {
+func (s *Service) enrichResultsIndividually(ctx context.Context, rrfResults []rrfResult, seenOrphans map[string]bool, projection resultPropertyProjection) []SearchResult {
 	results := make([]SearchResult, 0, len(rrfResults))
 	for _, rrf := range rrfResults {
 		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(rrf.ID))
@@ -7096,7 +7110,7 @@ func (s *Service) enrichResultsIndividually(ctx context.Context, rrfResults []rr
 			ID:         rrf.ID,
 			NodeID:     node.ID,
 			Labels:     node.Labels,
-			Properties: node.Properties,
+			Properties: projection.apply(node.Properties),
 			Score:      rrf.RRFScore,
 			Similarity: rrf.OriginalScore,
 			RRFScore:   rrf.RRFScore,
@@ -7124,11 +7138,12 @@ func (s *Service) enrichResultsIndividually(ctx context.Context, rrfResults []rr
 
 // enrichIndexResults converts raw index results to SearchResult.
 // Maps chunk IDs (e.g., "node-id-chunk-0") back to the original node ID.
-func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexResult, limit int, seenOrphans map[string]bool) []SearchResult {
-	resultLimit := boundedResultLimit(len(indexResults), limit)
+func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexResult, opts *SearchOptions, seenOrphans map[string]bool) []SearchResult {
+	resultLimit := boundedResultLimit(len(indexResults), opts.Limit)
 	if resultLimit == 0 {
 		return nil
 	}
+	projection := newResultPropertyProjection(opts.IncludeProperties, opts.ExcludeProperties)
 
 	ids := make([]storage.NodeID, 0, resultLimit)
 	scores := make([]float64, 0, resultLimit)
@@ -7167,7 +7182,7 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 		scores = append(scores, ir.Score)
 	}
 	if !s.supportsBatchNodesWithoutEmbeddings() {
-		return s.enrichIndexResultsIndividually(ctx, ids, scores, seenOrphans)
+		return s.enrichIndexResultsIndividually(ctx, ids, scores, seenOrphans, projection)
 	}
 
 	nodes, err := s.batchGetNodesWithoutEmbeddings(ids)
@@ -7187,7 +7202,7 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 			ID:         nodeIDStr, // Use original node ID, not chunk ID
 			NodeID:     node.ID,
 			Labels:     node.Labels,
-			Properties: node.Properties,
+			Properties: projection.apply(node.Properties),
 			Score:      scores[index],
 			Similarity: scores[index],
 		}
@@ -7214,7 +7229,7 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 	return results
 }
 
-func (s *Service) enrichIndexResultsIndividually(ctx context.Context, ids []storage.NodeID, scores []float64, seenOrphans map[string]bool) []SearchResult {
+func (s *Service) enrichIndexResultsIndividually(ctx context.Context, ids []storage.NodeID, scores []float64, seenOrphans map[string]bool, projection resultPropertyProjection) []SearchResult {
 	results := make([]SearchResult, 0, len(ids))
 	for index, id := range ids {
 		nodeIDStr := string(id)
@@ -7229,7 +7244,7 @@ func (s *Service) enrichIndexResultsIndividually(ctx context.Context, ids []stor
 			ID:         nodeIDStr,
 			NodeID:     node.ID,
 			Labels:     node.Labels,
-			Properties: node.Properties,
+			Properties: projection.apply(node.Properties),
 			Score:      scores[index],
 			Similarity: scores[index],
 		}

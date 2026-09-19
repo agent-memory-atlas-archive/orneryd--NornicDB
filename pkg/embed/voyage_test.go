@@ -324,6 +324,47 @@ func TestVoyageMultimodalEmbedsStructuredDocumentsAndTextQueries(t *testing.T) {
 	require.NotEmpty(t, embedder.EmbeddingSpace())
 }
 
+func TestVoyageMultimodalBatchesStructuredDocuments(t *testing.T) {
+	requestCount := 0
+	inputCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		inputs := body["inputs"].([]any)
+		inputCount += len(inputs)
+		data := make([]map[string]any, len(inputs))
+		for index := range inputs {
+			data[index] = map[string]any{"index": index, "embedding": []float32{float32(index + 1), 0}}
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": data, "model": "voyage-multimodal-3.5"}))
+	}))
+	t.Cleanup(server.Close)
+
+	embedder, err := NewVoyage(&Config{
+		Provider: "voyage", APIURL: server.URL, APIKey: "voyage-key",
+		Model: "voyage-multimodal-3.5", Dimensions: 2, Mode: VoyageModeMultimodal,
+	})
+	require.NoError(t, err)
+
+	results, err := embedder.EmbedDocumentPropertyBatchChunks(
+		context.Background(),
+		[]string{"first fallback", "second fallback"},
+		[]map[string]any{
+			{"_embedding_content": []any{map[string]any{"type": "text", "text": "first"}}},
+			{"_embedding_content": []any{map[string]any{"type": "text", "text": "second"}}},
+		},
+		512,
+		0,
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	require.Equal(t, 1, requestCount)
+	require.Equal(t, 2, inputCount)
+	require.Equal(t, []float32{1, 0}, results[0].Embeddings[0])
+	require.Equal(t, []float32{2, 0}, results[1].Embeddings[0])
+}
+
 func TestVoyageContextualizedChunkSizeDefaultAndExplicit(t *testing.T) {
 	require.Equal(t, VoyageContextualizedDefaultChunkTokens, voyageContextualizedChunkSize(0))
 	require.Equal(t, VoyageContextualizedMaxChunkTokens, voyageContextualizedChunkSize(VoyageContextualizedMaxChunkTokens+1))

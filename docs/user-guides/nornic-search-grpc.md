@@ -68,8 +68,10 @@ if err != nil {
 
 // Nornic-native text search
 resp, err := nornicClient.SearchText(ctx, &nornicpb.SearchTextRequest{
-    Query: "machine learning",
-    Limit: 10,
+    Query:             "machine learning",
+    Limit:             10,
+    IncludeProperties: []string{"title", "summary"},
+    ExcludeProperties: []string{"raw_payload"},
 })
 if err != nil {
     log.Fatal(err)
@@ -91,6 +93,8 @@ page, err := nornicClient.SearchText(ctx, &nornicpb.SearchTextRequest{
     Mode: "ranked_then_id",
     GroupBy: "asset_id",
     RankedLimit: proto.Uint64(5000),
+    IncludeProperties: []string{"title", "description", "asset_id"},
+    ExcludeProperties: []string{"raw_payload"},
 })
 if err != nil {
     log.Fatal(err)
@@ -115,6 +119,12 @@ one page slot and expose child matches through `SearchHit.passages`; each child
 passage is also a `SearchHit`, so hit metadata has the same shape at both
 levels. See [Search Continuation](search-continuation.md) for all modes and
 metadata.
+
+`include_properties` limits the returned property map and
+`exclude_properties` removes keys from it; exclusion wins when a key appears
+in both. These fields only project responses—they do not change filters,
+BM25/rerank inputs, or ranking. A continuation retains the projection supplied
+when it starts, so pull requests only need the qid and page size.
 
 Import `google.golang.org/grpc/credentials` for this TLS configuration. Use
 `insecure.NewCredentials()` only for local development or a loopback-only hop

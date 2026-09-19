@@ -147,6 +147,14 @@ type DocumentPropertyChunkEmbedder interface {
 	EmbedDocumentPropertyChunks(ctx context.Context, fallbackText string, properties map[string]any, maxTokens, overlap int) (*DocumentChunkResult, error)
 }
 
+// DocumentPropertyBatchChunkEmbedder embeds several structured documents in
+// one bounded provider request. Implementations retain ownership of property
+// schemas; the worker only preserves input/result ordering.
+type DocumentPropertyBatchChunkEmbedder interface {
+	DocumentPropertyChunkEmbedder
+	EmbedDocumentPropertyBatchChunks(ctx context.Context, fallbackTexts []string, properties []map[string]any, maxTokens, overlap int) ([]*DocumentChunkResult, error)
+}
+
 // EmbeddingSpaceProvider identifies a provider/model vector space. Dimension
 // equality alone does not make embeddings comparable.
 type EmbeddingSpaceProvider interface {

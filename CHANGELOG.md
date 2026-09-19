@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reserve pending embedding nodes in memory across provider calls so concurrent
+  workers cannot submit the same structured document twice. Batch multimodal
+  documents for providers that support structured batch requests.
+- Add per-search `include_properties` and `exclude_properties` response
+  projections, including durable continuation pages and cache isolation;
+  exclusions take precedence. Keep lexical/rerank selection independently
+  controlled by `NORNICDB_SEARCH_BM25_PROPERTIES`.
 - Bound Stage-2 rerank content per candidate, prefer the winning managed
   embedding passage, and use a query-centered window for lexical-only matches.
   Ranked continuations now reuse prior rerank scores instead of resubmitting

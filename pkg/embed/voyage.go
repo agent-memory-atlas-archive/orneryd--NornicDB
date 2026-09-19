@@ -223,30 +223,58 @@ func (e *VoyageEmbedder) EmbedDocumentPropertyChunks(ctx context.Context, fallba
 	if e.mode != VoyageModeMultimodal {
 		return e.EmbedDocumentChunks(ctx, fallbackText, 0, 0)
 	}
-	parts := []voyageapi.MultimodalPart{{Type: "text", Text: fallbackText}}
-	if raw, ok := properties[voyageapi.MultimodalContentProperty]; ok {
-		parsed, err := voyageapi.ParseMultimodalContent(raw)
-		if err != nil {
-			return nil, err
-		}
-		parts = parsed
-	}
-	if err := voyageapi.ValidateMultimodalContent(parts); err != nil {
+	results, err := e.EmbedDocumentPropertyBatchChunks(ctx, []string{fallbackText}, []map[string]any{properties}, 0, 0)
+	if err != nil {
 		return nil, err
 	}
-	resp, err := e.client.EmbedMultimodal(ctx, []any{voyageapi.MultimodalInput{Content: parts}}, voyageapi.MultimodalOptions{
+	return results[0], nil
+}
+
+// EmbedDocumentPropertyBatchChunks sends structured multimodal documents in a
+// single request while preserving one result per input node.
+func (e *VoyageEmbedder) EmbedDocumentPropertyBatchChunks(ctx context.Context, fallbackTexts []string, properties []map[string]any, _, _ int) ([]*DocumentChunkResult, error) {
+	if len(fallbackTexts) != len(properties) {
+		return nil, fmt.Errorf("multimodal document count mismatch: %d texts, %d property maps", len(fallbackTexts), len(properties))
+	}
+	if e.mode != VoyageModeMultimodal {
+		return e.EmbedDocumentBatchChunks(ctx, fallbackTexts, 0, 0)
+	}
+	inputs := make([]any, len(fallbackTexts))
+	textChunks := make([][]string, len(fallbackTexts))
+	for index, fallbackText := range fallbackTexts {
+		parts := []voyageapi.MultimodalPart{{Type: "text", Text: fallbackText}}
+		if raw, ok := properties[index][voyageapi.MultimodalContentProperty]; ok {
+			parsed, err := voyageapi.ParseMultimodalContent(raw)
+			if err != nil {
+				return nil, fmt.Errorf("multimodal document %d: %w", index, err)
+			}
+			parts = parsed
+		}
+		if err := voyageapi.ValidateMultimodalContent(parts); err != nil {
+			return nil, fmt.Errorf("multimodal document %d: %w", index, err)
+		}
+		inputs[index] = voyageapi.MultimodalInput{Content: parts}
+		for _, part := range parts {
+			if part.Type == "text" {
+				textChunks[index] = append(textChunks[index], part.Text)
+			}
+		}
+	}
+	if len(inputs) == 0 {
+		return []*DocumentChunkResult{}, nil
+	}
+	resp, err := e.client.EmbedMultimodal(ctx, inputs, voyageapi.MultimodalOptions{
 		Model: e.config.Model, InputType: InputTypeDocument, Truncation: false, OutputDimension: e.config.Dimensions,
 	})
 	if err != nil {
 		return nil, err
 	}
-	chunks := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if part.Type == "text" {
-			chunks = append(chunks, part.Text)
-		}
+	embeddings := orderedVoyageEmbeddings(resp, len(inputs))
+	results := make([]*DocumentChunkResult, len(inputs))
+	for index := range inputs {
+		results[index] = &DocumentChunkResult{Chunks: textChunks[index], Embeddings: [][]float32{embeddings[index]}, Model: e.Model()}
 	}
-	return &DocumentChunkResult{Chunks: chunks, Embeddings: orderedVoyageEmbeddings(resp, 1), Model: e.Model()}, nil
+	return results, nil
 }
 
 func (e *VoyageEmbedder) EmbedDocumentChunks(ctx context.Context, text string, maxTokens, overlap int) (*DocumentChunkResult, error) {

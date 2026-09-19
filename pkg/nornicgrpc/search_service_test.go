@@ -50,6 +50,7 @@ type continuationStubSearcher struct {
 	stubSearcher
 	requests  []search.SearchContinuationRequest
 	queries   []string
+	options   []*search.SearchOptions
 	responses []*search.SearchContinuationPage
 	err       error
 }
@@ -57,7 +58,7 @@ type continuationStubSearcher struct {
 func (s *continuationStubSearcher) SearchTextContinuation(
 	_ context.Context,
 	query string,
-	_ *search.SearchOptions,
+	opts *search.SearchOptions,
 	request search.SearchContinuationRequest,
 	_ search.ChunkQueryFunc,
 	_ search.EmbedQueryFunc,
@@ -66,6 +67,14 @@ func (s *continuationStubSearcher) SearchTextContinuation(
 ) (*search.SearchContinuationPage, error) {
 	s.queries = append(s.queries, query)
 	s.requests = append(s.requests, request)
+	if opts != nil {
+		copyOpts := *opts
+		copyOpts.IncludeProperties = append([]string(nil), opts.IncludeProperties...)
+		copyOpts.ExcludeProperties = append([]string(nil), opts.ExcludeProperties...)
+		s.options = append(s.options, &copyOpts)
+	} else {
+		s.options = append(s.options, nil)
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -169,10 +178,12 @@ func TestService_SearchText_ValidationAndFallback(t *testing.T) {
 
 		minSim := float32(0.75)
 		resp, err := svc.SearchText(context.Background(), &gen.SearchTextRequest{
-			Query:         "fallback query",
-			Limit:         999,
-			Labels:        []string{"Doc"},
-			MinSimilarity: &minSim,
+			Query:             "fallback query",
+			Limit:             999,
+			Labels:            []string{"Doc"},
+			MinSimilarity:     &minSim,
+			IncludeProperties: []string{"title", "summary"},
+			ExcludeProperties: []string{"summary"},
 		})
 		require.NoError(t, err)
 		require.Equal(t, "bm25", resp.SearchMethod)
@@ -184,6 +195,8 @@ func TestService_SearchText_ValidationAndFallback(t *testing.T) {
 		require.Equal(t, 5, searcher.lastOpts.Limit)
 		require.True(t, searcher.lastOpts.RerankEnabled)
 		require.Equal(t, []string{"Doc"}, searcher.lastOpts.Types)
+		require.Equal(t, []string{"title", "summary"}, searcher.lastOpts.IncludeProperties)
+		require.Equal(t, []string{"summary"}, searcher.lastOpts.ExcludeProperties)
 		require.NotNil(t, searcher.lastOpts.MinSimilarity)
 		require.InDelta(t, 0.75, *searcher.lastOpts.MinSimilarity, 0.0001)
 	})
@@ -200,6 +213,25 @@ func TestService_SearchText_ValidationAndFallback(t *testing.T) {
 		require.NotNil(t, searcher.lastOpts)
 		require.Equal(t, 10, searcher.lastOpts.Limit)
 	})
+}
+
+func TestSearchOptionsPreserveCallerPropertyProjection(t *testing.T) {
+	req := &gen.SearchTextRequest{
+		Query:             "database performance",
+		IncludeProperties: []string{"title", "summary"},
+		ExcludeProperties: []string{"summary", "raw_payload"},
+	}
+
+	opts := searchOptions(req, 100, false)
+	require.Equal(t, []string{"title", "summary"}, opts.IncludeProperties)
+	require.Equal(t, []string{"summary", "raw_payload"}, opts.ExcludeProperties)
+
+	// Search options outlive request decoding for continuations. Verify the
+	// shared pipeline owns its projection slices instead of aliasing protobuf data.
+	req.IncludeProperties[0] = "mutated"
+	req.ExcludeProperties[0] = "mutated"
+	require.Equal(t, []string{"title", "summary"}, opts.IncludeProperties)
+	require.Equal(t, []string{"summary", "raw_payload"}, opts.ExcludeProperties)
 }
 
 func TestService_SearchText_ContinuationStartPullAndDiscard(t *testing.T) {
@@ -222,12 +254,17 @@ func TestService_SearchText_ContinuationStartPullAndDiscard(t *testing.T) {
 	}, nil, nil, searcher)
 	require.NoError(t, err)
 
-	first, err := svc.SearchText(context.Background(), &gen.SearchTextRequest{Query: "alpha", Limit: 1, N: 1})
+	first, err := svc.SearchText(context.Background(), &gen.SearchTextRequest{
+		Query: "alpha", Limit: 1, N: 1,
+		IncludeProperties: []string{"title"}, ExcludeProperties: []string{"raw_payload"},
+	})
 	require.NoError(t, err)
 	require.Equal(t, "qid-1", first.Qid)
 	require.True(t, first.HasMore)
 	require.Equal(t, uint32(1), first.Returned)
 	require.Equal(t, "node-1", first.Hits[0].NodeId)
+	require.Equal(t, []string{"title"}, searcher.options[0].IncludeProperties)
+	require.Equal(t, []string{"raw_payload"}, searcher.options[0].ExcludeProperties)
 	require.Equal(t, "sub:alice", searcher.requests[0].Owner)
 	require.Equal(t, "nornic", searcher.requests[0].Database)
 

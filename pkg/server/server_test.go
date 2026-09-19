@@ -1826,6 +1826,25 @@ func TestHandleSearch_FiltersParameter(t *testing.T) {
 	var allResults []map[string]interface{}
 	require.NoError(t, json.NewDecoder(respAll.Body).Decode(&allResults))
 	require.Len(t, allResults, 3, "unfiltered search should return all 3 nodes")
+
+	// Response projection is independent of candidate filtering. Exclusion wins
+	// when a property appears in both caller-provided lists.
+	projectedResp := makeRequest(t, server, http.MethodPost, "/nornicdb/search", map[string]interface{}{
+		"query":              "document",
+		"limit":              10,
+		"include_properties": []string{"content", "collection"},
+		"exclude_properties": []string{"collection"},
+	}, "Bearer "+token)
+	require.Equal(t, http.StatusOK, projectedResp.Code, projectedResp.Body.String())
+	var projectedResults []map[string]interface{}
+	require.NoError(t, json.NewDecoder(projectedResp.Body).Decode(&projectedResults))
+	require.Len(t, projectedResults, 3)
+	for _, result := range projectedResults {
+		nodeObject := result["node"].(map[string]interface{})
+		properties := nodeObject["properties"].(map[string]interface{})
+		require.Contains(t, properties, "content")
+		require.NotContains(t, properties, "collection")
+	}
 }
 
 func TestStartupSearchReconcile_InitializesMetadataOnlyDatabase(t *testing.T) {

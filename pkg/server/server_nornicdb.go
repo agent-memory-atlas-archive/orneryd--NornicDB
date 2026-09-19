@@ -301,18 +301,20 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Database    string              `json:"database,omitempty"` // Optional: defaults to default database
-		Query       string              `json:"query"`
-		Labels      []string            `json:"labels,omitempty"`
-		Limit       int                 `json:"limit,omitempty"`
-		Filters     map[string][]string `json:"filters,omitempty"`
-		QID         string              `json:"qid,omitempty"`
-		N           int                 `json:"n,omitempty"`
-		Discard     bool                `json:"discard,omitempty"`
-		MaxResults  int                 `json:"max_results,omitempty"`
-		Mode        string              `json:"mode,omitempty"`
-		GroupBy     string              `json:"group_by,omitempty"`
-		RankedLimit int                 `json:"ranked_limit,omitempty"`
+		Database          string              `json:"database,omitempty"` // Optional: defaults to default database
+		Query             string              `json:"query"`
+		Labels            []string            `json:"labels,omitempty"`
+		Limit             int                 `json:"limit,omitempty"`
+		Filters           map[string][]string `json:"filters,omitempty"`
+		IncludeProperties []string            `json:"include_properties,omitempty"`
+		ExcludeProperties []string            `json:"exclude_properties,omitempty"`
+		QID               string              `json:"qid,omitempty"`
+		N                 int                 `json:"n,omitempty"`
+		Discard           bool                `json:"discard,omitempty"`
+		MaxResults        int                 `json:"max_results,omitempty"`
+		Mode              string              `json:"mode,omitempty"`
+		GroupBy           string              `json:"group_by,omitempty"`
+		RankedLimit       int                 `json:"ranked_limit,omitempty"`
 	}
 
 	if err := s.readJSON(r, &req); err != nil {
@@ -492,6 +494,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if len(req.Filters) > 0 {
 		opts.Filters = req.Filters
 	}
+	opts.IncludeProperties = append([]string(nil), req.IncludeProperties...)
+	opts.ExcludeProperties = append([]string(nil), req.ExcludeProperties...)
 	opts.RerankEnabled = searchSvc.RerankerAvailable(ctx)
 
 	var embedQuery search.EmbedQueryFunc

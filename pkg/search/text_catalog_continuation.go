@@ -100,6 +100,7 @@ type catalogContinuationStream struct {
 	metadata      map[string]any
 	retainedBytes int64
 	closed        bool
+	projection    resultPropertyProjection
 }
 
 type continuationGroup struct {
@@ -356,6 +357,7 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 			"max_results_reached":   maxResultsReached,
 		},
 		retainedBytes: retainedBytes,
+		projection:    newResultPropertyProjection(options.IncludeProperties, options.ExcludeProperties),
 	}, nil
 }
 
@@ -447,12 +449,12 @@ func (s *Service) continuationNodeEligible(node *storage.Node, options *SearchOp
 	return s.shouldIndexNode(node)
 }
 
-func searchResultFromContinuationNode(node *storage.Node) SearchResult {
+func searchResultFromContinuationNode(node *storage.Node, projection resultPropertyProjection) SearchResult {
 	result := SearchResult{
 		ID:         string(node.ID),
 		NodeID:     node.ID,
 		Labels:     append([]string(nil), node.Labels...),
-		Properties: node.Properties,
+		Properties: projection.apply(node.Properties),
 	}
 	if t, ok := node.Properties["type"].(string); ok {
 		result.Type = t
@@ -513,7 +515,7 @@ func (s *catalogContinuationStream) Pull(ctx context.Context, position uint64, n
 		metadata[key] = value
 	}
 	maxResultsReached, _ := metadata["max_results_reached"].(bool)
-	results, err := hydrateContinuationResults(s.engine, compact, s.authorizeNode)
+	results, err := hydrateContinuationResults(s.engine, compact, s.authorizeNode, s.projection)
 	if err != nil {
 		return nil, err
 	}
@@ -537,7 +539,7 @@ func (s *catalogContinuationStream) Pull(ctx context.Context, position uint64, n
 	}, nil
 }
 
-func hydrateContinuationResults(engine storage.Engine, compact []SearchResult, authorizeNode NodeAuthorizationFunc) ([]SearchResult, error) {
+func hydrateContinuationResults(engine storage.Engine, compact []SearchResult, authorizeNode NodeAuthorizationFunc, projection resultPropertyProjection) ([]SearchResult, error) {
 	idCount := 0
 	for index := range compact {
 		if len(compact[index].Passages) > 0 {
@@ -577,7 +579,7 @@ func hydrateContinuationResults(engine storage.Engine, compact []SearchResult, a
 		if node == nil {
 			return nil, resultstream.ErrInvalidated
 		}
-		results[index] = hydrateContinuationResult(compact[index], searchResultFromContinuationNode(node))
+		results[index] = hydrateContinuationResult(compact[index], searchResultFromContinuationNode(node, projection))
 		if len(compact[index].Passages) == 0 {
 			continue
 		}
@@ -589,7 +591,7 @@ func hydrateContinuationResults(engine storage.Engine, compact []SearchResult, a
 				return nil, resultstream.ErrInvalidated
 			}
 			passageResult := passage
-			passageResult = hydrateContinuationResult(passageResult, searchResultFromContinuationNode(passageNode))
+			passageResult = hydrateContinuationResult(passageResult, searchResultFromContinuationNode(passageNode, projection))
 			results[index].Passages[passageIndex] = searchPassageFromResult(passageResult)
 		}
 	}
