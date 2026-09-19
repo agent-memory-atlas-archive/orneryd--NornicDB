@@ -65,6 +65,13 @@ type approximateCandidateDepthPlanner interface {
 	preferredCandidateDepth(target, maximum int) int
 }
 
+// candidateGeneratorWithExhaustion lets generators distinguish a genuinely
+// exhausted index from a short approximate result. That distinction keeps the
+// adaptive search loop from treating an ANN miss as end-of-data.
+type candidateGeneratorWithExhaustion interface {
+	searchCandidatesWithExhaustion(ctx context.Context, query []float32, k int, minSimilarity float64) ([]Candidate, bool, error)
+}
+
 // ExactScorer computes exact similarity scores for candidate vectors.
 //
 // Implementations:
@@ -219,26 +226,47 @@ func (h *HNSWCandidateGen) SearchCandidates(ctx context.Context, query []float32
 
 func (h *HNSWCandidateGen) searchCandidatesWithExhaustion(ctx context.Context, query []float32, k int, minSimilarity float64) ([]Candidate, bool, error) {
 	candidateLimit := boundCandidateLimit(k)
-	resultLimit := candidateLimit
-	searchBeam := h.hnswIndex.config.EfSearch
-	if searchBeam < resultLimit {
-		searchBeam = resultLimit
-	}
+	config := h.hnswIndex.Config()
+	searchBeam := hnswSearchBeam(candidateLimit, config.EfSearch, config.SearchBeamFactor)
 
-	results, exhausted, err := h.hnswIndex.searchWithEfExhaustion(ctx, query, resultLimit, minSimilarity, searchBeam)
+	// Ask HNSW to retain the whole beam. Selecting only k vectors inside the
+	// graph traversal clamps recall to ef == k even when traversal was wider.
+	// The widened result also gives chunked corpora room to produce k distinct
+	// owning nodes rather than spending the entire budget on one document.
+	results, exhausted, err := h.hnswIndex.searchWithEfExhaustion(ctx, query, searchBeam, minSimilarity, searchBeam)
 	if err != nil {
 		return nil, false, err
 	}
 
-	candidates := make([]Candidate, len(results))
-	for i, r := range results {
-		candidates[i] = Candidate{
+	candidates := make([]Candidate, 0, min(candidateLimit, len(results)))
+	seenNodes := make(map[string]struct{}, min(candidateLimit, len(results)))
+	for _, r := range results {
+		nodeID := normalizeVectorResultIDToNodeID(r.ID)
+		if _, seen := seenNodes[nodeID]; seen {
+			continue
+		}
+		seenNodes[nodeID] = struct{}{}
+		candidates = append(candidates, Candidate{
 			ID:    r.ID,
 			Score: float64(r.Score),
+		})
+		if len(candidates) == candidateLimit {
+			break
 		}
 	}
 
 	return candidates, exhausted, nil
+}
+
+func hnswSearchBeam(resultLimit, configuredEf, factor int) int {
+	if factor <= 0 {
+		factor = defaultHNSWSearchBeamFactor
+	}
+	beam, ok := util.SafeIntProduct(resultLimit, factor)
+	if !ok {
+		beam = int(^uint(0) >> 1)
+	}
+	return max(configuredEf, beam)
 }
 
 // VectorGetter is implemented by *VectorIndex and by adapters for VectorLookup (e.g. file-backed store).
@@ -440,22 +468,17 @@ func (p *VectorSearchPipeline) searchWithExhaustion(ctx context.Context, query [
 	var candidates []Candidate
 	var exhausted bool
 	var err error
-	if generator, ok := p.candidateGen.(*HNSWCandidateGen); ok {
+	if generator, ok := p.candidateGen.(candidateGeneratorWithExhaustion); ok {
 		candidates, exhausted, err = generator.searchCandidatesWithExhaustion(ctx, query, k, minSimilarity)
 	} else {
 		candidates, err = p.candidateGen.SearchCandidates(ctx, query, k, minSimilarity)
+		// Generators without an exhaustion contract retain the historical
+		// behavior: a short page means their available candidate set ended.
+		exhausted = len(candidates) < boundCandidateLimit(k)
 	}
 	if err != nil {
 		return nil, false, localizedError(localization.SearchCandidateGenerationFailed(err), err)
 	}
-	// Only generators that scan the whole vector population can establish
-	// exhaustion from a short prefix. ANN may return short even when deeper
-	// exploration can discover more candidates.
-	switch p.candidateGen.(type) {
-	case *BruteForceCandidateGen, *FileStoreBruteForceCandidateGen, *GPUBruteForceCandidateGen:
-		exhausted = len(candidates) < boundCandidateLimit(k)
-	}
-
 	if len(candidates) == 0 {
 		return []ScoredCandidate{}, exhausted, nil
 	}

@@ -18,6 +18,7 @@ func TestHNSWConfigFromEnv(t *testing.T) {
 		assert.Equal(t, 16, config.M)
 		assert.Equal(t, 100, config.EfConstruction)
 		assert.Equal(t, 50, config.EfSearch)
+		assert.Equal(t, 4, config.SearchBeamFactor)
 	})
 
 	t.Run("fast preset", func(t *testing.T) {
@@ -44,16 +45,25 @@ func TestHNSWConfigFromEnv(t *testing.T) {
 		os.Setenv("NORNICDB_VECTOR_ANN_QUALITY", "balanced")
 		os.Setenv("NORNICDB_VECTOR_HNSW_M", "24")
 		os.Setenv("NORNICDB_VECTOR_HNSW_EF_SEARCH", "150")
+		os.Setenv("NORNICDB_VECTOR_HNSW_BEAM_FACTOR", "3")
 		defer func() {
 			os.Unsetenv("NORNICDB_VECTOR_ANN_QUALITY")
 			os.Unsetenv("NORNICDB_VECTOR_HNSW_M")
 			os.Unsetenv("NORNICDB_VECTOR_HNSW_EF_SEARCH")
+			os.Unsetenv("NORNICDB_VECTOR_HNSW_BEAM_FACTOR")
 		}()
 
 		config := HNSWConfigFromEnv()
 		assert.Equal(t, 24, config.M)               // Overridden
 		assert.Equal(t, 200, config.EfConstruction) // From preset
 		assert.Equal(t, 150, config.EfSearch)       // Overridden
+		assert.Equal(t, 3, config.SearchBeamFactor) // Overridden
+	})
+
+	t.Run("invalid beam factor uses default", func(t *testing.T) {
+		t.Setenv("NORNICDB_VECTOR_HNSW_BEAM_FACTOR", "0")
+		config := HNSWConfigFromEnv()
+		assert.Equal(t, 4, config.SearchBeamFactor)
 	})
 
 	t.Run("invalid preset defaults to fast", func(t *testing.T) {

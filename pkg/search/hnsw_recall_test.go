@@ -156,6 +156,112 @@ func TestHNSWRecall_ANNWithRerank(t *testing.T) {
 	assert.Greater(t, recall, 0.7, "ANN + rerank recall should be >70%")
 }
 
+func TestHNSWCandidateGenerationUsesWideBeamBeforeSelectingResults(t *testing.T) {
+	const (
+		dimensions = 32
+		vectors    = 2_000
+		limit      = 200
+		beamFactor = 4
+	)
+	config := DefaultHNSWConfig()
+	config.EfSearch = 50
+	index := NewHNSWIndex(dimensions, config)
+	rng := rand.New(rand.NewSource(429))
+	for i := 0; i < vectors; i++ {
+		value := make([]float32, dimensions)
+		for dimension := range value {
+			value[dimension] = rng.Float32()*2 - 1
+		}
+		require.NoError(t, index.Add(fmt.Sprintf("vector-%04d", i), vector.Normalize(value)))
+	}
+	query := make([]float32, dimensions)
+	for dimension := range query {
+		query[dimension] = rng.Float32()*2 - 1
+	}
+
+	actual, err := NewHNSWCandidateGen(index).SearchCandidates(context.Background(), query, limit, -1)
+	require.NoError(t, err)
+	wider, err := index.SearchWithEf(context.Background(), query, limit*beamFactor, -1, limit*beamFactor)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(wider), limit)
+
+	expectedIDs := make([]string, limit)
+	actualIDs := make([]string, len(actual))
+	for i := range expectedIDs {
+		expectedIDs[i] = wider[i].ID
+	}
+	for i := range actualIDs {
+		actualIDs[i] = actual[i].ID
+	}
+	require.Equal(t, expectedIDs, actualIDs)
+}
+
+func TestHNSWCandidateGenerationSelectsDistinctNodesFromChunkedResults(t *testing.T) {
+	config := DefaultHNSWConfig()
+	index := NewHNSWIndex(2, config)
+	for i := 0; i < 8; i++ {
+		require.NoError(t, index.Add(fmt.Sprintf("doc-a-chunk-%d", i), []float32{1, float32(i) / 100}))
+	}
+	require.NoError(t, index.Add("doc-b-chunk-0", []float32{0.95, 0.05}))
+	require.NoError(t, index.Add("doc-c-chunk-0", []float32{0.9, 0.1}))
+	require.NoError(t, index.Add("doc-d-chunk-0", []float32{0.85, 0.15}))
+
+	candidates, err := NewHNSWCandidateGen(index).SearchCandidates(context.Background(), []float32{1, 0}, 3, -1)
+	require.NoError(t, err)
+	require.Len(t, candidates, 3)
+	require.Equal(t, []string{"doc-a", "doc-b", "doc-c"}, []string{
+		normalizeVectorResultIDToNodeID(candidates[0].ID),
+		normalizeVectorResultIDToNodeID(candidates[1].ID),
+		normalizeVectorResultIDToNodeID(candidates[2].ID),
+	})
+}
+
+func TestHNSWSearchBeamScalesIndependentlyOfResultLimit(t *testing.T) {
+	require.Equal(t, 800, hnswSearchBeam(200, 50, 4))
+	require.Equal(t, 1_000, hnswSearchBeam(200, 1_000, 4))
+	require.Equal(t, 800, hnswSearchBeam(200, 50, 0))
+}
+
+func BenchmarkHNSWCandidateGenerationBeamFactor(b *testing.B) {
+	const (
+		dimensions = 128
+		vectors    = 10_000
+		limit      = 200
+	)
+	config := DefaultHNSWConfig()
+	index := NewHNSWIndex(dimensions, config)
+	rng := rand.New(rand.NewSource(429))
+	for i := 0; i < vectors; i++ {
+		value := make([]float32, dimensions)
+		for dimension := range value {
+			value[dimension] = rng.Float32()*2 - 1
+		}
+		require.NoError(b, index.Add(fmt.Sprintf("vector-%05d", i), vector.Normalize(value)))
+	}
+	query := make([]float32, dimensions)
+	for dimension := range query {
+		query[dimension] = rng.Float32()*2 - 1
+	}
+	generator := NewHNSWCandidateGen(index)
+
+	for _, factor := range []int{1, defaultHNSWSearchBeamFactor} {
+		b.Run(fmt.Sprintf("factor=%d", factor), func(b *testing.B) {
+			index.setSearchBeamFactor(factor)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				candidates, err := generator.SearchCandidates(context.Background(), query, limit, -1)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(candidates) != limit {
+					b.Fatalf("got %d candidates, want %d", len(candidates), limit)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkHNSWRecall_ANNOnly benchmarks ANN-only recall for different dataset sizes.
 func BenchmarkHNSWRecall_ANNOnly(b *testing.B) {
 	dimensions := 128

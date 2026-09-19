@@ -467,6 +467,7 @@ func TestDefaultHNSWConfig(t *testing.T) {
 	assert.Equal(t, 16, config.M)
 	assert.Equal(t, 200, config.EfConstruction)
 	assert.Equal(t, 100, config.EfSearch)
+	assert.Equal(t, 4, config.SearchBeamFactor)
 	assert.InDelta(t, 1.0/math.Log(16.0), config.LevelMultiplier, 0.0001)
 }
 

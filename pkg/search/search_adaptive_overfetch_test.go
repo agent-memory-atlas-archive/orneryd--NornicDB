@@ -17,6 +17,31 @@ type recordingApproximateCandidateGenerator struct {
 	recordingCandidateGenerator
 }
 
+type shortNonExhaustiveCandidateGenerator struct {
+	limits []int
+}
+
+func (g *shortNonExhaustiveCandidateGenerator) SearchCandidates(_ context.Context, _ []float32, limit int, _ float64) ([]Candidate, error) {
+	results, _, err := g.searchCandidatesWithExhaustion(context.Background(), nil, limit, 0)
+	return results, err
+}
+
+func (g *shortNonExhaustiveCandidateGenerator) searchCandidatesWithExhaustion(_ context.Context, _ []float32, limit int, _ float64) ([]Candidate, bool, error) {
+	g.limits = append(g.limits, limit)
+	if limit <= 3 {
+		return []Candidate{
+			{ID: "doc-1-chunk-0", Score: 1},
+			{ID: "doc-1-chunk-1", Score: 0.9},
+		}, false, nil
+	}
+	return []Candidate{
+		{ID: "doc-1-chunk-0", Score: 1},
+		{ID: "doc-1-chunk-1", Score: 0.9},
+		{ID: "doc-2-chunk-0", Score: 0.8},
+		{ID: "doc-3-chunk-0", Score: 0.7},
+	}, false, nil
+}
+
 func (g *recordingApproximateCandidateGenerator) preferredCandidateDepth(_, maximum int) int {
 	return maximum
 }
@@ -78,6 +103,20 @@ func TestAdaptiveVectorSearchDoesNotRetryWhenInitialResultsFillTarget(t *testing
 	require.Equal(t, []int{2}, generator.limits)
 	require.Len(t, results, 2)
 	require.Zero(t, stats.retries)
+}
+
+func TestAdaptiveVectorSearchWidensShortNonExhaustiveApproximateResults(t *testing.T) {
+	generator := &shortNonExhaustiveCandidateGenerator{}
+	service := NewServiceWithDimensions(storage.NewMemoryEngine(), 2)
+	pipeline := NewVectorSearchPipeline(generator, &IdentityExactScorer{})
+	opts := adaptiveOverfetchTestOptions(3)
+
+	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil)
+
+	require.NoError(t, err)
+	require.Equal(t, []int{3, 6}, generator.limits)
+	require.Equal(t, []string{"doc-1", "doc-2", "doc-3"}, indexResultIDs(results))
+	require.Equal(t, 1, stats.retries)
 }
 
 func TestAdaptiveVectorSearchScoresFullApproximateBudgetBeforeNodeCollapse(t *testing.T) {

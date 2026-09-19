@@ -48,6 +48,7 @@ type HNSWConfig struct {
 	M                         int     // Max connections per node per layer (default: 16)
 	EfConstruction            int     // Candidate list size during construction (default: 200)
 	EfSearch                  int     // Candidate list size during search (default: 100)
+	SearchBeamFactor          int     // Search beam multiplier relative to requested candidates (default: 4)
 	LevelMultiplier           float64 // Level multiplier = 1/ln(M)
 	UseGPUBuild               bool    // Attempt GPU-assisted construction when available
 	GPUBuildBatchSize         int     // Number of vectors per GPU construction batch
@@ -61,6 +62,7 @@ func DefaultHNSWConfig() HNSWConfig {
 		M:                         16,
 		EfConstruction:            200,
 		EfSearch:                  100,
+		SearchBeamFactor:          defaultHNSWSearchBeamFactor,
 		LevelMultiplier:           1.0 / math.Log(16.0),
 		UseGPUBuild:               true,
 		GPUBuildBatchSize:         2048,
@@ -181,6 +183,17 @@ func (h *HNSWIndex) Config() HNSWConfig {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.config
+}
+
+// setSearchBeamFactor applies query-only tuning to a loaded graph. It does not
+// change graph construction, so callers can reuse a persisted index safely.
+func (h *HNSWIndex) setSearchBeamFactor(factor int) {
+	if factor <= 0 {
+		factor = defaultHNSWSearchBeamFactor
+	}
+	h.mu.Lock()
+	h.config.SearchBeamFactor = factor
+	h.mu.Unlock()
 }
 
 // SupportsGPUBuild reports whether this index can be constructed through the

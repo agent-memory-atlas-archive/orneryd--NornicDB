@@ -25,6 +25,8 @@ const (
 	QualityAccurate HNSWQualityPreset = "accurate"
 )
 
+const defaultHNSWSearchBeamFactor = 4
+
 // HNSWConfigFromEnv loads HNSW configuration from environment variables.
 //
 // Environment Variables:
@@ -32,6 +34,7 @@ const (
 //   - NORNICDB_VECTOR_HNSW_M: Max connections per node (default: based on preset)
 //   - NORNICDB_VECTOR_HNSW_EF_CONSTRUCTION: Candidate list size during construction (default: based on preset)
 //   - NORNICDB_VECTOR_HNSW_EF_SEARCH: Candidate list size during search (default: based on preset)
+//   - NORNICDB_VECTOR_HNSW_BEAM_FACTOR: Search beam multiplier relative to requested candidates (default: 4)
 //   - NORNICDB_HNSW_BUILD_GPU_ENABLED: Attempt GPU-assisted construction (default: true)
 //   - NORNICDB_HNSW_BUILD_GPU_BATCH_SIZE: GPU build batch size (default: 2048)
 //   - NORNICDB_HNSW_BUILD_GPU_CANDIDATE_K: GPU candidate count per vector (default: 128)
@@ -71,6 +74,9 @@ func HNSWConfigFromEnv() HNSWConfig {
 
 	if efSearch := envutil.GetInt("NORNICDB_VECTOR_HNSW_EF_SEARCH", 0); efSearch > 0 {
 		config.EfSearch = efSearch
+	}
+	if beamFactor := envutil.GetInt("NORNICDB_VECTOR_HNSW_BEAM_FACTOR", 0); beamFactor > 0 {
+		config.SearchBeamFactor = beamFactor
 	}
 
 	config.UseGPUBuild = envutil.GetBoolStrict("NORNICDB_HNSW_BUILD_GPU_ENABLED", true)
@@ -121,6 +127,7 @@ func presetDefaults(preset HNSWQualityPreset) HNSWConfig {
 			M:                         16,
 			EfConstruction:            100,
 			EfSearch:                  50,
+			SearchBeamFactor:          defaultHNSWSearchBeamFactor,
 			LevelMultiplier:           1.0 / math.Log(16.0),
 			UseGPUBuild:               true,
 			GPUBuildBatchSize:         2048,
@@ -132,6 +139,7 @@ func presetDefaults(preset HNSWQualityPreset) HNSWConfig {
 			M:                         32,
 			EfConstruction:            400,
 			EfSearch:                  200,
+			SearchBeamFactor:          defaultHNSWSearchBeamFactor,
 			LevelMultiplier:           1.0 / math.Log(32.0),
 			UseGPUBuild:               true,
 			GPUBuildBatchSize:         2048,

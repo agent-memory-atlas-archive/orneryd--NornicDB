@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Widen HNSW traversal independently of returned candidate depth, select the
+  best matching chunk per owning node from that beam, and continue adaptive
+  expansion until the approximate index is genuinely exhausted. This restores
+  recall and requested result counts on heavily chunked corpora without
+  rebuilding persisted graphs.
 - Remove shared per-label count keys from explicit transactions' optimistic
   conflict sets. Transactions now accumulate label deltas locally and publish
   derived counts in commit order, so independent same-label creates and label

@@ -3688,6 +3688,9 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 				s.logPrintf("📇 HNSW config changed (old m=%d efc=%d efs=%d, new m=%d efc=%d efs=%d); rebuilding",
 					have.M, have.EfConstruction, have.EfSearch, want.M, want.EfConstruction, want.EfSearch)
 			} else {
+				// Beam factor is query-only tuning and does not affect the persisted
+				// graph, so apply it without paying for an index rebuild.
+				loaded.setSearchBeamFactor(want.SearchBeamFactor)
 				s.hnswMu.Lock()
 				s.hnswIndex = loaded
 				s.hnswMu.Unlock()
@@ -4624,7 +4627,7 @@ func (s *Service) adaptiveVectorSearch(
 			stats.exhausted = stats.exhausted && len(results) == config.target
 			return results[:config.target], stats, nil
 		}
-		if !config.adaptive || requestLimit >= config.maxLimit || len(scored) < requestLimit {
+		if !config.adaptive || requestLimit >= config.maxLimit || exhausted {
 			return results, stats, nil
 		}
 		nextLimit := int(math.Ceil(float64(requestLimit) * config.growthFactor))

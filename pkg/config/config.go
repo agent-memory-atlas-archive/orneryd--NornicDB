@@ -34,6 +34,7 @@
 //   - NORNICDB_VECTOR_HNSW_M: Max connections per node (default: based on quality preset)
 //   - NORNICDB_VECTOR_HNSW_EF_CONSTRUCTION: Construction candidate list size (default: based on quality preset)
 //   - NORNICDB_VECTOR_HNSW_EF_SEARCH: Search candidate list size (default: based on quality preset)
+//   - NORNICDB_VECTOR_HNSW_BEAM_FACTOR: Search beam multiplier over requested candidates (default: 4)
 //
 // Logging:
 //   - NORNICDB_LOG_LEVEL="INFO"

@@ -79,6 +79,7 @@ var settingsRegistry = []SettingDefinition{
 	{Name: "db.nornic.vector.hnsw.m", EnvironmentVariable: "NORNICDB_VECTOR_HNSW_M", Type: "number", Category: "HNSW", Scope: ScopeDatabase, RestartLevel: RestartProcess},
 	{Name: "db.nornic.vector.hnsw.ef.construction", EnvironmentVariable: "NORNICDB_VECTOR_HNSW_EF_CONSTRUCTION", Type: "number", Category: "HNSW", Scope: ScopeDatabase, RestartLevel: RestartProcess},
 	{Name: "db.nornic.vector.hnsw.ef.search", EnvironmentVariable: "NORNICDB_VECTOR_HNSW_EF_SEARCH", Type: "number", Category: "HNSW", Scope: ScopeDatabase, RestartLevel: RestartProcess},
+	{Name: "db.nornic.vector.hnsw.beam.factor", EnvironmentVariable: "NORNICDB_VECTOR_HNSW_BEAM_FACTOR", Type: "number", Category: "HNSW", Description: "Search beam multiplier relative to the requested candidate depth. Default: 4.", DefaultValue: "4", Scope: ScopeDatabase, RestartLevel: RestartProcess},
 	{Name: "db.nornic.vector.hnsw.metal.min.candidates", EnvironmentVariable: "NORNICDB_VECTOR_HNSW_METAL_MIN_CANDIDATES", Type: "number", Category: "HNSW", Scope: ScopeDatabase, RestartLevel: RestartProcess},
 	{Name: "db.nornic.vector.ivf.hnsw.enabled", EnvironmentVariable: "NORNICDB_VECTOR_IVF_HNSW_ENABLED", Type: "boolean", Category: "IVF-HNSW", Scope: ScopeDatabase, RestartLevel: RestartProcess},
 	{Name: "db.nornic.vector.ivf.hnsw.min.cluster.size", EnvironmentVariable: "NORNICDB_VECTOR_IVF_HNSW_MIN_CLUSTER_SIZE", Type: "number", Category: "IVF-HNSW", Scope: ScopeDatabase, RestartLevel: RestartProcess},
