@@ -1732,6 +1732,55 @@ func TestSearchContinuationQIDIsSharedFromHTTPToCypher(t *testing.T) {
 	require.True(t, last.CollectionExhausted)
 }
 
+func TestSearchContinuationQIDIsSharedAcrossDefaultHTTPAndCypherRequestsWithoutAuthentication(t *testing.T) {
+	server, _ := setupTestServer(t)
+	server.auth = nil
+	database := server.dbManager.DefaultDatabaseName()
+	engine, err := server.dbManager.GetStorage(database)
+	require.NoError(t, err)
+	for _, id := range []string{"anonymous-cross-a", "anonymous-cross-b", "anonymous-cross-c"} {
+		_, err := engine.CreateNode(&storage.Node{ID: storage.NodeID(id), Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
+
+	handleAnonymousSearch := func(body map[string]any) *httptest.ResponseRecorder {
+		encoded, encodeErr := json.Marshal(body)
+		require.NoError(t, encodeErr)
+		request := httptest.NewRequest(http.MethodPost, "/nornicdb/search", bytes.NewReader(encoded))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.handleSearch(response, request)
+		return response
+	}
+	anonymous := cypher.WithAuthenticatedPrincipal(context.Background(), "anonymous")
+
+	cypherStart, err := server.db.GetCypherExecutor().Execute(anonymous,
+		"CALL db.retrieve({mode: 'id', n: 1})", nil)
+	require.NoError(t, err)
+	cypherPage := cypherStart.Rows[0][0].(map[string]interface{})
+	cypherQID := cypherPage["qid"].(string)
+	require.NotEmpty(t, cypherQID)
+
+	httpPull := handleAnonymousSearch(map[string]any{"qid": cypherQID, "n": 1})
+	require.Equal(t, http.StatusOK, httpPull.Code, httpPull.Body.String())
+
+	httpStart := handleAnonymousSearch(map[string]any{"mode": "id", "n": 1})
+	require.Equal(t, http.StatusOK, httpStart.Code, httpStart.Body.String())
+	var httpPage struct {
+		QID string `json:"qid"`
+	}
+	require.NoError(t, json.NewDecoder(httpStart.Body).Decode(&httpPage))
+	require.NotEmpty(t, httpPage.QID)
+
+	cypherPull, err := server.db.GetCypherExecutor().Execute(anonymous,
+		"CALL db.retrieve($request)", map[string]interface{}{
+			"request": map[string]interface{}{"qid": httpPage.QID, "n": int64(1)},
+		})
+	require.NoError(t, err)
+	page := cypherPull.Rows[0][0].(map[string]interface{})
+	require.Len(t, page["results"], 1)
+}
+
 // TestHandleSearch_FiltersParameter verifies that the `filters` field is accepted in the
 // request body and that results are restricted to nodes matching the filter.
 func TestHandleSearch_FiltersParameter(t *testing.T) {

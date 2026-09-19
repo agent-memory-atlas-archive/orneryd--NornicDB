@@ -36,6 +36,31 @@ func TestMissingStemmerDisablesOnlyBM25(t *testing.T) {
 	require.False(t, found)
 }
 
+func TestManagedSearchServiceBindsContinuationToItsDatabaseWhenRequestOmitsDatabase(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Memory.SearchCursorMax = 8
+	cfg.Database.AsyncWritesEnabled = false
+	db, err := Open(t.TempDir(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	for _, id := range []storage.NodeID{"continuation-a", "continuation-b"} {
+		_, err := db.storage.CreateNode(&storage.Node{ID: id, Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
+	service, err := db.GetOrCreateSearchService(db.defaultDatabaseName(), db.storage)
+	require.NoError(t, err)
+	page, err := service.SearchTextContinuation(context.Background(), "", search.DefaultSearchOptions(),
+		search.SearchContinuationRequest{Owner: "anonymous", Mode: search.SearchContinuationID, N: 1},
+		nil, nil, nil, search.ChunkedSearchErrorPolicy{})
+	require.NoError(t, err)
+	require.NotEmpty(t, page.QID)
+
+	boundDatabase, err := db.ResolveSearchContinuationDatabase("anonymous", page.QID, "")
+	require.NoError(t, err)
+	require.Equal(t, db.defaultDatabaseName(), boundDatabase)
+}
+
 type blockingIterEngine struct {
 	storage.Engine
 	entered chan struct{}

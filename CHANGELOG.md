@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bind managed search continuation streams to their canonical database even
+  when Bolt/Cypher omits `USE` and HTTP omits `database`, allowing signed qids
+  to move between protocol adapters for the same authenticated or anonymous
+  principal.
 - Widen HNSW traversal independently of returned candidate depth, select the
   best matching chunk per owning node from that beam, and continue adaptive
   expansion until the approximate index is genuinely exhausted. This restores

@@ -989,6 +989,19 @@ type ServiceOptions struct {
 	BM25Stemmer              *stemmer.Registration
 }
 
+// DefaultServiceOptions returns the standard service resource policy bound to
+// databaseID. Callers can override individual fields before constructing a
+// database-scoped Service.
+func DefaultServiceOptions(databaseID string) ServiceOptions {
+	return ServiceOptions{
+		DatabaseID:               databaseID,
+		SearchResultCacheEntries: 1000,
+		SearchResultCacheTTL:     5 * time.Minute,
+		BM25StorageMode:          "memory",
+		VectorStorageMode:        "auto",
+	}
+}
+
 // NewServiceWithDimensionsAndBM25EngineAndOptions creates a search service with explicit resource policy.
 // Nil options preserve the historical 1000-entry, five-minute result cache.
 func NewServiceWithDimensionsAndBM25EngineAndOptions(engine storage.Engine, dimensions int, bm25Engine string, options *ServiceOptions) *Service {
@@ -999,11 +1012,12 @@ func NewServiceWithDimensionsAndBM25EngineAndOptions(engine storage.Engine, dime
 	fulltextIndex, selectedBM25Engine := newBM25IndexWithAnalyzer(bm25Engine, analyzer)
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	var resultCache *searchResultCache
-	cacheEntries := 1000
-	cacheTTL := 5 * time.Minute
-	cacheNamespace := ""
-	bm25StorageMode := "memory"
-	vectorStorageMode := "auto"
+	defaults := DefaultServiceOptions("")
+	cacheEntries := defaults.SearchResultCacheEntries
+	cacheTTL := defaults.SearchResultCacheTTL
+	cacheNamespace := defaults.DatabaseID
+	bm25StorageMode := defaults.BM25StorageMode
+	vectorStorageMode := defaults.VectorStorageMode
 	if options != nil {
 		cacheEntries = options.SearchResultCacheEntries
 		cacheTTL = options.SearchResultCacheTTL

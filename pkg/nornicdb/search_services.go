@@ -272,27 +272,29 @@ func (db *DB) getOrCreateSearchService(dbName string, storageEngine storage.Engi
 	// Resolve index flags before the analyzer so a missing optional BM25 plugin
 	// cannot prevent vector search service creation.
 	bm25On, vectorOn, bm25Warming, vectorWarming := db.resolveSearchFlags(dbName)
-	var serviceOptions *search.ServiceOptions
+	resolvedOptions := search.DefaultServiceOptions(dbName)
 	if optionsResolver != nil {
-		resolved := optionsResolver(dbName)
-		serviceOptions = &resolved
+		resolvedOptions = optionsResolver(dbName)
 	} else if db.config != nil && stemmer.NormalizeSelection(db.config.Memory.SearchBM25Stemmer) != stemmer.NoneID {
-		serviceOptions = &search.ServiceOptions{BM25StemmerID: db.config.Memory.SearchBM25Stemmer}
+		resolvedOptions.BM25StemmerID = db.config.Memory.SearchBM25Stemmer
 	}
-	if serviceOptions != nil {
-		selectedStemmer := stemmer.NormalizeSelection(serviceOptions.BM25StemmerID)
-		if selectedStemmer != stemmer.NoneID {
-			reg, ok := stemmer.Lookup(selectedStemmer)
-			if !ok {
-				log.Printf("⚠️  Disabling BM25 for database %s: configured stemmer %q is not registered", dbName, selectedStemmer)
-				bm25On = false
-				serviceOptions.BM25StemmerID = stemmer.NoneID
-			} else {
-				serviceOptions.BM25Stemmer = &reg
-			}
+	// Database identity is not an optional cache setting. Continuation qids are
+	// shared across protocol adapters and must always bind to the canonical
+	// database managed by this service, including services created before the
+	// server installs its per-database options resolver.
+	resolvedOptions.DatabaseID = dbName
+	selectedStemmer := stemmer.NormalizeSelection(resolvedOptions.BM25StemmerID)
+	if selectedStemmer != stemmer.NoneID {
+		reg, ok := stemmer.Lookup(selectedStemmer)
+		if !ok {
+			log.Printf("⚠️  Disabling BM25 for database %s: configured stemmer %q is not registered", dbName, selectedStemmer)
+			bm25On = false
+			resolvedOptions.BM25StemmerID = stemmer.NoneID
+		} else {
+			resolvedOptions.BM25Stemmer = &reg
 		}
 	}
-	svc := search.NewServiceWithDimensionsAndBM25EngineAndOptions(storageEngine, dims, bm25Engine, serviceOptions)
+	svc := search.NewServiceWithDimensionsAndBM25EngineAndOptions(storageEngine, dims, bm25Engine, &resolvedOptions)
 	if configuredEmbedder, embedErr := db.getOrCreateEmbedderForDB(dbName); embedErr != nil {
 		log.Printf("⚠️  Could not resolve embedding space for database %s: %v", dbName, embedErr)
 	} else if provider, ok := configuredEmbedder.(embed.EmbeddingSpaceProvider); ok {

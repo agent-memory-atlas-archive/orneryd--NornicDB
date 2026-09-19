@@ -13,6 +13,11 @@ import (
 )
 
 func TestServiceOptionsSearchResultCachePolicy(t *testing.T) {
+	defaults := DefaultServiceOptions("nornic")
+	require.Equal(t, "nornic", defaults.DatabaseID)
+	require.Equal(t, 1000, defaults.SearchResultCacheEntries)
+	require.Equal(t, 5*time.Minute, defaults.SearchResultCacheTTL)
+
 	defaultService := NewServiceWithDimensionsAndBM25Engine(storage.NewMemoryEngine(), 3, "v2")
 	require.NotNil(t, defaultService.resultCache)
 	require.Equal(t, 1000, defaultService.resultCache.maxSize)
