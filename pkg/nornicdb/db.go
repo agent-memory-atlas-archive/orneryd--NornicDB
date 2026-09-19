@@ -1922,18 +1922,23 @@ func (db *DB) RetryEmbeddingFailures(ctx context.Context, ids []storage.NodeID) 
 	return db.embedQueue.RetryParkedEmbeddingFailures(ctx, ids)
 }
 
-// PendingEmbeddingsCount returns the current size of the pending-embeddings index.
-// This is a fast, storage-backed counter path used by embed/stats.
+// PendingEmbeddingsCount returns durable queued work plus nodes currently claimed
+// by embedding workers. This prevents completion polling from observing an empty
+// durable queue while provider requests, retries, or batch bisection are active.
 func (db *DB) PendingEmbeddingsCount() int {
+	pending := 0
 	if db.baseStorage != nil {
 		if counter, ok := db.baseStorage.(interface{ PendingEmbeddingsCount() int }); ok {
-			return counter.PendingEmbeddingsCount()
+			pending = counter.PendingEmbeddingsCount()
 		}
 	}
-	return 0
+	if db.embedQueue != nil {
+		pending += db.embedQueue.Stats().InFlight
+	}
+	return pending
 }
 
-// WaitForEmbeddings waits for the durable pending-embedding queue to drain.
+// WaitForEmbeddings waits for queued and claimed embedding work to drain.
 // Callers that need a complete vector corpus before search should invoke this
 // after triggering embedding work and before building or evaluating an index.
 func (db *DB) WaitForEmbeddings(ctx context.Context) error {

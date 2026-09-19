@@ -1748,9 +1748,10 @@ func TestEmbedQueueSmallWrappers(t *testing.T) {
 	worker.Enqueue("node-1")
 	require.Equal(t, 1, len(worker.trigger), "Enqueue delegates to Trigger and keeps single wakeup signal")
 
-	payload, err := WorkerStats{Running: true, Processed: 3, Failed: 1}.MarshalJSON()
+	payload, err := WorkerStats{Running: true, InFlight: 2, Processed: 3, Failed: 1}.MarshalJSON()
 	require.NoError(t, err)
 	require.Contains(t, string(payload), "\"running\":true")
+	require.Contains(t, string(payload), "\"in_flight\":2")
 	require.Contains(t, string(payload), "\"processed\":3")
 	require.Contains(t, string(payload), "\"failed\":1")
 	require.Contains(t, string(payload), "\"parked\":0")

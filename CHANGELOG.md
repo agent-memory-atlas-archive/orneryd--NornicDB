@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Track embedding claims as in-flight work across provider calls, batch
+  bisection, retry backoff, and persistence. Embed stats now keep `running`
+  true, expose `in_flight`, and include claims in `pending_nodes`, preventing
+  completion polling from returning before vectors are searchable.
 - Buffer large MessagePack search-index snapshots and atomically replace files
   only after a successful encode and fsync. The durable storage clean-shutdown
   marker is now recorded before potentially slow search persistence, so an

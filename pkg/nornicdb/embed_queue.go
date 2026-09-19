@@ -63,7 +63,7 @@ type EmbedWorker struct {
 	processed atomic.Int64
 	failed    atomic.Int64
 	parked    atomic.Int64
-	running   atomic.Bool
+	inFlight  atomic.Int64
 	closed    atomic.Bool // Set to true when Close() is called
 
 	// Recently processed node IDs to prevent re-processing before DB commit is visible
@@ -349,6 +349,7 @@ func (ew *EmbedWorker) signalTrigger() {
 // WorkerStats returns current worker statistics.
 type WorkerStats struct {
 	Running   bool `json:"running"`
+	InFlight  int  `json:"in_flight"`
 	Processed int  `json:"processed"`
 	Failed    int  `json:"failed"`
 	Parked    int  `json:"parked"`
@@ -386,8 +387,10 @@ func (ew *EmbedWorker) QueueLen() int {
 }
 
 func (ew *EmbedWorker) Stats() WorkerStats {
+	inFlight := int(ew.inFlight.Load())
 	return WorkerStats{
-		Running:   ew.running.Load(),
+		Running:   inFlight > 0,
+		InFlight:  inFlight,
 		Processed: int(ew.processed.Load()),
 		Failed:    int(ew.failed.Load()),
 		Parked:    int(ew.parked.Load()),
@@ -505,7 +508,7 @@ func (ew *EmbedWorker) Reset() {
 		return
 	}
 	// Mark as resetting to prevent Trigger() from sending during reset
-	wasRunning := ew.running.Load()
+	wasRunning := ew.inFlight.Load() > 0
 	ew.mu.Unlock()
 
 	fmt.Println("🔄 Resetting embed worker for regeneration...")
@@ -541,7 +544,7 @@ func (ew *EmbedWorker) Reset() {
 	ew.processed.Store(0)
 	ew.failed.Store(0)
 	ew.parked.Store(0)
-	ew.running.Store(false)
+	ew.inFlight.Store(0)
 
 	// Create new context (don't recreate trigger channel - just drain it)
 	ew.ctx, ew.cancel = context.WithCancel(context.Background())
@@ -917,12 +920,6 @@ func (ew *EmbedWorker) processNextNode() bool {
 		ew.signalTrigger()
 		return false
 	}
-
-	ew.running.Store(true)
-
-	defer func() {
-		ew.running.Store(false)
-	}()
 
 	node := ew.claimNextNode()
 	if node == nil {
@@ -1451,13 +1448,18 @@ func (ew *EmbedWorker) claimNextNode() *storage.Node {
 	}
 
 	ew.claimedNodes[id] = struct{}{}
+	ew.inFlight.Add(1)
 	ew.markNodeEmbedded(node.ID)
 	return copyNodeForEmbedding(node)
 }
 
 func (ew *EmbedWorker) releaseNodeClaim(nodeID storage.NodeID) {
 	ew.claimMu.Lock()
-	delete(ew.claimedNodes, string(nodeID))
+	id := string(nodeID)
+	if _, claimed := ew.claimedNodes[id]; claimed {
+		delete(ew.claimedNodes, id)
+		ew.inFlight.Add(-1)
+	}
 	ew.claimMu.Unlock()
 }
 
@@ -1696,6 +1698,7 @@ func averageEmbeddings(embeddings [][]float32) []float32 {
 func (s WorkerStats) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]interface{}{
 		"running":   s.Running,
+		"in_flight": s.InFlight,
 		"processed": s.Processed,
 		"failed":    s.Failed,
 		"parked":    s.Parked,

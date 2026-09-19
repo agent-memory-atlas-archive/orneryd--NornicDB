@@ -21,6 +21,28 @@ type orderedEmbeddingQueue struct {
 
 type delayedTransientEmbeddingError struct{ delay time.Duration }
 
+type blockingBisectEmbedder struct {
+	recordingDocumentBatchEmbedder
+	started chan struct{}
+	release chan struct{}
+}
+
+func (e *blockingBisectEmbedder) EmbedDocumentBatchChunks(ctx context.Context, texts []string, _, _ int) ([]*embed.DocumentChunkResult, error) {
+	if len(texts) > 1 {
+		return nil, &embed.ProviderError{Provider: "test", StatusCode: 400, Body: "split batch"}
+	}
+	select {
+	case e.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-e.release:
+		return []*embed.DocumentChunkResult{{Embeddings: [][]float32{{1, 0, 0}}, Model: e.Model()}}, nil
+	}
+}
+
 func (e delayedTransientEmbeddingError) Error() string             { return "provider asked for a cooldown" }
 func (e delayedTransientEmbeddingError) Retryable() bool           { return true }
 func (e delayedTransientEmbeddingError) RetryDelay() time.Duration { return e.delay }
@@ -274,6 +296,50 @@ func TestRejectedDocumentIsIsolatedFromBatchNeighbors(t *testing.T) {
 	poison, err := store.GetNode("poison")
 	require.NoError(t, err)
 	require.Equal(t, true, poison.EmbedMeta["embedding_failed"])
+}
+
+func TestEmbedWorkerReportsClaimedNodesDuringBatchBisection(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	store := storage.NewNamespacedEngine(base, "embedding-bisect-stats")
+	ids := []storage.NodeID{"first", "second"}
+	for _, id := range ids {
+		_, err := store.CreateNode(&storage.Node{ID: id, Labels: []string{"Doc"}, Properties: map[string]any{"text": string(id)}})
+		require.NoError(t, err)
+	}
+	queue := &orderedEmbeddingQueue{Engine: store, pending: append([]storage.NodeID(nil), ids...)}
+	provider := &blockingBisectEmbedder{
+		recordingDocumentBatchEmbedder: recordingDocumentBatchEmbedder{rejectingContentEmbedder: rejectingContentEmbedder{calls: make(map[string]int)}},
+		started:                        make(chan struct{}, 1),
+		release:                        make(chan struct{}),
+	}
+	worker := NewEmbedWorker(provider, queue, &EmbedWorkerConfig{
+		NumWorkers: 0, MaxRetries: 1, ChunkSize: 512, EmbedBatchSize: 8, DeferWorkerStart: true,
+	})
+	t.Cleanup(worker.Close)
+
+	done := make(chan struct{})
+	go func() {
+		worker.processNextBatch()
+		close(done)
+	}()
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("bisected provider request did not start")
+	}
+	stats := worker.Stats()
+	require.True(t, stats.Running)
+	require.Equal(t, 2, stats.InFlight)
+
+	close(provider.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("bisected batch did not finish")
+	}
+	stats = worker.Stats()
+	require.False(t, stats.Running)
+	require.Zero(t, stats.InFlight)
 }
 
 func TestRejectedNodeIsParkedWhileFollowingNodeCompletes(t *testing.T) {

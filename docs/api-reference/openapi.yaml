@@ -872,7 +872,7 @@ paths:
       tags:
         - Embeddings
       summary: Embedding statistics
-      description: Get embedding worker statistics
+      description: Get embedding worker statistics. Embedding is complete when `pending_nodes` and `stats.in_flight` are both zero; `pending_nodes` includes claimed work for backward-compatible polling.
       operationId: getEmbedStats
       security:
         - bearerAuth: []
@@ -885,14 +885,25 @@ paths:
               schema:
                 type: object
                 properties:
-                  total_nodes:
+                  enabled:
+                    type: boolean
+                  total_embeddings:
                     type: integer
-                  nodes_with_embeddings:
+                  pending_nodes:
                     type: integer
-                  nodes_without_embeddings:
-                    type: integer
-                  processing_queue:
-                    type: integer
+                  stats:
+                    type: object
+                    properties:
+                      running:
+                        type: boolean
+                      in_flight:
+                        type: integer
+                      processed:
+                        type: integer
+                      failed:
+                        type: integer
+                      parked:
+                        type: integer
 
   /nornicdb/embed/clear:
     post:

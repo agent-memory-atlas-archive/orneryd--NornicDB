@@ -26,6 +26,7 @@ func (e *delayedPendingVisibilityEngine) FindNodeNeedingEmbedding() *storage.Nod
 }
 
 func (*delayedPendingVisibilityEngine) MarkNodeEmbedded(storage.NodeID) {}
+func (*delayedPendingVisibilityEngine) PendingEmbeddingsCount() int     { return 0 }
 
 type blockingStructuredEmbedder struct {
 	calls   atomic.Int32
@@ -119,6 +120,19 @@ func TestEmbedWorkerClaimsStructuredNodeOnceAcrossConcurrentWorkers(t *testing.T
 	case <-time.After(time.Second):
 		t.Fatal("first provider call did not start")
 	}
+	db := &DB{baseStorage: engine, embedQueue: worker}
+	stats := worker.Stats()
+	require.True(t, stats.Running)
+	require.Equal(t, 1, stats.InFlight)
+	require.Equal(t, 1, db.PendingEmbeddingsCount(),
+		"claimed work must remain visible after its durable pending marker is removed")
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- db.WaitForEmbeddings(context.Background()) }()
+	select {
+	case err := <-waitDone:
+		t.Fatalf("wait returned while provider work was still in flight: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
 	go func() {
 		defer waitGroup.Done()
 		worker.processNextBatch()
@@ -128,6 +142,15 @@ func TestEmbedWorkerClaimsStructuredNodeOnceAcrossConcurrentWorkers(t *testing.T
 	close(provider.release)
 	waitGroup.Wait()
 	require.Equal(t, int32(1), provider.calls.Load())
+	stats = worker.Stats()
+	require.False(t, stats.Running)
+	require.Zero(t, stats.InFlight)
+	select {
+	case err := <-waitDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("wait did not return after claimed work completed")
+	}
 }
 
 func TestEmbedWorkerBatchesStructuredNodesForTheSameProvider(t *testing.T) {
