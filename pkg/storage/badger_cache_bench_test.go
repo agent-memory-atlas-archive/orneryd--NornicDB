@@ -1,8 +1,24 @@
 package storage
 
 import (
+	"strings"
 	"testing"
 )
+
+func BenchmarkNodeBodyCacheStoreAndEvict(b *testing.B) {
+	engine := &BadgerEngine{
+		nodeBodyCache:         make(map[NodeID]*nodeBodyCacheEntry, 64),
+		nodeCacheMaxEntries:   64,
+		nodeBodyCacheMaxBytes: 64 << 10,
+	}
+	node := &Node{Labels: []string{"Document"}, Properties: map[string]any{"text": strings.Repeat("x", 2<<10)}, ChunkEmbeddings: [][]float32{make([]float32, 1024)}, EmbeddingsStoredSeparately: true}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		node.ID = NodeID(itoaBench(i % 128))
+		engine.cacheStoreNodeBody(node.ID, uint64(i+1), node)
+	}
+}
 
 func BenchmarkBadger_GetNode_CacheHit(b *testing.B) {
 	engine, err := NewBadgerEngineInMemory()

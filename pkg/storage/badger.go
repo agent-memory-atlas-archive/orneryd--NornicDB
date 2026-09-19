@@ -5,6 +5,7 @@
 package storage
 
 import (
+	"container/list"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -100,6 +101,7 @@ const maxNodeSize = 50 * 1024 // 50KB
 
 const (
 	defaultBadgerNodeCacheMaxEntries   = 10000
+	defaultBadgerNodeBodyCacheMaxBytes = int64(256 << 20)
 	defaultBadgerEdgeTypeCacheMaxTypes = 50
 	defaultBadgerLabelFirstCacheMax    = 1000
 )
@@ -164,8 +166,11 @@ type BadgerEngine struct {
 	// Current primary-key body cache for MVCC GetNodeVisibleAt reads. Entries
 	// are tagged with Badger's item version so a snapshot read can only reuse a
 	// decoded body when it has first observed the exact primary-key version.
-	nodeBodyCache   map[NodeID]nodeBodyCacheEntry
-	nodeBodyCacheMu sync.RWMutex
+	nodeBodyCache         map[NodeID]*nodeBodyCacheEntry
+	nodeBodyCacheMu       sync.RWMutex
+	nodeBodyCacheLRU      list.List
+	nodeBodyCacheBytes    int64
+	nodeBodyCacheMaxBytes int64
 
 	// Edge type cache for mutual relationship queries
 	// Caches edges by type for O(1) lookup
@@ -520,6 +525,10 @@ type BadgerOptions struct {
 	// Set to 0 to use the default.
 	NodeCacheMaxEntries int
 
+	// NodeBodyCacheMaxBytes bounds decoded MVCC node bodies by retained bytes.
+	// Entries larger than the budget are not cached. Set to 0 for the default.
+	NodeBodyCacheMaxBytes int64
+
 	// EdgeTypeCacheMaxTypes is the maximum number of distinct edge types cached
 	// for GetEdgesByType. When exceeded, the cache is cleared.
 	// Set to 0 to use the default.
@@ -794,6 +803,7 @@ func NewBadgerEngineWithOptions(opts BadgerOptions) (*BadgerEngine, error) {
 		retentionPolicy: retentionPolicy,
 
 		nodeCacheMaxEntries:   opts.NodeCacheMaxEntries,
+		nodeBodyCacheMaxBytes: opts.NodeBodyCacheMaxBytes,
 		edgeTypeCacheMaxTypes: opts.EdgeTypeCacheMaxTypes,
 		labelFirstCacheMax:    opts.LabelFirstNodeCacheMaxEntries,
 
@@ -803,6 +813,9 @@ func NewBadgerEngineWithOptions(opts BadgerOptions) (*BadgerEngine, error) {
 	if engine.nodeCacheMaxEntries <= 0 {
 		engine.nodeCacheMaxEntries = defaultBadgerNodeCacheMaxEntries
 	}
+	if engine.nodeBodyCacheMaxBytes <= 0 {
+		engine.nodeBodyCacheMaxBytes = defaultBadgerNodeBodyCacheMaxBytes
+	}
 	if engine.edgeTypeCacheMaxTypes <= 0 {
 		engine.edgeTypeCacheMaxTypes = defaultBadgerEdgeTypeCacheMaxTypes
 	}
@@ -811,7 +824,7 @@ func NewBadgerEngineWithOptions(opts BadgerOptions) (*BadgerEngine, error) {
 	}
 
 	engine.nodeCache = make(map[NodeID]*Node, engine.nodeCacheMaxEntries)
-	engine.nodeBodyCache = make(map[NodeID]nodeBodyCacheEntry, engine.nodeCacheMaxEntries)
+	engine.nodeBodyCache = make(map[NodeID]*nodeBodyCacheEntry, engine.nodeCacheMaxEntries)
 	engine.edgeTypeCache = make(map[string][]*Edge, engine.edgeTypeCacheMaxTypes)
 	engine.labelFirstNodeCache = make(map[string]NodeID, engine.labelFirstCacheMax)
 	// Mirror the node cache sizing knob unless we add a dedicated tunable.

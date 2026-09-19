@@ -1171,7 +1171,9 @@ Unified search (`pkg/search`) caches **search results** so that repeated identic
 **Behavior:**
 
 - **Key:** Query string + options that affect the result: `Limit`, `Types` (labels), `RerankEnabled`, `RerankTopK`, `RerankMinScore`, `MMREnabled`, `MMRLambda`. Same (query, options) ⇒ same cache key.
-- **Capacity:** 1000 entries (LRU eviction).
+- **Capacity:** 1000 entries and 64 MiB of estimated retained response memory,
+  whichever is reached first (incremental LRU eviction). A response larger
+  than the byte budget is returned normally but is not cached.
 - **TTL:** 5 minutes (aligned with Cypher query cache).
 - **Invalidation:** Full cache clear on `IndexNode` and `RemoveNode`, so results stay correct after index changes.
 

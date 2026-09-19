@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bound decoded MVCC node bodies by retained bytes, keep separately stored
+  embeddings out of the cache, and rehydrate them only for full-node reads.
+  Search responses now use an O(1) LRU with a retained-byte budget as well as
+  the existing entry limit, preventing document-sized results from pinning
+  gigabytes of heap.
+- Treat the IVF/PQ exact-rescore setting as a candidate floor independent of
+  the requested result limit, and raise its default to 2,000 candidates. This
+  preserves high recall before final truncation while still allowing deeper
+  caller-requested searches.
 - Skip periodic WAL snapshots when no mutation has arrived since the previous
   compaction, and stream snapshot nodes without loading separately stored
   embeddings. The snapshot check interval is now configurable through

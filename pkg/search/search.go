@@ -86,13 +86,14 @@
 // Result caching:
 //
 // Search() results are cached in-process by query + options (limit, types, rerank, MMR, etc.),
-// with the same semantics as the Cypher query cache: LRU eviction (default 1000 entries),
-// TTL (default 5 minutes), and full invalidation on IndexNode/RemoveNode so results stay
+// with the same semantics as the Cypher query cache: LRU eviction (default 1000 entries
+// and 64 MiB retained), TTL (default 5 minutes), and full invalidation on IndexNode/RemoveNode so results stay
 // correct after index changes. All call paths (HTTP search API, Cypher vector procedures,
 // MCP, etc.) share this cache, so repeated identical searches return immediately.
 package search
 
 import (
+	"container/list"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -438,27 +439,33 @@ type searchResultCacheEntry struct {
 	response *SearchResponse
 	created  time.Time
 	expires  time.Time
+	bytes    int64
+	element  *list.Element
 }
 
 // searchResultCache is an LRU cache for search results keyed by query + options.
 // Invalidated on IndexNode/RemoveNode so results stay correct after index changes.
 type searchResultCache struct {
-	mu      sync.RWMutex
-	entries map[string]*searchResultCacheEntry
-	lru     []string // key order, oldest first for eviction
-	maxSize int
-	ttl     time.Duration
+	mu            sync.RWMutex
+	entries       map[string]*searchResultCacheEntry
+	lru           list.List // most recently used at the front
+	maxSize       int
+	maxBytes      int64
+	retainedBytes int64
+	ttl           time.Duration
 }
+
+const defaultSearchResultCacheMaxBytes = int64(64 << 20)
 
 func newSearchResultCache(maxSize int, ttl time.Duration) *searchResultCache {
 	if maxSize <= 0 {
 		maxSize = 1000
 	}
 	return &searchResultCache{
-		entries: make(map[string]*searchResultCacheEntry, maxSize),
-		lru:     make([]string, 0, maxSize),
-		maxSize: maxSize,
-		ttl:     ttl,
+		entries:  make(map[string]*searchResultCacheEntry, maxSize),
+		maxSize:  maxSize,
+		maxBytes: defaultSearchResultCacheMaxBytes,
+		ttl:      ttl,
 	}
 }
 
@@ -534,22 +541,10 @@ func (c *searchResultCache) Get(key string) *SearchResponse {
 		return nil
 	}
 	if c.ttl > 0 && time.Now().After(ent.expires) {
-		delete(c.entries, key)
-		for i, k := range c.lru {
-			if k == key {
-				c.lru = append(c.lru[:i], c.lru[i+1:]...)
-				break
-			}
-		}
+		c.removeLocked(key, ent)
 		return nil
 	}
-	for i, existing := range c.lru {
-		if existing == key {
-			c.lru = append(c.lru[:i], c.lru[i+1:]...)
-			c.lru = append(c.lru, key)
-			break
-		}
-	}
+	c.lru.MoveToFront(ent.element)
 	return ent.response
 }
 
@@ -566,15 +561,21 @@ func (c *searchResultCache) Put(key string, response *SearchResponse) {
 	if c.maxSize <= 0 {
 		return
 	}
-	if _, exists := c.entries[key]; !exists {
-		for len(c.lru) >= c.maxSize {
-			evict := c.lru[0]
-			c.lru = c.lru[1:]
-			delete(c.entries, evict)
+	retainedBytes := estimateSearchResponseBytes(response)
+	if c.maxBytes > 0 && retainedBytes > c.maxBytes {
+		if previous := c.entries[key]; previous != nil {
+			c.removeLocked(key, previous)
 		}
-		c.lru = append(c.lru, key)
+		return
 	}
-	c.entries[key] = &searchResultCacheEntry{response: response, created: time.Now(), expires: expires}
+	if previous := c.entries[key]; previous != nil {
+		c.removeLocked(key, previous)
+	}
+	entry := &searchResultCacheEntry{response: response, created: time.Now(), expires: expires, bytes: retainedBytes}
+	entry.element = c.lru.PushFront(key)
+	c.entries[key] = entry
+	c.retainedBytes += retainedBytes
+	c.evictLocked()
 }
 
 func (c *searchResultCache) Resize(maxSize int) {
@@ -584,10 +585,39 @@ func (c *searchResultCache) Resize(maxSize int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.maxSize = maxSize
-	for len(c.lru) > maxSize {
-		evict := c.lru[0]
-		c.lru = c.lru[1:]
-		delete(c.entries, evict)
+	c.evictLocked()
+}
+
+func (c *searchResultCache) SetMaxBytes(maxBytes int64) {
+	if maxBytes < 0 {
+		maxBytes = 0
+	}
+	c.mu.Lock()
+	c.maxBytes = maxBytes
+	c.evictLocked()
+	c.mu.Unlock()
+}
+
+func (c *searchResultCache) evictLocked() {
+	for c.lru.Len() > 0 && ((c.maxSize >= 0 && c.lru.Len() > c.maxSize) ||
+		(c.maxBytes > 0 && c.retainedBytes > c.maxBytes)) {
+		oldest := c.lru.Back()
+		key := oldest.Value.(string)
+		c.removeLocked(key, c.entries[key])
+	}
+}
+
+func (c *searchResultCache) removeLocked(key string, entry *searchResultCacheEntry) {
+	delete(c.entries, key)
+	if entry == nil {
+		return
+	}
+	c.retainedBytes -= entry.bytes
+	if c.retainedBytes < 0 {
+		c.retainedBytes = 0
+	}
+	if entry.element != nil {
+		c.lru.Remove(entry.element)
 	}
 }
 
@@ -599,32 +629,90 @@ func (c *searchResultCache) SetTTL(ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ttl = ttl
-	retained := c.lru[:0]
-	for _, key := range c.lru {
+	for element := c.lru.Back(); element != nil; {
+		previous := element.Prev()
+		key := element.Value.(string)
 		entry := c.entries[key]
 		if entry == nil {
+			c.lru.Remove(element)
+			element = previous
 			continue
 		}
 		if ttl == 0 {
 			entry.expires = time.Time{}
-			retained = append(retained, key)
+			element = previous
 			continue
 		}
 		entry.expires = entry.created.Add(ttl)
 		if now.After(entry.expires) {
-			delete(c.entries, key)
-			continue
+			c.removeLocked(key, entry)
 		}
-		retained = append(retained, key)
+		element = previous
 	}
-	c.lru = retained
 }
 
 func (c *searchResultCache) Invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries = make(map[string]*searchResultCacheEntry, c.maxSize)
-	c.lru = c.lru[:0]
+	c.lru.Init()
+	c.retainedBytes = 0
+}
+
+func estimateSearchResponseBytes(response *SearchResponse) int64 {
+	if response == nil {
+		return 0
+	}
+	bytes := int64(192 + len(response.Status) + len(response.Query) + len(response.SearchMethod) + len(response.Message))
+	var resultBytes func(SearchResult) int64
+	resultBytes = func(result SearchResult) int64 {
+		size := int64(256 + len(result.ID) + len(result.NodeID) + len(result.GroupKey) + len(result.Phase) + len(result.Type) + len(result.Title) + len(result.Description) + len(result.ContentPreview))
+		for _, label := range result.Labels {
+			size += int64(16 + len(label))
+		}
+		for key, value := range result.Properties {
+			size += int64(32+len(key)) + estimateSearchCacheValueBytes(value)
+		}
+		for _, passage := range result.Passages {
+			size += resultBytes(passage)
+		}
+		return size
+	}
+	for _, result := range response.Results {
+		bytes += resultBytes(result)
+	}
+	return bytes
+}
+
+func estimateSearchCacheValueBytes(value any) int64 {
+	switch typed := value.(type) {
+	case nil:
+		return 0
+	case string:
+		return int64(16 + len(typed))
+	case []byte:
+		return int64(24 + len(typed))
+	case []string:
+		bytes := int64(24 + 16*len(typed))
+		for _, item := range typed {
+			bytes += int64(len(item))
+		}
+		return bytes
+	case []any:
+		bytes := int64(24 + 16*len(typed))
+		for _, item := range typed {
+			bytes += estimateSearchCacheValueBytes(item)
+		}
+		return bytes
+	case map[string]any:
+		bytes := int64(48 + 32*len(typed))
+		for key, item := range typed {
+			bytes += int64(len(key)) + estimateSearchCacheValueBytes(item)
+		}
+		return bytes
+	default:
+		return 16
+	}
 }
 
 // Service provides unified hybrid search with automatic index management.
@@ -4666,8 +4754,8 @@ func resolveVectorAdaptiveOverfetch(opts *SearchOptions, pipeline *VectorSearchP
 		opts = &defaults
 	}
 	effective := *opts
-	if compressed && generator.index != nil && generator.index.profile.RerankTopK > 0 &&
-		(effective.MaxCandidateLimit <= 0 || generator.index.profile.RerankTopK < effective.MaxCandidateLimit) {
+	if compressed && generator.index != nil && effective.MaxCandidateLimit > 0 &&
+		generator.index.profile.RerankTopK > effective.MaxCandidateLimit {
 		effective.MaxCandidateLimit = generator.index.profile.RerankTopK
 	}
 	config := resolveAdaptiveOverfetch(&effective)

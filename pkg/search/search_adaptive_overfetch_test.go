@@ -182,9 +182,9 @@ func TestResolveAdaptiveOverfetchAllowsConfiguredBudgetAboveDefault(t *testing.T
 	require.Equal(t, 10_000, config.maxLimit)
 }
 
-func TestAdaptiveVectorSearchAppliesIVFPQRerankCapAtServiceLayer(t *testing.T) {
+func TestAdaptiveVectorSearchUsesIVFPQRerankDepthIndependentOfResultLimit(t *testing.T) {
 	index := &IVFPQIndex{
-		profile:      IVFPQProfile{Dimensions: 1, NProbe: 1, RerankTopK: 2},
+		profile:      IVFPQProfile{Dimensions: 1, NProbe: 1, RerankTopK: 3},
 		centroids:    [][]float32{{1}},
 		centroidNorm: [][]float32{{1}},
 		codebooks: []ivfpqCodebook{
@@ -196,12 +196,19 @@ func TestAdaptiveVectorSearchAppliesIVFPQRerankCapAtServiceLayer(t *testing.T) {
 	}
 	service := NewServiceWithDimensions(storage.NewMemoryEngine(), 1)
 	pipeline := NewVectorSearchPipeline(NewIVFPQCandidateGen(index, 1), &IdentityExactScorer{})
-	opts := adaptiveOverfetchTestOptions(3)
+	opts := adaptiveOverfetchTestOptions(1)
+	opts.MaxCandidateLimit = 1
 
 	results, _, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1}, opts, nil, nil)
 
 	require.NoError(t, err)
-	require.Len(t, results, 2)
+	require.Len(t, results, 1)
+	require.Equal(t, 3, resolveVectorAdaptiveOverfetch(opts, pipeline).initialLimit)
+	require.Equal(t, 3, resolveVectorAdaptiveOverfetch(opts, pipeline).maxLimit)
+
+	deeper := adaptiveOverfetchTestOptions(4)
+	deeper.MaxCandidateLimit = 0
+	require.GreaterOrEqual(t, resolveVectorAdaptiveOverfetch(deeper, pipeline).initialLimit, 4)
 }
 
 func TestAdaptiveBM25SearchWidensAfterFiltering(t *testing.T) {

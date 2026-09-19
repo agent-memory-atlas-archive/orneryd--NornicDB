@@ -35,8 +35,12 @@ func NewIVFPQCandidateGenWithOverlay(index *IVFPQIndex, nprobe int, overlay *ann
 	return g
 }
 
-func (g *IVFPQCandidateGen) preferredCandidateDepth(_, maximum int) int {
-	return maximum
+func (g *IVFPQCandidateGen) preferredCandidateDepth(target, maximum int) int {
+	preferred := target
+	if g != nil && g.index != nil && g.index.profile.RerankTopK > preferred {
+		preferred = g.index.profile.RerankTopK
+	}
+	return min(preferred, maximum)
 }
 
 func (g *IVFPQCandidateGen) SearchCandidates(ctx context.Context, query []float32, k int, minSimilarity float64) ([]Candidate, error) {

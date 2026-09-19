@@ -1043,7 +1043,13 @@ func (b *BadgerEngine) decodeNodeWithEmbeddings(txn *badger.Txn, data []byte, no
 	if err != nil {
 		return nil, err
 	}
+	return b.loadNodeEmbeddings(txn, node, nodeID)
+}
 
+// loadNodeEmbeddings hydrates separately stored chunk vectors into a decoded
+// node body. Keeping this separate lets the body cache retain only metadata and
+// properties while preserving full-node read semantics on cache hits.
+func (b *BadgerEngine) loadNodeEmbeddings(txn *badger.Txn, node *Node, nodeID NodeID) (*Node, error) {
 	// Check if embeddings are stored separately (struct flag set during encode)
 	if node.EmbeddingsStoredSeparately {
 		// Use chunk_count from EmbedMeta (set by embed queue) to know how many chunks to load

@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -624,6 +625,43 @@ func TestSearchResultCacheHelpers(t *testing.T) {
 		require.NotNil(t, c)
 		require.Equal(t, 1000, c.maxSize)
 	})
+}
+
+func TestSearchResultCacheEvictsByRetainedBytes(t *testing.T) {
+	c := newSearchResultCache(100, time.Minute)
+	c.SetMaxBytes(900)
+
+	response := func(query string) *SearchResponse {
+		return &SearchResponse{
+			Status: "success",
+			Query:  query,
+			Results: []SearchResult{{
+				ID:         query,
+				Properties: map[string]any{"text": strings.Repeat(query, 256)},
+			}},
+		}
+	}
+	c.Put("first", response("a"))
+	c.Put("second", response("b"))
+
+	require.Nil(t, c.Get("first"), "the byte budget must evict incrementally before the entry limit")
+	require.NotNil(t, c.Get("second"))
+	require.LessOrEqual(t, c.retainedBytes, c.maxBytes)
+}
+
+func BenchmarkSearchResultCacheHit(b *testing.B) {
+	cache := newSearchResultCache(1_000, time.Minute)
+	for i := 0; i < 1_000; i++ {
+		key := strconv.Itoa(i)
+		cache.Put(key, &SearchResponse{Status: "success", Query: key})
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if cache.Get(strconv.Itoa(i%1_000)) == nil {
+			b.Fatal("cache miss")
+		}
+	}
 }
 
 func TestSearchCacheKeyAndMinSimilarityHelpers(t *testing.T) {

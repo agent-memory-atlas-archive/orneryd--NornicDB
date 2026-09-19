@@ -1,5 +1,10 @@
 package storage
 
+import (
+	"container/list"
+	"sync/atomic"
+)
+
 // =============================================================================
 // BADGER ENGINE CACHE INVARIANTS + INVALIDATION
 // =============================================================================
@@ -25,6 +30,9 @@ package storage
 type nodeBodyCacheEntry struct {
 	itemVersion uint64
 	node        *Node
+	bytes       int64
+	lruElement  *list.Element
+	referenced  atomic.Bool
 }
 
 func (b *BadgerEngine) cacheStoreNode(node *Node) {
@@ -52,24 +60,61 @@ func (b *BadgerEngine) cacheLoadNodeBody(id NodeID, itemVersion uint64) (*Node, 
 	}
 	b.nodeBodyCacheMu.RLock()
 	entry, ok := b.nodeBodyCache[id]
-	b.nodeBodyCacheMu.RUnlock()
 	if !ok || entry.itemVersion != itemVersion || entry.node == nil {
+		b.nodeBodyCacheMu.RUnlock()
+		if ok {
+			b.nodeBodyCacheMu.Lock()
+			if current := b.nodeBodyCache[id]; current == entry {
+				b.removeNodeBodyCacheEntryLocked(id, entry)
+			}
+			b.nodeBodyCacheMu.Unlock()
+		}
 		return nil, false
 	}
-	return copyNode(entry.node), true
+	entry.referenced.Store(true)
+	node := copyNodeWithoutEmbeddings(entry.node)
+	b.nodeBodyCacheMu.RUnlock()
+	return node, true
 }
 
 func (b *BadgerEngine) cacheStoreNodeBody(id NodeID, itemVersion uint64, node *Node) {
 	if id == "" || node == nil {
 		return
 	}
-	cached := copyNode(node)
-	normalizePropertyMapShapes(cached.Properties)
-	b.nodeBodyCacheMu.Lock()
-	if b.nodeCacheMaxEntries > 0 && len(b.nodeBodyCache) > b.nodeCacheMaxEntries {
-		b.nodeBodyCache = make(map[NodeID]nodeBodyCacheEntry, b.nodeCacheMaxEntries)
+	// Inline vectors cannot be reconstructed from separate keys. Avoid caching
+	// a lossy projection; large separately stored vectors are rehydrated on hit.
+	if !node.EmbeddingsStoredSeparately && (len(node.ChunkEmbeddings) > 0 || len(node.NamedEmbeddings) > 0) {
+		return
 	}
-	b.nodeBodyCache[id] = nodeBodyCacheEntry{itemVersion: itemVersion, node: cached}
+	cached := copyNodeWithoutEmbeddings(node)
+	normalizePropertyMapShapes(cached.Properties)
+	retainedBytes := estimateNodeBodyCacheBytes(cached)
+	if retainedBytes > b.nodeBodyCacheMaxBytes {
+		return
+	}
+	b.nodeBodyCacheMu.Lock()
+	if previous, ok := b.nodeBodyCache[id]; ok {
+		b.removeNodeBodyCacheEntryLocked(id, previous)
+	}
+	entry := &nodeBodyCacheEntry{itemVersion: itemVersion, node: cached, bytes: retainedBytes}
+	entry.referenced.Store(true)
+	entry.lruElement = b.nodeBodyCacheLRU.PushFront(id)
+	b.nodeBodyCache[id] = entry
+	b.nodeBodyCacheBytes += retainedBytes
+	for (b.nodeCacheMaxEntries > 0 && len(b.nodeBodyCache) > b.nodeCacheMaxEntries) ||
+		(b.nodeBodyCacheMaxBytes > 0 && b.nodeBodyCacheBytes > b.nodeBodyCacheMaxBytes) {
+		oldest := b.nodeBodyCacheLRU.Back()
+		if oldest == nil {
+			break
+		}
+		oldestID := oldest.Value.(NodeID)
+		oldestEntry := b.nodeBodyCache[oldestID]
+		if oldestEntry != nil && oldestEntry.referenced.Swap(false) && len(b.nodeBodyCache) > 1 {
+			b.nodeBodyCacheLRU.MoveToFront(oldest)
+			continue
+		}
+		b.removeNodeBodyCacheEntryLocked(oldestID, oldestEntry)
+	}
 	b.nodeBodyCacheMu.Unlock()
 }
 
@@ -78,8 +123,72 @@ func (b *BadgerEngine) cacheDeleteNodeBody(id NodeID) {
 		return
 	}
 	b.nodeBodyCacheMu.Lock()
-	delete(b.nodeBodyCache, id)
+	if entry, ok := b.nodeBodyCache[id]; ok {
+		b.removeNodeBodyCacheEntryLocked(id, entry)
+	}
 	b.nodeBodyCacheMu.Unlock()
+}
+
+func (b *BadgerEngine) removeNodeBodyCacheEntryLocked(id NodeID, entry *nodeBodyCacheEntry) {
+	delete(b.nodeBodyCache, id)
+	if entry == nil {
+		return
+	}
+	b.nodeBodyCacheBytes -= entry.bytes
+	if b.nodeBodyCacheBytes < 0 {
+		b.nodeBodyCacheBytes = 0
+	}
+	if entry.lruElement != nil {
+		b.nodeBodyCacheLRU.Remove(entry.lruElement)
+	}
+}
+
+func estimateNodeBodyCacheBytes(node *Node) int64 {
+	if node == nil {
+		return 0
+	}
+	bytes := int64(128 + len(node.ID))
+	for _, label := range node.Labels {
+		bytes += int64(16 + len(label))
+	}
+	for key, value := range node.Properties {
+		bytes += int64(32+len(key)) + estimateCacheValueBytes(value)
+	}
+	for key, value := range node.EmbedMeta {
+		bytes += int64(32+len(key)) + estimateCacheValueBytes(value)
+	}
+	return bytes
+}
+
+func estimateCacheValueBytes(value any) int64 {
+	switch typed := value.(type) {
+	case nil:
+		return 0
+	case string:
+		return int64(16 + len(typed))
+	case []byte:
+		return int64(24 + len(typed))
+	case []string:
+		bytes := int64(24 + 16*len(typed))
+		for _, value := range typed {
+			bytes += int64(len(value))
+		}
+		return bytes
+	case []any:
+		bytes := int64(24 + 16*len(typed))
+		for _, value := range typed {
+			bytes += estimateCacheValueBytes(value)
+		}
+		return bytes
+	case map[string]any:
+		bytes := int64(48 + 32*len(typed))
+		for key, value := range typed {
+			bytes += int64(len(key)) + estimateCacheValueBytes(value)
+		}
+		return bytes
+	default:
+		return 16
+	}
 }
 
 // cacheLoadEdge returns the cached edge pointer if present.

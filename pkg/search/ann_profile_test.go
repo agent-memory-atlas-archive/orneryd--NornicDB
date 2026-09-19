@@ -18,12 +18,16 @@ func TestResolveCompressedANNProfile_ActiveWithValidSettings(t *testing.T) {
 	t.Setenv("NORNICDB_VECTOR_IVF_LISTS", "256")
 	t.Setenv("NORNICDB_VECTOR_PQ_SEGMENTS", "16")
 	t.Setenv("NORNICDB_VECTOR_PQ_BITS", "8")
+	t.Setenv("NORNICDB_VECTOR_IVFPQ_RERANK_TOPK", "")
 	p := ResolveCompressedANNProfile(50000, 384, true)
 	if !p.Active {
 		t.Fatalf("expected active profile, diagnostics=%v", p.Diagnostics)
 	}
 	if p.IVFLists != 256 || p.PQSegments != 16 || p.PQBits != 8 {
 		t.Fatalf("unexpected profile values: %+v", p)
+	}
+	if p.RerankTopK != 2000 {
+		t.Fatalf("expected 2000 exact-rescore candidates by default, got %d", p.RerankTopK)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,8 +129,9 @@ func TestBadgerEngine_GetNodeVisibleAtCurrentHeadCachesByBadgerBodyVersion(t *te
 	}
 
 	_, err := engine.CreateNode(&Node{
-		ID:     nodeID,
-		Labels: []string{"Entity"},
+		ID:              nodeID,
+		Labels:          []string{"Entity"},
+		ChunkEmbeddings: [][]float32{make([]float32, 16_384)},
 		Properties: map[string]any{
 			"name":      "v1",
 			"embedding": embedding,
@@ -149,11 +151,15 @@ func TestBadgerEngine_GetNodeVisibleAtCurrentHeadCachesByBadgerBodyVersion(t *te
 	require.True(t, ok, "current-head read should cache the decoded primary body")
 	require.NotZero(t, entryV1.itemVersion)
 	require.Equal(t, "v1", entryV1.node.Properties["name"])
+	require.Empty(t, entryV1.node.ChunkEmbeddings, "decoded body cache must not retain vectors")
+	require.True(t, entryV1.node.EmbeddingsStoredSeparately)
+	require.Len(t, first.ChunkEmbeddings, 1)
 
 	first.Properties["name"] = "caller-mutated"
 	second, err := engine.GetNodeVisibleAt(nodeID, v1.Version)
 	require.NoError(t, err)
 	require.Equal(t, "v1", second.Properties["name"], "body cache hits must return a copy")
+	require.Len(t, second.ChunkEmbeddings, 1, "cache hits must rehydrate separately stored vectors")
 
 	require.NoError(t, engine.UpdateNode(&Node{
 		ID:     nodeID,
@@ -227,6 +233,34 @@ func TestBadgerEngine_MVCCEdgeLatestSnapshotAndRecreate(t *testing.T) {
 	latest, err := engine.GetEdgeLatestVisible(edgeID)
 	require.NoError(t, err)
 	require.EqualValues(t, 4, latest.Properties["weight"])
+}
+
+func TestNodeBodyCacheExcludesEmbeddingsAndEvictsByBytes(t *testing.T) {
+	engine, err := NewBadgerEngineWithOptions(BadgerOptions{
+		InMemory:              true,
+		NodeCacheMaxEntries:   100,
+		NodeBodyCacheMaxBytes: 900,
+	})
+	require.NoError(t, err)
+	defer engine.Close()
+
+	for _, id := range []NodeID{NodeID(prefixTestID("body-cache-a")), NodeID(prefixTestID("body-cache-b"))} {
+		engine.cacheStoreNodeBody(id, 1, &Node{
+			ID:                         id,
+			Labels:                     []string{"Document"},
+			Properties:                 map[string]any{"text": strings.Repeat("x", 500)},
+			ChunkEmbeddings:            [][]float32{{1, 2, 3, 4}},
+			EmbeddingsStoredSeparately: true,
+		})
+	}
+
+	engine.nodeBodyCacheMu.RLock()
+	defer engine.nodeBodyCacheMu.RUnlock()
+	require.Len(t, engine.nodeBodyCache, 1)
+	require.LessOrEqual(t, engine.nodeBodyCacheBytes, engine.nodeBodyCacheMaxBytes)
+	for _, entry := range engine.nodeBodyCache {
+		require.Empty(t, entry.node.ChunkEmbeddings)
+	}
 }
 
 func TestBadgerEngine_MVCCLatestVisibleFallsBackToVersionRecords(t *testing.T) {

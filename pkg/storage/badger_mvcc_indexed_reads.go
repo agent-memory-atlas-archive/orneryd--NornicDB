@@ -42,6 +42,10 @@ func (b *BadgerEngine) getNodeVisibleAtInTxn(txn *badger.Txn, id NodeID, version
 		if getErr == nil {
 			itemVersion := item.Version()
 			if cached, ok := b.cacheLoadNodeBody(id, itemVersion); ok {
+				cached, loadErr := b.loadNodeEmbeddings(txn, cached, id)
+				if loadErr != nil {
+					return nil, loadErr
+				}
 				if b.filterNodeByDecay(cached, DecayScoringTime()) {
 					return nil, ErrNotFound
 				}
@@ -49,16 +53,17 @@ func (b *BadgerEngine) getNodeVisibleAtInTxn(txn *badger.Txn, id NodeID, version
 			}
 			var node *Node
 			if err := item.Value(func(val []byte) error {
-				decoded, decodeErr := b.decodeNodeWithEmbeddings(txn, val, id)
+				namespace := namespaceForNodeID(id)
+				decoded, decodeErr := b.decodeNode(namespace, val)
 				if decodeErr != nil {
 					return decodeErr
 				}
 				if decoded == nil {
 					return ErrNotFound
 				}
-				node = decoded
 				b.cacheStoreNodeBody(id, itemVersion, decoded)
-				return nil
+				node, decodeErr = b.loadNodeEmbeddings(txn, decoded, id)
+				return decodeErr
 			}); err != nil {
 				return nil, err
 			}
