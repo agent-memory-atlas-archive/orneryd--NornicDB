@@ -724,8 +724,9 @@ type Service struct {
 
 	// Optional compressed ANN index (IVF/PQ), active only when
 	// NORNICDB_VECTOR_ANN_QUALITY=compressed and readiness checks pass.
-	ivfpqMu    sync.RWMutex
-	ivfpqIndex *IVFPQIndex
+	ivfpqMu      sync.RWMutex
+	ivfpqIndex   *IVFPQIndex
+	ivfpqOverlay *annMutationOverlay
 
 	// Optional lexical profiles per cluster for hybrid lexical-semantic routing.
 	// Built from BM25-indexable text and used to bias cluster routing.
@@ -1033,6 +1034,7 @@ func NewServiceWithDimensionsAndBM25EngineAndOptions(engine storage.Engine, dime
 		edgeTypes:                  make(map[string]string, 1024),
 		edgePropVector:             make(map[string]map[string][]float32, 1024),
 		clusterLexicalProfiles:     make(map[int]map[string]float64),
+		ivfpqOverlay:               newANNMutationOverlay(),
 		resultCache:                resultCache,
 		cacheNamespace:             cacheNamespace,
 		lifecycleCtx:               lifecycleCtx,
@@ -1334,6 +1336,7 @@ func (s *Service) resetANNForBuild() {
 	s.clusterHNSWMu.Unlock()
 	s.ivfpqMu.Lock()
 	s.ivfpqIndex = nil
+	s.ivfpqOverlay.Reset()
 	s.ivfpqMu.Unlock()
 }
 
@@ -2410,6 +2413,7 @@ func (s *Service) maybeAutoSetVectorDimensions(dimensions int) {
 	s.clusterHNSWMu.Unlock()
 	s.ivfpqMu.Lock()
 	s.ivfpqIndex = nil
+	s.ivfpqOverlay.Reset()
 	s.ivfpqMu.Unlock()
 	s.clearClusterLexicalProfiles()
 
@@ -2457,6 +2461,7 @@ func (s *Service) ClearVectorIndex() {
 	s.clusterHNSWMu.Unlock()
 	s.ivfpqMu.Lock()
 	s.ivfpqIndex = nil
+	s.ivfpqOverlay.Reset()
 	s.ivfpqMu.Unlock()
 	s.clearClusterLexicalProfiles()
 
@@ -2535,6 +2540,7 @@ func (s *Service) addVectorLocked(id string, vec []float32) error {
 	}
 	if err == nil {
 		s.appendStrategyDelta(id, true)
+		s.trackIVFPQAdd(id, vec)
 	}
 	return err
 }
@@ -2605,6 +2611,31 @@ func (s *Service) removeVectorLocked(id string) {
 		s.vectorFileStore.Remove(id)
 	}
 	s.appendStrategyDelta(id, false)
+	s.trackIVFPQRemove(id)
+}
+
+func (s *Service) trackIVFPQAdd(id string, value []float32) {
+	if s.buildInProgress.Load() {
+		return
+	}
+	s.ivfpqMu.RLock()
+	active := s.ivfpqIndex != nil
+	if active {
+		s.ivfpqOverlay.Add(id, value)
+	}
+	s.ivfpqMu.RUnlock()
+}
+
+func (s *Service) trackIVFPQRemove(id string) {
+	if s.buildInProgress.Load() {
+		return
+	}
+	s.ivfpqMu.RLock()
+	active := s.ivfpqIndex != nil
+	if active {
+		s.ivfpqOverlay.Remove(id)
+	}
+	s.ivfpqMu.RUnlock()
 }
 
 // ensureBuildVectorFileStore creates vectorFileStore when building with vectorIndexPath so vectors go to disk.
@@ -2727,7 +2758,7 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 	// Index all embeddings: NamedEmbeddings and ChunkEmbeddings
 	// Strategy:
 	//   - NamedEmbeddings: Index each named vector at "node-id-named-{vectorName}"
-	//   - ChunkEmbeddings: Index main at node.ID, chunks at "node-id-chunk-N"
+	//   - ChunkEmbeddings: Index chunk 0 at node.ID, later chunks at "node-id-chunk-N"
 	// This allows efficient indexed search for all embedding types
 	// Embeddings are stored in struct fields (opaque to users), not in properties
 
@@ -2774,11 +2805,11 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 	// Index ChunkEmbeddings (chunked documents)
 	// Strategy:
 	//   - Index a "main" embedding at node.ID (currently uses chunk 0 as a representative)
-	//   - For multi-chunk nodes, index every chunk separately at "node-id-chunk-N"
+	//   - For multi-chunk nodes, index every later chunk at "node-id-chunk-N"
 	//
-	// Vector search uses ALL chunk vectors because we overfetch and then collapse
-	// chunk IDs back to a unique node ID. The "main" embedding is an additional
-	// node-level entry used by some call paths and for compatibility.
+	// Vector search uses all chunk vectors because it overfetches and then
+	// collapses chunk IDs back to a unique node ID. Chunk 0 uses the main node ID
+	// for compatibility; it is not duplicated under a chunk suffix.
 	// Chunk embeddings are stored in struct field (opaque to users), not in properties
 	if indexVectorState && s.managedEmbeddingEligible(node) && len(node.ChunkEmbeddings) > 0 && len(node.ChunkEmbeddings[0]) > 0 {
 		chunkIDs := make([]string, 0, len(node.ChunkEmbeddings)+1)
@@ -2809,12 +2840,12 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 			}
 		}
 
-		// For multi-chunk nodes, also index each chunk separately with chunk suffix
-		// This allows granular search at the chunk level while maintaining node-level search
-		// Note: chunk 0 is indexed both as main (node.ID) and as chunk-0 for consistency
-		// ALL chunks are indexed in vectorIndex, HNSW, and clusterIndex for complete search coverage
+		// For multi-chunk nodes, index later chunks with a chunk suffix. Chunk 0 is
+		// already represented by the main node ID; indexing it twice wastes memory
+		// and consumes ANN candidate slots before node-level collapse.
 		if len(node.ChunkEmbeddings) > 1 {
-			for i, embedding := range node.ChunkEmbeddings {
+			for i := 1; i < len(node.ChunkEmbeddings); i++ {
+				embedding := node.ChunkEmbeddings[i]
 				if len(embedding) > 0 {
 					chunkID := fmt.Sprintf("%s-chunk-%d", node.ID, i)
 					if err := s.addVectorLocked(chunkID, embedding); err != nil {
@@ -2923,7 +2954,8 @@ func (s *Service) nodeVectorStateUnchangedLocked(node *storage.Node) bool {
 		expected[nodeIDStr] = node.ChunkEmbeddings[0]
 		expectedChunks = append(expectedChunks, nodeIDStr)
 		if len(node.ChunkEmbeddings) > 1 {
-			for i, embedding := range node.ChunkEmbeddings {
+			for i := 1; i < len(node.ChunkEmbeddings); i++ {
+				embedding := node.ChunkEmbeddings[i]
 				if len(embedding) == 0 {
 					continue
 				}
@@ -3455,7 +3487,6 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 	forceVectorRebuild := false
 	forceHNSWRebuild := false
 	forceRoutingRebuild := false
-	forceStrategyRebuild := false
 	hnswLoadedFromDisk := false
 	hnswWarmupReason := ""
 
@@ -3471,7 +3502,6 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 		forceVectorRebuild = savedSettings.Vector != currentSettings.Vector
 		forceHNSWRebuild = savedSettings.HNSW != currentSettings.HNSW
 		forceRoutingRebuild = savedSettings.Routing != currentSettings.Routing
-		forceStrategyRebuild = savedSettings.Strategy != currentSettings.Strategy
 		if forceFulltextRebuild {
 			s.logPrintf("📇 BuildIndexes: BM25 settings changed; forcing BM25 rebuild")
 		}
@@ -3483,9 +3513,6 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 		}
 		if forceRoutingRebuild {
 			s.logPrintf("📇 BuildIndexes: routing/k-means settings changed; forcing routing artifact rebuild")
-		}
-		if forceStrategyRebuild {
-			s.logPrintf("📇 BuildIndexes: strategy settings changed; forcing compressed ANN artifact rebuild")
 		}
 	}
 
@@ -3549,12 +3576,6 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 		forceHNSWRebuild = true
 		s.clearClusterLexicalProfiles()
 	}
-	if forceStrategyRebuild {
-		s.ivfpqMu.Lock()
-		s.ivfpqIndex = nil
-		s.ivfpqMu.Unlock()
-	}
-
 	// When both paths are set and both indexes have content, skip the full iteration.
 	vectorCount := s.EmbeddingCount()
 	shouldClearStaleDisk := false
@@ -3577,7 +3598,6 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 		restartVectorStore = true
 		forceHNSWRebuild = true
 		forceRoutingRebuild = true
-		forceStrategyRebuild = true
 		s.mu.Lock()
 		if s.vectorFileStore != nil {
 			_ = s.vectorFileStore.Close()
@@ -4551,19 +4571,24 @@ func resolveVectorAdaptiveOverfetch(opts *SearchOptions, pipeline *VectorSearchP
 	if pipeline == nil {
 		return resolveAdaptiveOverfetch(opts)
 	}
-	generator, ok := pipeline.candidateGen.(*IVFPQCandidateGen)
-	if !ok || generator.index == nil || generator.index.profile.RerankTopK <= 0 {
-		return resolveAdaptiveOverfetch(opts)
-	}
+	generator, compressed := pipeline.candidateGen.(*IVFPQCandidateGen)
 	if opts == nil {
 		defaults := defaultSearchOptionsValue()
 		opts = &defaults
 	}
 	effective := *opts
-	if effective.MaxCandidateLimit <= 0 || generator.index.profile.RerankTopK < effective.MaxCandidateLimit {
+	if compressed && generator.index != nil && generator.index.profile.RerankTopK > 0 &&
+		(effective.MaxCandidateLimit <= 0 || generator.index.profile.RerankTopK < effective.MaxCandidateLimit) {
 		effective.MaxCandidateLimit = generator.index.profile.RerankTopK
 	}
-	return resolveAdaptiveOverfetch(&effective)
+	config := resolveAdaptiveOverfetch(&effective)
+	if planner, ok := pipeline.candidateGen.(approximateCandidateDepthPlanner); ok {
+		preferred := planner.preferredCandidateDepth(config.target, config.maxLimit)
+		if preferred > config.initialLimit {
+			config.initialLimit = min(preferred, config.maxLimit)
+		}
+	}
+	return config
 }
 
 func (s *Service) adaptiveVectorSearch(
@@ -5338,7 +5363,7 @@ func (s *Service) resolveCompressedVectorStrategy(ctx context.Context, vectorCou
 	}
 	return &vectorStrategyDescriptor{
 		name:         fmt.Sprintf("IVFPQ compressed (lists=%d segments=%d bits=%d nprobe=%d)", profile.IVFLists, profile.PQSegments, profile.PQBits, profile.NProbe),
-		candidateGen: NewIVFPQCandidateGen(idx, profile.NProbe),
+		candidateGen: NewIVFPQCandidateGenWithOverlay(idx, profile.NProbe, s.ivfpqOverlay),
 		scorerPolicy: exactScorerPolicyCPU,
 	}, nil
 }
@@ -5353,6 +5378,7 @@ func ivfpqProfileFromCompressed(profile CompressedANNProfile) IVFPQProfile {
 		RerankTopK:          profile.RerankTopK,
 		TrainingSampleMax:   profile.TrainingSampleMax,
 		KMeansMaxIterations: profile.KMeansMaxIterations,
+		OverflowMax:         profile.OverflowMax,
 	}
 }
 

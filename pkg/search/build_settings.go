@@ -16,7 +16,7 @@ import (
 const (
 	searchBuildSettingsFormatVersion = 1
 	bm25SettingsSchemaVersion        = "3"
-	vectorSettingsSchemaVersion      = "1"
+	vectorSettingsSchemaVersion      = "2"
 	hnswSettingsSchemaVersion        = "1"
 	routingSettingsSchemaVersion     = "1"
 	strategySettingsSchemaVersion    = "1"
@@ -158,7 +158,7 @@ func (s *Service) composeStrategyBuildSettings() string {
 	vfsReady := s.vectorFileStore != nil && s.vectorFileStore.Count() > 0
 	s.mu.RUnlock()
 	profile := ResolveCompressedANNProfile(vectorCount, dimensions, vfsReady)
-	return fmt.Sprintf("schema=%s;quality=%s;active=%t;dims=%d;lists=%d;segments=%d;bits=%d;nprobe=%d;rerank_topk=%d;train_max=%d;kmeans_max_iter=%d;seed_max_terms=%d;seed_docs_per_term=%d;routing=%s",
+	return fmt.Sprintf("schema=%s;quality=%s;active=%t;dims=%d;lists=%d;segments=%d;bits=%d;nprobe=%d;rerank_topk=%d;train_max=%d;kmeans_max_iter=%d;overflow_max=%d;seed_max_terms=%d;seed_docs_per_term=%d;routing=%s",
 		strategySettingsSchemaVersion,
 		profile.Quality,
 		profile.Active,
@@ -170,6 +170,7 @@ func (s *Service) composeStrategyBuildSettings() string {
 		profile.RerankTopK,
 		profile.TrainingSampleMax,
 		profile.KMeansMaxIterations,
+		profile.OverflowMax,
 		profile.SeedMaxTerms,
 		profile.SeedDocsPerTerm,
 		profile.RoutingMode)

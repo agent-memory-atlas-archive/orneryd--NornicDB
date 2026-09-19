@@ -3374,13 +3374,13 @@ func TestSearchService_IndexNode_ReplacesExistingVectors_NoOrphansOnDelete(t *te
 		require.NoError(t, err)
 
 		require.NoError(t, svc.IndexNode(node))
-		// For multi-chunk nodes: main at node ID + each chunk at node-id-chunk-N.
-		require.Equal(t, 4, svc.EmbeddingCount(), "expected main + 3 chunk vectors")
+		// Chunk 0 uses the main node ID; later chunks use node-id-chunk-N.
+		require.Equal(t, 3, svc.EmbeddingCount(), "expected one vector per chunk")
 
 		// Re-index same node with fewer chunks (should remove the old extra chunk vector).
 		node.ChunkEmbeddings = [][]float32{{1, 0, 0, 0}, {0, 1, 0, 0}}
 		require.NoError(t, svc.IndexNode(node))
-		require.Equal(t, 3, svc.EmbeddingCount(), "expected main + 2 chunk vectors after re-index")
+		require.Equal(t, 2, svc.EmbeddingCount(), "expected one vector per chunk after re-index")
 
 		// Delete should remove all vectors for this node (no orphaned chunk IDs).
 		require.NoError(t, svc.RemoveNode("node1"))

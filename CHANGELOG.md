@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Search a wider ANN candidate pool before collapsing chunk vectors to nodes,
+  and stop storing chunk 0 twice under both the node ID and a chunk suffix.
+  HNSW and compressed IVF/PQ now preserve substantially more of the exact
+  node-ranking candidate set on heavily chunked corpora.
+- Keep compressed IVF/PQ indexes current between rebuilds with an exact live
+  mutation overlay and removal tombstones, persist that overlay atomically with
+  the compressed bundle, reject it when the vector-store generation differs,
+  probe an adaptive fraction of coarse lists by default, and search a bounded
+  exact overflow set for vectors poorly represented by trained centroids.
 - Preserve labeled-count fast paths inside explicit transactions, falling back
   to transaction-visible counting only after a node mutation is staged.
 - Preserve structured multimodal batching through cache and tracing wrappers,

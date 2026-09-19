@@ -81,6 +81,17 @@ func (v *VectorFileStore) Has(id string) bool {
 	return ok
 }
 
+func (v *VectorFileStore) stateVersion() (count int, slots int64) {
+	if v == nil {
+		return 0, 0
+	}
+	v.mu.RLock()
+	count = len(v.idToOrdinal)
+	slots = v.nextOrdinal
+	v.mu.RUnlock()
+	return count, slots
+}
+
 // VectorFileStoreMeta is persisted to the .meta file (msgpack).
 type VectorFileStoreMeta struct {
 	Version               int                          `msgpack:"v"`

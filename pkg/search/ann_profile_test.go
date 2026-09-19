@@ -27,6 +27,21 @@ func TestResolveCompressedANNProfile_ActiveWithValidSettings(t *testing.T) {
 	}
 }
 
+func TestResolveCompressedANNProfileScalesDefaultProbeCountWithPartitionCount(t *testing.T) {
+	t.Setenv("NORNICDB_VECTOR_ANN_QUALITY", "compressed")
+	t.Setenv("NORNICDB_VECTOR_IVF_LISTS", "512")
+	t.Setenv("NORNICDB_VECTOR_IVFPQ_NPROBE", "")
+
+	profile := ResolveCompressedANNProfile(600_000, 1024, true)
+
+	if !profile.Active {
+		t.Fatalf("expected active profile: %+v", profile.Diagnostics)
+	}
+	if profile.NProbe != 64 {
+		t.Fatalf("expected 64 probes, got %d", profile.NProbe)
+	}
+}
+
 func TestResolveCompressedANNProfile_NonCompressedQuality(t *testing.T) {
 	t.Setenv("NORNICDB_VECTOR_ANN_QUALITY", "balanced")
 	p := ResolveCompressedANNProfile(10000, 384, true)

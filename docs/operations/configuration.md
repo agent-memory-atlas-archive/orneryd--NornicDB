@@ -769,9 +769,10 @@ By default, `NORNICDB_VECTOR_CPU_BRUTE_MAX_N=0`, so CPU brute-force is opt-in an
 | `NORNICDB_VECTOR_HNSW_EF_SEARCH`               | (preset) | Candidate list size during search; higher = better recall, slower. Overrides preset.                                                                                        |
 | `NORNICDB_VECTOR_PQ_SEGMENTS`                  | `16`     | Compressed mode only. Number of PQ segments (`dimensions` must be divisible by this).                                                                                       |
 | `NORNICDB_VECTOR_PQ_BITS`                      | `8`      | Compressed mode only. Bits per PQ code (currently clamped to 4-8).                                                                                                          |
-| `NORNICDB_VECTOR_IVFPQ_NPROBE`                 | `16`     | Compressed mode only. Number of IVF lists probed per query.                                                                                                                 |
+| `NORNICDB_VECTOR_IVFPQ_NPROBE`                 | (auto)   | Compressed mode only. IVF lists probed per query; defaults to max(16, one eighth of the lists). An explicit value overrides the adaptive default.                           |
 | `NORNICDB_VECTOR_IVFPQ_RERANK_TOPK`            | `200`    | Compressed mode only. Max candidates sent to exact rerank.                                                                                                                  |
 | `NORNICDB_VECTOR_IVFPQ_TRAINING_SAMPLE_MAX`    | `200000` | Compressed mode only. Maximum vectors sampled for IVFPQ training.                                                                                                           |
+| `NORNICDB_VECTOR_IVFPQ_OVERFLOW_MAX`           | `512`    | Compressed mode only. Maximum exact outlier vectors retained alongside PQ. Set `0` to disable.                                                                             |
 | **HNSW Metal (GPU)**                           |          |                                                                                                                                                                             |
 | `NORNICDB_VECTOR_HNSW_METAL_MIN_CANDIDATES`    | `0`      | If greater than 0, use Metal for HNSW search when candidate count meets threshold. `0` = disabled.                                                                          |
 | **HNSW build acceleration**                    |          |                                                                                                                                                                             |
@@ -828,7 +829,6 @@ This mode is integrated end-to-end: build, persist, startup load/rebuild, search
 export NORNICDB_VECTOR_ANN_QUALITY=compressed
 export NORNICDB_VECTOR_PQ_SEGMENTS=16
 export NORNICDB_VECTOR_PQ_BITS=8
-export NORNICDB_VECTOR_IVFPQ_NPROBE=16
 export NORNICDB_VECTOR_IVFPQ_RERANK_TOPK=200
 export NORNICDB_VECTOR_IVFPQ_TRAINING_SAMPLE_MAX=200000
 ```
@@ -837,6 +837,13 @@ export NORNICDB_VECTOR_IVFPQ_TRAINING_SAMPLE_MAX=200000
 
 - Increase `NORNICDB_VECTOR_IVFPQ_NPROBE` to improve recall (usually increases latency).
 - Increase `NORNICDB_VECTOR_IVFPQ_RERANK_TOPK` to improve final quality consistency (usually increases latency and exact-score IO).
+- Increase `NORNICDB_VECTOR_IVFPQ_OVERFLOW_MAX` when a corpus contains rare
+  topics far from the trained coarse centroids. This uses four bytes per vector
+  dimension for each retained outlier.
+- New and updated vectors are searched through an exact mutation overlay until
+  the next full compressed rebuild; deleted vector IDs are tombstoned. Both are
+  persisted with the IVF/PQ bundle, and a mismatched vector-store generation
+  invalidates the bundle instead of silently loading stale candidates.
 - Increase `NORNICDB_VECTOR_PQ_SEGMENTS` or `NORNICDB_VECTOR_PQ_BITS` to improve compressed-space fidelity (increases memory/build cost).
 - Keep `NORNICDB_VECTOR_PQ_SEGMENTS` a divisor of embedding dimensions.
 

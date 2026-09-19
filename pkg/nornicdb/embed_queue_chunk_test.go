@@ -261,12 +261,9 @@ func TestChunkEmbeddingSearch(t *testing.T) {
 	// Verify all chunk embeddings are indexed
 	embeddingCount := searchService.EmbeddingCount()
 
-	// Embedding count should include: 1 main embedding (at node.ID) + N chunk embeddings (for multi-chunk nodes)
-	// For single chunk: 1 main embedding
-	// For multi-chunk: 1 main embedding + N chunk embeddings (chunk 0 is indexed as both main and chunk-0)
-	// So for N chunks: 1 main + N chunks = N+1 total
-	expectedCount := 1 + chunkCount
-	assert.Equal(t, expectedCount, embeddingCount, "Should have main embedding plus all chunk embeddings indexed")
+	// Chunk 0 uses the main node ID; later chunks use suffixed IDs.
+	expectedCount := chunkCount
+	assert.Equal(t, expectedCount, embeddingCount, "Should index each chunk exactly once")
 
 	// Perform a search
 	queryEmbedding := make([]float32, 1024)
@@ -350,10 +347,10 @@ func TestChunkEmbeddingRemoval(t *testing.T) {
 	err = searchService.BuildIndexes(context.Background())
 	require.NoError(t, err)
 
-	// Verify embeddings are indexed (should include main + chunk embeddings)
+	// Verify every chunk is indexed exactly once (chunk 0 uses the main ID).
 	initialCount := searchService.EmbeddingCount()
-	expectedCount := 1 + chunkCount // 1 main embedding (at node.ID) + N chunk embeddings
-	assert.Equal(t, expectedCount, initialCount, "Should have main embedding plus all chunk embeddings indexed")
+	expectedCount := chunkCount
+	assert.Equal(t, expectedCount, initialCount, "Should index each chunk exactly once")
 
 	// Delete the node
 	err = engine.DeleteNode("temp-doc")

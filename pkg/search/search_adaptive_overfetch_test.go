@@ -13,6 +13,14 @@ type recordingCandidateGenerator struct {
 	limits     []int
 }
 
+type recordingApproximateCandidateGenerator struct {
+	recordingCandidateGenerator
+}
+
+func (g *recordingApproximateCandidateGenerator) preferredCandidateDepth(_, maximum int) int {
+	return maximum
+}
+
 type recordingBM25Index struct {
 	bm25Index
 	results []indexResult
@@ -70,6 +78,34 @@ func TestAdaptiveVectorSearchDoesNotRetryWhenInitialResultsFillTarget(t *testing
 	require.Equal(t, []int{2}, generator.limits)
 	require.Len(t, results, 2)
 	require.Zero(t, stats.retries)
+}
+
+func TestAdaptiveVectorSearchScoresFullApproximateBudgetBeforeNodeCollapse(t *testing.T) {
+	generator := &recordingApproximateCandidateGenerator{recordingCandidateGenerator: recordingCandidateGenerator{candidates: []Candidate{
+		{ID: "doc-1-chunk-0", Score: 1.0},
+		{ID: "doc-2-chunk-0", Score: 0.9},
+		{ID: "doc-3-chunk-0", Score: 0.8},
+		{ID: "best-node-chunk-7", Score: 0.99},
+	}}}
+	service := NewServiceWithDimensions(storage.NewMemoryEngine(), 2)
+	pipeline := NewVectorSearchPipeline(generator, &IdentityExactScorer{})
+	opts := adaptiveOverfetchTestOptions(2)
+	opts.MaxOverfetchRatio = 2
+
+	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil)
+
+	require.NoError(t, err)
+	require.Equal(t, []int{4}, generator.limits)
+	require.Equal(t, []string{"doc-1", "best-node"}, indexResultIDs(results))
+	require.Zero(t, stats.retries)
+}
+
+func TestHNSWRecallBudgetIsWideButBoundedForLargeResultSets(t *testing.T) {
+	generator := &HNSWCandidateGen{}
+
+	require.Equal(t, 200, generator.preferredCandidateDepth(20, 200))
+	require.Equal(t, 400, generator.preferredCandidateDepth(100, 1_000))
+	require.Equal(t, 75, generator.preferredCandidateDepth(20, 75))
 }
 
 func TestAdaptiveVectorSearchStopsAtConfiguredCap(t *testing.T) {

@@ -31,6 +31,7 @@ type CompressedANNProfile struct {
 	RerankTopK          int
 	TrainingSampleMax   int
 	KMeansMaxIterations int
+	OverflowMax         int
 	SeedMaxTerms        int
 	SeedDocsPerTerm     int
 	RoutingMode         string
@@ -79,9 +80,11 @@ func ResolveCompressedANNProfile(vectorCount, dimensions int, vectorStoreReady b
 	}
 	profile.PQSegments = clampInt(envutil.GetInt("NORNICDB_VECTOR_PQ_SEGMENTS", defaultSegments), 1, 128)
 	profile.PQBits = clampInt(envutil.GetInt("NORNICDB_VECTOR_PQ_BITS", 8), 4, 8)
-	profile.NProbe = clampInt(envutil.GetInt("NORNICDB_VECTOR_IVFPQ_NPROBE", 16), 1, profile.IVFLists)
+	defaultNProbe := maxInt(16, (profile.IVFLists+7)/8)
+	profile.NProbe = clampInt(envutil.GetInt("NORNICDB_VECTOR_IVFPQ_NPROBE", defaultNProbe), 1, profile.IVFLists)
 	profile.RerankTopK = clampInt(envutil.GetInt("NORNICDB_VECTOR_IVFPQ_RERANK_TOPK", 200), 10, 20000)
 	profile.TrainingSampleMax = clampInt(envutil.GetInt("NORNICDB_VECTOR_IVFPQ_TRAINING_SAMPLE_MAX", 200000), 1000, 5000000)
+	profile.OverflowMax = clampInt(envutil.GetInt("NORNICDB_VECTOR_IVFPQ_OVERFLOW_MAX", 512), 0, 100000)
 
 	if dimensions <= 0 {
 		profile.Diagnostics = append(profile.Diagnostics, CompressedActivationDiagnostic{

@@ -191,6 +191,7 @@ func TestIVFPQPersist_LoadErrorBranches(t *testing.T) {
 func TestIVFPQPersist_ServiceSuccessAndCacheBranches(t *testing.T) {
 	profile := IVFPQProfile{Dimensions: 2, IVFLists: 2, PQSegments: 1, PQBits: 1, NProbe: 1, RerankTopK: 2}
 	idx := tinyIVFPQIndexForTest(profile)
+	idx.overflow = []ivfpqOverflowVector{{ID: "outlier", Vector: []float32{1, 0}}}
 
 	base := filepath.Join(t.TempDir(), "hnsw")
 	require.NoError(t, SaveIVFPQBundle(base, idx))
@@ -198,6 +199,7 @@ func TestIVFPQPersist_ServiceSuccessAndCacheBranches(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
 	require.Equal(t, 1, loaded.Count())
+	require.Equal(t, idx.overflow, loaded.overflow)
 	require.True(t, loaded.compatibleProfile(profile))
 
 	svc := NewServiceWithDimensions(storage.NewMemoryEngine(), 2)
@@ -218,4 +220,37 @@ func TestIVFPQPersist_ServiceSuccessAndCacheBranches(t *testing.T) {
 	stat, err := os.Stat(ivfpqBundleDir(base))
 	require.NoError(t, err)
 	require.True(t, stat.IsDir())
+}
+
+func TestIVFPQPersistRestoresLiveMutationOverlay(t *testing.T) {
+	profile := IVFPQProfile{Dimensions: 2, IVFLists: 2, PQSegments: 1, PQBits: 1, NProbe: 1, RerankTopK: 2}
+	idx := tinyIVFPQIndexForTest(profile)
+	overlay := newANNMutationOverlay()
+	overlay.Add("fresh", []float32{1, 0})
+	overlay.Remove("removed")
+	base := filepath.Join(t.TempDir(), "hnsw")
+	require.NoError(t, saveIVFPQBundle(base, idx, overlay, nil))
+
+	loaded, mutations, err := loadIVFPQBundle(base)
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	restored := newANNMutationOverlay()
+	restored.restore(mutations)
+	require.Equal(t, []string{"fresh"}, candidateIDs(restored.Search(context.Background(), []float32{1, 0}, 10, -1)))
+	require.True(t, restored.IsRemoved("removed"))
+}
+
+func TestIVFPQPersistedMutationsDetectVectorStoreChanges(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "vectors")
+	store, err := NewVectorFileStore(base, 2)
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.Add("base", []float32{1, 0}))
+
+	snapshot := newANNMutationOverlay().snapshot()
+	snapshot.VectorStoreCount, snapshot.VectorStoreSlots = store.stateVersion()
+	require.True(t, snapshot.matchesVectorStore(store))
+
+	require.NoError(t, store.Add("fresh", []float32{0, 1}))
+	require.False(t, snapshot.matchesVectorStore(store))
 }

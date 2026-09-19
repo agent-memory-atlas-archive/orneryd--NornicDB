@@ -44,7 +44,10 @@ func (i *IVFPQIndex) SearchApprox(ctx context.Context, query []float32, k int, m
 	}
 	totalLimit = min(totalLimit, probedCount)
 	if totalLimit == 0 {
-		return []Candidate{}, nil
+		if len(i.overflow) == 0 {
+			return []Candidate{}, nil
+		}
+		totalLimit = 1
 	}
 	scratch := i.getScratch(totalLimit)
 	defer i.putScratch(scratch)
@@ -79,8 +82,30 @@ func (i *IVFPQIndex) SearchApprox(ctx context.Context, query []float32, k int, m
 		}
 	}
 	candidates := h.toSortedDescending()
-	if len(candidates) > totalLimit {
-		candidates = candidates[:totalLimit]
+	if len(i.overflow) > 0 {
+		merged := make(map[string]Candidate, len(candidates)+len(i.overflow))
+		for _, candidate := range candidates {
+			merged[candidate.ID] = candidate
+		}
+		for _, overflow := range i.overflow {
+			score := float64(vector.DotProduct(queryNorm, overflow.Vector))
+			if score >= minSimilarity {
+				merged[overflow.ID] = Candidate{ID: overflow.ID, Score: score}
+			}
+		}
+		candidates = candidates[:0]
+		for _, candidate := range merged {
+			candidates = append(candidates, candidate)
+		}
+		sort.Slice(candidates, func(a, b int) bool {
+			if candidates[a].Score == candidates[b].Score {
+				return candidates[a].ID < candidates[b].ID
+			}
+			return candidates[a].Score > candidates[b].Score
+		})
+	}
+	if len(candidates) > boundCandidateLimit(k) {
+		candidates = candidates[:boundCandidateLimit(k)]
 	}
 	return candidates, nil
 }

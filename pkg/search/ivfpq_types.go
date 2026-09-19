@@ -19,6 +19,7 @@ type IVFPQProfile struct {
 	RerankTopK          int
 	TrainingSampleMax   int
 	KMeansMaxIterations int
+	OverflowMax         int
 }
 
 // IVFPQBuildStats captures build observability for acceptance gates.
@@ -41,6 +42,11 @@ type ivfpqList struct {
 	IDs      []string
 	CodeSize int
 	Codes    []byte
+}
+
+type ivfpqOverflowVector struct {
+	ID     string
+	Vector []float32
 }
 
 func (l *ivfpqList) appendCode(code []byte) {
@@ -72,6 +78,7 @@ type IVFPQIndex struct {
 	centroidNorm    [][]float32
 	codebooks       []ivfpqCodebook
 	lists           []ivfpqList
+	overflow        []ivfpqOverflowVector
 	formatVersion   int
 	builtAtUnixNano int64
 	scratchPool     sync.Pool
@@ -108,5 +115,8 @@ func (i *IVFPQIndex) compatibleProfile(want IVFPQProfile) bool {
 	return have.Dimensions == want.Dimensions &&
 		have.IVFLists == want.IVFLists &&
 		have.PQSegments == want.PQSegments &&
-		have.PQBits == want.PQBits
+		have.PQBits == want.PQBits &&
+		have.TrainingSampleMax == want.TrainingSampleMax &&
+		have.KMeansMaxIterations == want.KMeansMaxIterations &&
+		have.OverflowMax == want.OverflowMax
 }

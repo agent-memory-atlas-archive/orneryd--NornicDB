@@ -58,6 +58,13 @@ type CandidateGenerator interface {
 	SearchCandidates(ctx context.Context, query []float32, k int, minSimilarity float64) ([]Candidate, error)
 }
 
+// approximateCandidateDepthPlanner separates ANN recall depth from the final
+// result depth. Approximate generators need a wider exact-rescoring pool before
+// chunk vectors are collapsed to their owning nodes.
+type approximateCandidateDepthPlanner interface {
+	preferredCandidateDepth(target, maximum int) int
+}
+
 // ExactScorer computes exact similarity scores for candidate vectors.
 //
 // Implementations:
@@ -190,6 +197,11 @@ func (b *FileStoreBruteForceCandidateGen) SearchCandidates(ctx context.Context, 
 // This is the default vector-search candidate generator.
 type HNSWCandidateGen struct {
 	hnswIndex *HNSWIndex
+}
+
+func (h *HNSWCandidateGen) preferredCandidateDepth(target, maximum int) int {
+	preferred := max(200, target*4)
+	return min(preferred, maximum)
 }
 
 // NewHNSWCandidateGen creates a new HNSW candidate generator.

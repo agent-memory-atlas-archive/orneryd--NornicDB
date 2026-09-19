@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/orneryd/nornicdb/pkg/storage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,8 +31,10 @@ func TestIVFPQCandidateGen_SearchCandidates(t *testing.T) {
 		RerankTopK:          50,
 		TrainingSampleMax:   600,
 		KMeansMaxIterations: 6,
+		OverflowMax:         10,
 	}, nil)
 	require.NoError(t, err)
+	require.Len(t, idx.overflow, 10)
 
 	gen := NewIVFPQCandidateGen(idx, 3)
 	cands, err := gen.SearchCandidates(context.Background(), []float32{0, 0, 1, 0, 0, 0, 0, 0}, 20, -1)
@@ -69,4 +72,94 @@ func TestIVFPQCandidateGen_DefaultNProbeFromIndexProfile(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, cands, 1)
 	require.Equal(t, "doc-1", cands[0].ID)
+}
+
+func TestIVFPQCandidateGenMergesFreshVectorsAndSuppressesRemovedBaseVectors(t *testing.T) {
+	idx := &IVFPQIndex{
+		profile:      IVFPQProfile{Dimensions: 2, NProbe: 1, RerankTopK: 10},
+		centroids:    [][]float32{{1, 0}},
+		centroidNorm: [][]float32{{1, 0}},
+		codebooks: []ivfpqCodebook{
+			{SubDim: 2, Codeword: [][]float32{{0, 0}}},
+		},
+		lists: []ivfpqList{
+			{IDs: []string{"removed", "base"}, CodeSize: 1, Codes: []byte{0, 0}},
+		},
+	}
+	overlay := newANNMutationOverlay()
+	overlay.Add("fresh", []float32{1, 0})
+	overlay.Remove("removed")
+	gen := NewIVFPQCandidateGenWithOverlay(idx, 1, overlay)
+
+	candidates, err := gen.SearchCandidates(context.Background(), []float32{1, 0}, 10, -1)
+
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"fresh", "base"}, candidateIDs(candidates))
+}
+
+func TestIVFPQCandidateGenSearchesExactOutliersOutsideProbedLists(t *testing.T) {
+	idx := &IVFPQIndex{
+		profile:      IVFPQProfile{Dimensions: 2, NProbe: 1, RerankTopK: 10},
+		centroids:    [][]float32{{0.8, 0.6}, {0, 1}},
+		centroidNorm: [][]float32{{0.8, 0.6}, {0, 1}},
+		codebooks: []ivfpqCodebook{
+			{SubDim: 2, Codeword: [][]float32{{0, 0}}},
+		},
+		lists: []ivfpqList{
+			{IDs: []string{"decoy"}, CodeSize: 1, Codes: []byte{0}},
+			{IDs: []string{"true-nearest"}, CodeSize: 1, Codes: []byte{0}},
+		},
+		overflow: []ivfpqOverflowVector{
+			{ID: "true-nearest", Vector: []float32{1, 0}},
+		},
+	}
+	gen := NewIVFPQCandidateGen(idx, 1)
+
+	candidates, err := gen.SearchCandidates(context.Background(), []float32{1, 0}, 1, -1)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"true-nearest"}, candidateIDs(candidates))
+}
+
+func TestIVFPQCandidateGenDefersSimilarityThresholdUntilExactScoring(t *testing.T) {
+	idx := &IVFPQIndex{
+		profile:      IVFPQProfile{Dimensions: 2, NProbe: 1, RerankTopK: 10},
+		centroids:    [][]float32{{0.6, 0.8}},
+		centroidNorm: [][]float32{{0.6, 0.8}},
+		codebooks: []ivfpqCodebook{
+			{SubDim: 2, Codeword: [][]float32{{0, 0}}},
+		},
+		lists: []ivfpqList{
+			{IDs: []string{"approx-underestimate"}, CodeSize: 1, Codes: []byte{0}},
+		},
+	}
+
+	candidates, err := NewIVFPQCandidateGen(idx, 1).SearchCandidates(context.Background(), []float32{1, 0}, 1, 0.9)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"approx-underestimate"}, candidateIDs(candidates))
+}
+
+func TestServiceTracksCompressedIndexMutationsWithoutRebuild(t *testing.T) {
+	service := NewServiceWithDimensions(storage.NewMemoryEngine(), 2)
+	service.ivfpqIndex = &IVFPQIndex{profile: IVFPQProfile{Dimensions: 2}}
+
+	service.indexMu.Lock()
+	require.NoError(t, service.addVectorLocked("fresh", []float32{1, 0}))
+	service.indexMu.Unlock()
+	require.Equal(t, []string{"fresh"}, candidateIDs(service.ivfpqOverlay.Search(context.Background(), []float32{1, 0}, 10, -1)))
+
+	service.indexMu.Lock()
+	service.removeVectorLocked("fresh")
+	service.indexMu.Unlock()
+	require.Empty(t, service.ivfpqOverlay.Search(context.Background(), []float32{1, 0}, 10, -1))
+	require.True(t, service.ivfpqOverlay.IsRemoved("fresh"))
+}
+
+func candidateIDs(candidates []Candidate) []string {
+	ids := make([]string, len(candidates))
+	for i := range candidates {
+		ids[i] = candidates[i].ID
+	}
+	return ids
 }

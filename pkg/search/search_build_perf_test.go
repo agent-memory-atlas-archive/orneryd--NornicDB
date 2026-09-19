@@ -120,9 +120,9 @@ func TestBuildIndexes_IndexesNamedChunkAndPropertyVectors(t *testing.T) {
 
 	// Expected vectors:
 	// - named: "nornic:doc-vectors-named-titleVec"
-	// - chunks: main id + chunk-0 + chunk-1
+	// - chunks: chunk 0 under the main id + chunk-1
 	// - custom property vector: "nornic:doc-vectors-prop-customVec"
-	require.Equal(t, 5, svc.EmbeddingCount())
+	require.Equal(t, 4, svc.EmbeddingCount())
 
 	named := svc.nodeNamedVector["nornic:doc-vectors"]
 	require.NotNil(t, named)
@@ -134,7 +134,7 @@ func TestBuildIndexes_IndexesNamedChunkAndPropertyVectors(t *testing.T) {
 
 	chunks := svc.nodeChunkVectors["nornic:doc-vectors"]
 	require.Contains(t, chunks, "nornic:doc-vectors")
-	require.Contains(t, chunks, "nornic:doc-vectors-chunk-0")
+	require.NotContains(t, chunks, "nornic:doc-vectors-chunk-0")
 	require.Contains(t, chunks, "nornic:doc-vectors-chunk-1")
 }
 

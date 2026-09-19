@@ -54,6 +54,11 @@ func BuildIVFPQFromVectorStore(ctx context.Context, vfs *VectorFileStore, profil
 		lists[i].CodeSize = profile.PQSegments
 	}
 	vectorCount := 0
+	overflowLimit := min(profile.OverflowMax, vfs.Count())
+	var overflowHeap *candidateMinHeap
+	if overflowLimit > 0 {
+		overflowHeap = newCandidateMinHeap(overflowLimit)
+	}
 	if err := vfs.IterateChunked(4096, func(ids []string, vecs [][]float32) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -63,6 +68,11 @@ func BuildIVFPQFromVectorStore(ctx context.Context, vfs *VectorFileStore, profil
 			code := encodePQResidual(vecs[i], centroids[listID], codebooks)
 			lists[listID].IDs = append(lists[listID].IDs, ids[i])
 			lists[listID].appendCode(code)
+			if overflowHeap != nil {
+				normalized := vector.Normalize(vecs[i])
+				coarseDistance := 1 - float64(vector.DotProduct(normalized, centroidNorm[listID]))
+				overflowHeap.push(Candidate{ID: ids[i], Score: coarseDistance})
+			}
 			vectorCount++
 		}
 		return nil
@@ -70,12 +80,21 @@ func BuildIVFPQFromVectorStore(ctx context.Context, vfs *VectorFileStore, profil
 		return nil, nil, err
 	}
 
+	overflow := make([]ivfpqOverflowVector, 0, overflowLimit)
+	if overflowHeap != nil {
+		for _, candidate := range overflowHeap.toSortedDescending() {
+			if value, ok := vfs.GetVector(candidate.ID); ok {
+				overflow = append(overflow, ivfpqOverflowVector{ID: candidate.ID, Vector: value})
+			}
+		}
+	}
 	idx := &IVFPQIndex{
 		profile:         profile,
 		centroids:       centroids,
 		centroidNorm:    centroidNorm,
 		codebooks:       codebooks,
 		lists:           lists,
+		overflow:        overflow,
 		formatVersion:   ivfpqBundleFormatVersion,
 		builtAtUnixNano: time.Now().UnixNano(),
 	}
@@ -86,10 +105,17 @@ func BuildIVFPQFromVectorStore(ctx context.Context, vfs *VectorFileStore, profil
 		ListCount:           len(lists),
 		AvgListSize:         ivfpqAvgListSize(lists),
 		MaxListSize:         ivfpqMaxListSize(lists),
-		BytesPerVector:      ivfpqBytesPerVector(profile),
+		BytesPerVector:      ivfpqBytesPerVector(profile) + ivfpqOverflowBytesPerVector(len(overflow), vectorCount, profile.Dimensions),
 		BuildDuration:       time.Since(start),
 	}
 	return idx, stats, nil
+}
+
+func ivfpqOverflowBytesPerVector(overflowCount, vectorCount, dimensions int) float64 {
+	if overflowCount <= 0 || vectorCount <= 0 || dimensions <= 0 {
+		return 0
+	}
+	return float64(overflowCount*dimensions*4) / float64(vectorCount)
 }
 
 func ivfpqCollectTrainingSample(ctx context.Context, vfs *VectorFileStore, maxSample int, seedDocIDs []string, rng *rand.Rand) ([][]float32, error) {

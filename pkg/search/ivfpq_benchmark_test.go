@@ -252,6 +252,30 @@ func BenchmarkIVFPQCandidateGen(b *testing.B) {
 	}
 }
 
+func BenchmarkANNMutationOverlaySearch(b *testing.B) {
+	const (
+		vectors    = 512
+		dimensions = 128
+	)
+	overlay := newANNMutationOverlay()
+	for i := 0; i < vectors; i++ {
+		value := make([]float32, dimensions)
+		value[i%dimensions] = 1
+		overlay.Add(fmt.Sprintf("vector-%d", i), value)
+	}
+	query := make([]float32, dimensions)
+	query[0] = 1
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		results := overlay.Search(context.Background(), query, 200, -1)
+		if len(results) != 200 {
+			b.Fatalf("expected 200 candidates, got %d", len(results))
+		}
+	}
+}
+
 func BenchmarkANNQualityMatrix(b *testing.B) {
 	dir := b.TempDir()
 	corpus := loadBenchmarkCorpus(b, 12000, 32)
