@@ -869,6 +869,12 @@ func (ew *EmbedWorker) processNextResolvedBatch() bool {
 			results, resultErrors = ew.embedDocumentBatchIsolated(group.batcher, texts)
 		}
 		ew.recordProviderBatchOutcome(group.provider, resultErrors)
+		for _, resultErr := range resultErrors {
+			if resultErr != nil {
+				fmt.Printf("⚠️  Failed to embed %d-node batch: %s\n", len(group.nodes), compactWorkerError(resultErr, 300))
+				break
+			}
+		}
 		for index, node := range group.nodes {
 			if resultErrors[index] != nil {
 				ew.failed.Add(1)
@@ -1086,7 +1092,7 @@ func (ew *EmbedWorker) embedDocumentResultsIsolated(count int, request func(star
 			copy(results[start:end], batch)
 			return
 		}
-		if err != nil && isRetryableEmbeddingError(err) {
+		if retryable, classified := embeddingErrorRetryability(err); err != nil && classified && retryable {
 			for i := start; i < end; i++ {
 				errs[i] = err
 			}
@@ -1260,13 +1266,21 @@ type retryableEmbeddingError interface {
 }
 
 func isRetryableEmbeddingError(err error) bool {
-	var classified retryableEmbeddingError
-	if errors.As(err, &classified) {
-		return classified.Retryable()
+	retryable, classified := embeddingErrorRetryability(err)
+	if classified {
+		return retryable
 	}
 	// Existing providers do not all expose error classification. Preserve their
 	// retry behavior until they can state that an error is permanent.
 	return true
+}
+
+func embeddingErrorRetryability(err error) (retryable, classified bool) {
+	var classification retryableEmbeddingError
+	if errors.As(err, &classification) {
+		return classification.Retryable(), true
+	}
+	return false, false
 }
 
 func providerRetryKey(provider embed.Embedder) string {

@@ -114,13 +114,23 @@ func (e *rejectingContentEmbedder) Backend() string { return "cpu" }
 
 type recordingDocumentBatchEmbedder struct {
 	rejectingContentEmbedder
-	batchCalls   int
-	rejectPoison bool
-	transient    bool
+	batchCalls    int
+	rejectPoison  bool
+	transient     bool
+	maxBatchBytes int
 }
 
 func (e *recordingDocumentBatchEmbedder) EmbedDocumentBatchChunks(_ context.Context, texts []string, _, _ int) ([]*embed.DocumentChunkResult, error) {
 	e.batchCalls++
+	if e.maxBatchBytes > 0 {
+		batchBytes := 0
+		for _, text := range texts {
+			batchBytes += len(text)
+		}
+		if batchBytes > e.maxBatchBytes {
+			return nil, fmt.Errorf("document batch exceeds local request budget")
+		}
+	}
 	if e.transient {
 		return nil, &embed.ProviderError{Provider: "test", StatusCode: 503, Body: "temporarily unavailable"}
 	}
@@ -136,6 +146,25 @@ func (e *recordingDocumentBatchEmbedder) EmbedDocumentBatchChunks(_ context.Cont
 		results[i] = &embed.DocumentChunkResult{Chunks: []string{text}, Embeddings: [][]float32{{float32(i + 1), 0, 0}}}
 	}
 	return results, nil
+}
+
+func TestUnclassifiedDocumentBatchLimitIsBisected(t *testing.T) {
+	provider := &recordingDocumentBatchEmbedder{
+		rejectingContentEmbedder: rejectingContentEmbedder{calls: make(map[string]int)},
+		maxBatchBytes:            8,
+	}
+	worker := NewEmbedWorker(provider, storage.NewMemoryEngine(), &EmbedWorkerConfig{
+		NumWorkers: 0, MaxRetries: 1, ChunkSize: 512, EmbedBatchSize: 8, DeferWorkerStart: true,
+	})
+	t.Cleanup(worker.Close)
+
+	results, errs := worker.embedDocumentBatchIsolated(provider, []string{"aaaa", "bbbb", "cccc", "dddd"})
+	require.Equal(t, 3, provider.batchCalls)
+	require.Len(t, results, 4)
+	for i := range results {
+		require.NotNil(t, results[i])
+		require.NoError(t, errs[i])
+	}
 }
 
 func TestTransientDocumentBatchFailureDoesNotBisectProviderOutage(t *testing.T) {

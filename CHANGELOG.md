@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pack contextualized document batches into multiple Voyage requests when the
+  worker batch exceeds the provider byte or input-count budget, preserving
+  document order instead of retrying one locally rejected batch forever.
+  Unclassified batch-local errors are now isolated while explicitly transient
+  provider outages remain single requests, and batch failures are logged.
 - Search a wider ANN candidate pool before collapsing chunk vectors to nodes,
   and stop storing chunk 0 twice under both the node ID and a chunk suffix.
   HNSW and compressed IVF/PQ now preserve substantially more of the exact

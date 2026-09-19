@@ -234,6 +234,67 @@ func TestVoyageContextualizedDocumentsShareRequest(t *testing.T) {
 	}
 }
 
+func TestVoyageContextualizedDocumentBatchPacksRequestsWithinProviderLimits(t *testing.T) {
+	var requestInputs [][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got struct {
+			Inputs []string `json:"inputs"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		requestInputs = append(requestInputs, append([]string(nil), got.Inputs...))
+
+		data := make([]map[string]any, len(got.Inputs))
+		for i, input := range got.Inputs {
+			data[i] = map[string]any{
+				"index": i,
+				"data":  []map[string]any{{"index": 0, "text": input, "embedding": []float32{float32(len(input)), 1}}},
+			}
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+			"data": data, "model": "voyage-context-4", "usage": map[string]any{"total_tokens": len(got.Inputs)},
+		}))
+	}))
+	t.Cleanup(server.Close)
+
+	embedder, err := NewVoyage(&Config{
+		Provider: "voyage", APIURL: server.URL, APIKey: "voyage-key",
+		Dimensions: 2, Mode: VoyageModeContextualized, Timeout: time.Second,
+	})
+	require.NoError(t, err)
+
+	texts := []string{
+		strings.Repeat("a", 40_000),
+		strings.Repeat("b", 40_000),
+		strings.Repeat("c", 40_000),
+	}
+	results, err := embedder.EmbedDocumentBatchChunks(context.Background(), texts, 512, 0)
+	require.NoError(t, err)
+	require.Len(t, requestInputs, 2)
+	for _, inputs := range requestInputs {
+		requestBytes := 0
+		for _, input := range inputs {
+			requestBytes += len(input)
+		}
+		require.LessOrEqual(t, requestBytes, VoyageContextualizedSafeRequestBytes)
+	}
+	require.Len(t, results, len(texts))
+	for i, result := range results {
+		require.Equal(t, []string{texts[i]}, result.Chunks)
+	}
+
+	requestInputs = nil
+	texts = make([]string, VoyageContextualizedMaxInputs+1)
+	for i := range texts {
+		texts[i] = "x"
+	}
+	results, err = embedder.EmbedDocumentBatchChunks(context.Background(), texts, 512, 0)
+	require.NoError(t, err)
+	require.Len(t, requestInputs, 2)
+	require.Len(t, requestInputs[0], VoyageContextualizedMaxInputs)
+	require.Len(t, requestInputs[1], 1)
+	require.Len(t, results, len(texts))
+}
+
 func TestVoyageEmbedderContextualizedUsesTextModelForQueries(t *testing.T) {
 	var paths []string
 	var models []string

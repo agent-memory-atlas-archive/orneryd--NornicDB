@@ -329,11 +329,30 @@ func (e *VoyageEmbedder) EmbedDocumentBatchChunks(ctx context.Context, texts []s
 		return results, nil
 	}
 
-	shortTexts := make([]string, 0, len(texts))
-	shortIndexes := make([]int, 0, len(texts))
+	shortTexts := make([]string, 0, min(len(texts), VoyageContextualizedMaxInputs))
+	shortIndexes := make([]int, 0, cap(shortTexts))
 	requestBytes := 0
+	flush := func() error {
+		if len(shortTexts) == 0 {
+			return nil
+		}
+		batch, err := e.embedContextualizedDocumentBatch(ctx, shortTexts, maxTokens, overlap)
+		if err != nil {
+			return err
+		}
+		for i, result := range batch {
+			results[shortIndexes[i]] = result
+		}
+		shortTexts = shortTexts[:0]
+		shortIndexes = shortIndexes[:0]
+		requestBytes = 0
+		return nil
+	}
 	for i, text := range texts {
 		if len(text) > VoyageContextualizedSafeRequestBytes {
+			if err := flush(); err != nil {
+				return nil, err
+			}
 			result, err := e.embedLongContextualizedDocument(ctx, text, e.contextModel, voyageContextualizedChunkSize(maxTokens), overlap)
 			if err != nil {
 				return nil, err
@@ -342,18 +361,23 @@ func (e *VoyageEmbedder) EmbedDocumentBatchChunks(ctx context.Context, texts []s
 			continue
 		}
 		if len(shortTexts) >= VoyageContextualizedMaxInputs || requestBytes+len(text) > VoyageContextualizedSafeRequestBytes {
-			return nil, fmt.Errorf("contextualized document batch exceeds provider request limits")
+			if err := flush(); err != nil {
+				return nil, err
+			}
 		}
 		requestBytes += len(text)
 		shortTexts = append(shortTexts, text)
 		shortIndexes = append(shortIndexes, i)
 	}
-	if len(shortTexts) == 0 {
-		return results, nil
+	if err := flush(); err != nil {
+		return nil, err
 	}
+	return results, nil
+}
 
+func (e *VoyageEmbedder) embedContextualizedDocumentBatch(ctx context.Context, texts []string, maxTokens, overlap int) ([]*DocumentChunkResult, error) {
 	chunkOverlap, chunkOverlapSet := voyageChunkOverlap(overlap)
-	resp, err := e.client.EmbedContextualized(ctx, shortTexts, voyageapi.ContextualizedOptions{
+	resp, err := e.client.EmbedContextualized(ctx, texts, voyageapi.ContextualizedOptions{
 		Model:              e.contextModel,
 		InputType:          InputTypeDocument,
 		OutputDimension:    e.config.Dimensions,
@@ -366,8 +390,9 @@ func (e *VoyageEmbedder) EmbedDocumentBatchChunks(ctx context.Context, texts []s
 	if err != nil {
 		return nil, err
 	}
+	results := make([]*DocumentChunkResult, len(texts))
 	for _, document := range resp.Data {
-		if document.Index < 0 || document.Index >= len(shortIndexes) {
+		if document.Index < 0 || document.Index >= len(results) {
 			continue
 		}
 		result := &DocumentChunkResult{Model: e.contextModel, ChunkerVersion: resp.ChunkerVersion}
@@ -375,7 +400,7 @@ func (e *VoyageEmbedder) EmbedDocumentBatchChunks(ctx context.Context, texts []s
 			result.Chunks = append(result.Chunks, item.Text)
 			result.Embeddings = append(result.Embeddings, item.Embedding)
 		}
-		results[shortIndexes[document.Index]] = result
+		results[document.Index] = result
 	}
 	return results, nil
 }
