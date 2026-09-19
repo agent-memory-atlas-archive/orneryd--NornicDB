@@ -20,6 +20,14 @@ func (s *seedOverrideFulltext) LexicalSeedDocIDs(maxTerms, perTerm int) []string
 	return append([]string(nil), s.seedIDs...)
 }
 
+func (s *seedOverrideFulltext) LexicalSeedHints(maxTerms, perTerm int) []LexicalSeedHint {
+	hints := make([]LexicalSeedHint, 0, len(s.seedIDs))
+	for i, id := range s.seedIDs {
+		hints = append(hints, LexicalSeedHint{ID: id, Rank: uint32(i), Signature: stableLexicalHash(id)})
+	}
+	return hints
+}
+
 func preferredSeedsForTest(t *testing.T, ci interface{}) []int {
 	t.Helper()
 	v := reflect.ValueOf(ci)

@@ -58,6 +58,17 @@ type blockingBM25Index struct {
 	release <-chan struct{}
 }
 
+type rankedBM25Index struct {
+	bm25Index
+	results []indexResult
+	calls   int
+}
+
+func (i *rankedBM25Index) Search(string, int) []indexResult {
+	i.calls++
+	return append([]indexResult(nil), i.results...)
+}
+
 func (i *blockingBM25Index) Search(string, int) []indexResult {
 	close(i.started)
 	<-i.release
@@ -131,6 +142,25 @@ func TestRRFHybridSearch_ParallelRetrievalOverlaps(t *testing.T) {
 	}
 }
 
+func TestRRFHybridSearchUsesRankedBM25ResultsAsVectorEntryPoints(t *testing.T) {
+	svc := NewServiceWithDimensions(storage.NewMemoryEngine(), 2)
+	fulltext := &rankedBM25Index{
+		bm25Index: svc.fulltextIndex,
+		results: []indexResult{
+			{ID: "lexical-first", Score: 2},
+			{ID: "lexical-second", Score: 1},
+		},
+	}
+	svc.fulltextIndex = fulltext
+	generator := &lexicalEntryCandidateGenerator{}
+	svc.vectorPipeline = NewVectorSearchPipeline(generator, &IdentityExactScorer{})
+
+	_, err := svc.rrfHybridSearch(context.Background(), "ranked terms", []float32{1, 0}, DefaultSearchOptions())
+	require.NoError(t, err)
+	require.Equal(t, []string{"lexical-first", "lexical-second"}, generator.entries)
+	require.Equal(t, 1, fulltext.calls, "entry points must reuse the normal BM25 retrieval")
+}
+
 func TestRRFHybridSearch_ParallelRetrievalPreservesSequentialRanking(t *testing.T) {
 	fixture, err := loadDocsCorpusFixture()
 	require.NoError(t, err)
@@ -172,17 +202,6 @@ func sequentialHybridReference(
 		return sequentialHybridReferenceResult{}, err
 	}
 	seenOrphans := make(map[string]bool)
-	vectorResults, _, err := svc.adaptiveVectorSearch(ctx, pipeline, embedding, opts, func(results []indexResult) []indexResult {
-		results = svc.filterDecayedCandidates(results)
-		if len(opts.Types) > 0 || len(opts.Filters) > 0 {
-			results = svc.filterByTypeAndProperties(ctx, results, opts.Types, opts.Filters, seenOrphans)
-		}
-		return results
-	})
-	if err != nil {
-		return sequentialHybridReferenceResult{}, err
-	}
-
 	var bm25Results []indexResult
 	if svc.fulltextIndex != nil {
 		bm25Results, _, err = svc.adaptiveBM25Search(ctx, svc.fulltextIndex, query, opts, func(results []indexResult) []indexResult {
@@ -195,6 +214,16 @@ func sequentialHybridReference(
 		if err != nil {
 			return sequentialHybridReferenceResult{}, err
 		}
+	}
+	vectorResults, _, err := svc.adaptiveVectorSearch(ctx, pipeline, embedding, opts, lexicalEntryIDsFromResults(bm25Results), func(results []indexResult) []indexResult {
+		results = svc.filterDecayedCandidates(results)
+		if len(opts.Types) > 0 || len(opts.Filters) > 0 {
+			results = svc.filterByTypeAndProperties(ctx, results, opts.Types, opts.Filters, seenOrphans)
+		}
+		return results
+	})
+	if err != nil {
+		return sequentialHybridReferenceResult{}, err
 	}
 	fusedResults := svc.fuseRRF(vectorResults, bm25Results, opts)
 	results := svc.enrichResults(ctx, fusedResults, opts, seenOrphans)

@@ -12,6 +12,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// lexicalEntryCandidateGenerator records the BM25 result IDs passed through
+// the shared vector pipeline.
+type lexicalEntryCandidateGenerator struct {
+	entries []string
+}
+
+func (g *lexicalEntryCandidateGenerator) SearchCandidates(context.Context, []float32, int, float64) ([]Candidate, error) {
+	return nil, nil
+}
+
+func (g *lexicalEntryCandidateGenerator) searchCandidatesWithLexicalEntries(_ context.Context, _ []float32, _ int, _ float64, entries []string) ([]Candidate, bool, error) {
+	g.entries = append(g.entries[:0], entries...)
+	return []Candidate{{ID: "candidate", Score: 1}}, true, nil
+}
+
+func TestVectorPipelinePassesLexicalEntriesToCapableGenerator(t *testing.T) {
+	generator := &lexicalEntryCandidateGenerator{}
+	pipeline := NewVectorSearchPipeline(generator, &IdentityExactScorer{})
+
+	results, _, err := pipeline.searchWithExhaustionFromEntries(
+		context.Background(), []float32{1, 0}, 1, 0, []string{"bm25-a", "bm25-b"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"bm25-a", "bm25-b"}, generator.entries)
+	require.Equal(t, []ScoredCandidate{{ID: "candidate", Score: 1}}, results)
+}
+
 func TestBruteForceCandidateGen(t *testing.T) {
 	idx := NewVectorIndex(4)
 	gen := NewBruteForceCandidateGen(idx)

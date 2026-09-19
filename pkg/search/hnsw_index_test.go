@@ -753,14 +753,14 @@ func TestHNSWIndex_InternalGuardBranches(t *testing.T) {
 	index.setNeighborsAtLevelLocked(0, 0, []uint32{1, 2, 3})
 	neighbors, ok := index.neighborsAtLevelLocked(0, 0)
 	require.True(t, ok)
-	require.Len(t, neighbors, 2)
+	require.Len(t, neighbors, 3)
 	require.Equal(t, uint32(1), neighbors[0])
 	require.Equal(t, uint32(2), neighbors[1])
 
 	index.insertNeighborAtLevelLocked(0, 0, 1)
 	neighbors, ok = index.neighborsAtLevelLocked(0, 0)
 	require.True(t, ok)
-	require.Len(t, neighbors, 2, "neighbor count must remain capped at M")
+	require.Len(t, neighbors, 4, "base-layer neighbor count must remain capped at 2*M")
 
 	index.deleted[0] = true
 	index.insertNeighborAtLevelLocked(0, 0, 1)
@@ -911,12 +911,12 @@ func TestLoadHNSWIndex_GraphOnlyRequiresLookup(t *testing.T) {
 	require.Nil(t, loaded, "graph-only snapshots must not load without vector lookup")
 }
 
-func TestLoadHNSWIndex_LegacySnapshotAndDefaultConfig(t *testing.T) {
+func TestLoadHNSWIndexRejectsLegacyFullSnapshots(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "hnsw")
 
 	snap := hnswIndexSnapshot{
-		Version:           hnswIndexFormatVersion,
+		Version:           "1.0.0",
 		Config:            HNSWConfig{M: 0}, // triggers default config branch
 		Dimensions:        2,
 		NodeLevel:         []uint16{0},
@@ -940,9 +940,7 @@ func TestLoadHNSWIndex_LegacySnapshotAndDefaultConfig(t *testing.T) {
 
 	loaded, err := LoadHNSWIndex(path, nil)
 	require.NoError(t, err)
-	require.NotNil(t, loaded)
-	require.Equal(t, 16, loaded.Config().M)
-	require.Equal(t, 1, loaded.Size())
+	require.Nil(t, loaded)
 }
 
 func TestLoadHNSWIndex_InvalidSnapshotReturnsNil(t *testing.T) {

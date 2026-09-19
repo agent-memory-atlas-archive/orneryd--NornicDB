@@ -163,11 +163,9 @@ Speedup:                    ~1.7×
 
 Both HNSW and k-means benefit from the same 2,048-node BM25 seed set with zero additional cost — the seeds are computed once from the already-built BM25 index.
 
-**Tuning (defaults shown):**
-```bash
-NORNICDB_HNSW_LEXICAL_SEED_MAX_TERMS=256   # number of high-IDF terms to sample
-NORNICDB_HNSW_LEXICAL_SEED_PER_TERM=8      # top documents per term (max seed set = max_terms × per_term)
-```
+The HNSW graph consumes this lexical metadata automatically. Its metadata
+budget follows the graph's `M` topology parameter, so there is no independent
+enable switch or seed-count configuration to drift away from the graph shape.
 
 ---
 

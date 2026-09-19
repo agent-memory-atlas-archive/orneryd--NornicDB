@@ -123,7 +123,7 @@ func TestVectorStorageModeControlsFileStore(t *testing.T) {
 			service.SetVectorIndexPath(t.TempDir() + "/vectors")
 
 			service.indexMu.Lock()
-			service.ensureBuildVectorFileStore()
+			service.ensureVectorFileStore()
 			service.indexMu.Unlock()
 
 			require.Equal(t, test.wantFileStore, service.vectorFileStore != nil)

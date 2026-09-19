@@ -79,7 +79,7 @@ func TestAdaptiveVectorSearchWidensOnlyWhenUniqueNodesUnderfill(t *testing.T) {
 	pipeline := NewVectorSearchPipeline(generator, &IdentityExactScorer{})
 	opts := adaptiveOverfetchTestOptions(2)
 
-	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil)
+	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil, nil)
 
 	require.NoError(t, err)
 	require.Equal(t, []int{2, 4}, generator.limits)
@@ -97,7 +97,7 @@ func TestAdaptiveVectorSearchDoesNotRetryWhenInitialResultsFillTarget(t *testing
 	pipeline := NewVectorSearchPipeline(generator, &IdentityExactScorer{})
 	opts := adaptiveOverfetchTestOptions(2)
 
-	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil)
+	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil, nil)
 
 	require.NoError(t, err)
 	require.Equal(t, []int{2}, generator.limits)
@@ -111,7 +111,7 @@ func TestAdaptiveVectorSearchWidensShortNonExhaustiveApproximateResults(t *testi
 	pipeline := NewVectorSearchPipeline(generator, &IdentityExactScorer{})
 	opts := adaptiveOverfetchTestOptions(3)
 
-	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil)
+	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil, nil)
 
 	require.NoError(t, err)
 	require.Equal(t, []int{3, 6}, generator.limits)
@@ -131,7 +131,7 @@ func TestAdaptiveVectorSearchScoresFullApproximateBudgetBeforeNodeCollapse(t *te
 	opts := adaptiveOverfetchTestOptions(2)
 	opts.MaxOverfetchRatio = 2
 
-	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil)
+	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil, nil)
 
 	require.NoError(t, err)
 	require.Equal(t, []int{4}, generator.limits)
@@ -159,7 +159,7 @@ func TestAdaptiveVectorSearchStopsAtConfiguredCap(t *testing.T) {
 	opts := adaptiveOverfetchTestOptions(3)
 	opts.MaxCandidateLimit = 4
 
-	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil)
+	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1, 0}, opts, nil, nil)
 
 	require.NoError(t, err)
 	require.Equal(t, []int{3, 4}, generator.limits)
@@ -198,7 +198,7 @@ func TestAdaptiveVectorSearchAppliesIVFPQRerankCapAtServiceLayer(t *testing.T) {
 	pipeline := NewVectorSearchPipeline(NewIVFPQCandidateGen(index, 1), &IdentityExactScorer{})
 	opts := adaptiveOverfetchTestOptions(3)
 
-	results, _, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1}, opts, nil)
+	results, _, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1}, opts, nil, nil)
 
 	require.NoError(t, err)
 	require.Len(t, results, 2)

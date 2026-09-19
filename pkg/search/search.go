@@ -159,6 +159,7 @@ type bm25Index interface {
 	PhraseSearch(query string, limit int) []indexResult
 	GetDocument(id string) (string, bool)
 	LexicalSeedDocIDs(maxTerms, perTerm int) []string
+	LexicalSeedHints(maxTerms, perTerm int) []LexicalSeedHint
 	Clear()
 	Count() int
 	Save(path string) error
@@ -205,19 +206,20 @@ func newBM25IndexWithAnalyzer(engine string, analyzer Analyzer) (bm25Index, stri
 // Save/Load are no-ops so persistence checkpointing doesn't blow up.
 type disabledBM25Index struct{}
 
-func (disabledBM25Index) Index(string, string)                   {}
-func (disabledBM25Index) Remove(string)                          {}
-func (disabledBM25Index) Search(string, int) []indexResult       { return nil }
-func (disabledBM25Index) PhraseSearch(string, int) []indexResult { return nil }
-func (disabledBM25Index) GetDocument(string) (string, bool)      { return "", false }
-func (disabledBM25Index) LexicalSeedDocIDs(int, int) []string    { return nil }
-func (disabledBM25Index) Clear()                                 {}
-func (disabledBM25Index) Count() int                             { return 0 }
-func (disabledBM25Index) Save(string) error                      { return nil }
-func (disabledBM25Index) SaveNoCopy(string) error                { return nil }
-func (disabledBM25Index) Load(string) error                      { return nil }
-func (disabledBM25Index) IsDirty() bool                          { return false }
-func (disabledBM25Index) IndexBatch([]FulltextBatchEntry)        {}
+func (disabledBM25Index) Index(string, string)                        {}
+func (disabledBM25Index) Remove(string)                               {}
+func (disabledBM25Index) Search(string, int) []indexResult            { return nil }
+func (disabledBM25Index) PhraseSearch(string, int) []indexResult      { return nil }
+func (disabledBM25Index) GetDocument(string) (string, bool)           { return "", false }
+func (disabledBM25Index) LexicalSeedDocIDs(int, int) []string         { return nil }
+func (disabledBM25Index) LexicalSeedHints(int, int) []LexicalSeedHint { return nil }
+func (disabledBM25Index) Clear()                                      {}
+func (disabledBM25Index) Count() int                                  { return 0 }
+func (disabledBM25Index) Save(string) error                           { return nil }
+func (disabledBM25Index) SaveNoCopy(string) error                     { return nil }
+func (disabledBM25Index) Load(string) error                           { return nil }
+func (disabledBM25Index) IsDirty() bool                               { return false }
+func (disabledBM25Index) IndexBatch([]FulltextBatchEntry)             {}
 
 var searchablePropertiesSet = func() map[string]struct{} {
 	out := make(map[string]struct{}, len(SearchableProperties))
@@ -2646,10 +2648,11 @@ func (s *Service) trackIVFPQRemove(id string) {
 	s.ivfpqMu.RUnlock()
 }
 
-// ensureBuildVectorFileStore creates vectorFileStore when building with vectorIndexPath so vectors go to disk.
+// ensureVectorFileStore creates vectorFileStore when persistence has a vector
+// path so both initial builds and live ingestion write vectors directly to disk.
 // Caller holds s.indexMu.
 // When not resuming, BuildIndexes has already removed .vec/.meta so we start from 0; when resuming, existing files are appended to.
-func (s *Service) ensureBuildVectorFileStore() {
+func (s *Service) ensureVectorFileStore() {
 	if s.vectorStorageMode == "memory" {
 		return
 	}
@@ -2674,12 +2677,33 @@ func (s *Service) ensureBuildVectorFileStore() {
 		s.logPrintf("⚠️ VectorFileStore create failed (using in-memory index): %v", err)
 		return
 	}
-	_ = vfs.Load()
+	if err := vfs.Load(); err != nil {
+		_ = vfs.Close()
+		s.logPrintf("⚠️ VectorFileStore load failed (using in-memory index): %v", err)
+		return
+	}
+	// Build callers normally arrive with an empty in-memory index. If
+	// persistence was enabled after live ingestion began, migrate those vectors
+	// before publishing the file store so switching storage cannot lose data.
+	s.vectorIndex.mu.Lock()
+	for id, normalized := range s.vectorIndex.vectors {
+		value := normalized
+		if raw, ok := s.vectorIndex.rawVectors[id]; ok {
+			value = raw
+		}
+		if err := vfs.Add(id, value); err != nil {
+			s.vectorIndex.mu.Unlock()
+			_ = vfs.Close()
+			s.logPrintf("⚠️ VectorFileStore migration failed (using in-memory index): %v", err)
+			return
+		}
+	}
+	s.mu.Lock()
 	s.vectorFileStore = vfs
-	// Clear in-memory vectors so we don't hold duplicates during indexing;
-	// metadata (nodeLabels etc.) stays in RAM.
+	s.mu.Unlock()
 	s.vectorIndex.vectors = make(map[string][]float32)
 	s.vectorIndex.rawVectors = make(map[string][]float32)
+	s.vectorIndex.mu.Unlock()
 }
 
 // lastWriteTime returns the last known write time for the underlying storage, if available.
@@ -2757,9 +2781,10 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 	// properties looking for vector-shaped values.
 	indexVectorState := vectorOn && !skipVectorMutation
 
-	// When building from storage with a vector path, use file-backed store to bound RAM.
-	if vectorOn && skipFulltext && s.persistEnabled.Load() && s.vectorIndexPath != "" {
-		s.ensureBuildVectorFileStore()
+	// Create the disk-backed store before the first vector mutation, including
+	// live ingestion into a database that was empty during startup.
+	if indexVectorState && firstVectorDimensions(node) > 0 && s.persistEnabled.Load() && s.vectorIndexPath != "" {
+		s.ensureVectorFileStore()
 	}
 
 	// Index all embeddings: NamedEmbeddings and ChunkEmbeddings
@@ -3192,7 +3217,7 @@ func (s *Service) indexEdgeLocked(edge *storage.Edge) error {
 		return nil
 	}
 	if s.buildInProgress.Load() && s.persistEnabled.Load() && s.vectorIndexPath != "" {
-		s.ensureBuildVectorFileStore()
+		s.ensureVectorFileStore()
 	}
 
 	dim := s.vectorIndex.GetDimensions()
@@ -3696,6 +3721,7 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 				// Beam factor is query-only tuning and does not affect the persisted
 				// graph, so apply it without paying for an index rebuild.
 				loaded.setSearchBeamFactor(want.SearchBeamFactor)
+				loaded.SetBuildLexicalHints(lexicalHintValues(s.hnswLexicalSeedHints(s.fulltextIndex, want.M)))
 				s.hnswMu.Lock()
 				s.hnswIndex = loaded
 				s.hnswMu.Unlock()
@@ -3783,7 +3809,7 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 				s.indexMu.Lock()
 				defer s.indexMu.Unlock()
 				if s.vectorStorageMode != "memory" && vectorPath != "" {
-					s.ensureBuildVectorFileStore()
+					s.ensureVectorFileStore()
 				}
 				for _, node := range filtered {
 					if err := s.indexNodeLocked(node, false); err != nil {
@@ -4332,9 +4358,8 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 		duration time.Duration
 		err      error
 	}
-	bm25ResultCh := make(chan bm25RetrievalResult, 1)
 	bm25SeenOrphans := make(map[string]bool)
-	go func() {
+	retrieveBM25 := func() bm25RetrievalResult {
 		bm25Start := time.Now()
 		results, stats, err := s.adaptiveBM25Search(ctx, fulltextIndex, query, opts, func(results []indexResult) []indexResult {
 			results = s.filterDecayedCandidates(results)
@@ -4343,22 +4368,40 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 			}
 			return results
 		})
-		bm25ResultCh <- bm25RetrievalResult{
+		return bm25RetrievalResult{
 			results:  results,
 			stats:    stats,
 			duration: time.Since(bm25Start),
 			err:      err,
 		}
-	}()
+	}
 
-	// Step 1: Vector search, concurrent with BM25 retrieval.
+	pipeline, pipelineErr := s.getOrCreateVectorPipeline(ctx)
+	usesLexicalEntries := false
+	if pipeline != nil {
+		_, usesLexicalEntries = pipeline.candidateGen.(candidateGeneratorWithLexicalEntries)
+	}
+	var bm25Result bm25RetrievalResult
+	var bm25ResultCh chan bm25RetrievalResult
+	if usesLexicalEntries {
+		// HNSW consumes the already-ranked BM25 prefix as layer-zero entry
+		// points. This is one BM25 retrieval and one vector traversal.
+		bm25Result = retrieveBM25()
+	} else {
+		// Exact and clustered backends cannot use graph entry hints, so retain
+		// parallel retrieval for their lower wall-clock latency.
+		bm25ResultCh = make(chan bm25RetrievalResult, 1)
+		go func() { bm25ResultCh <- retrieveBM25() }()
+	}
+
+	// Step 1: Vector search. HNSW starts from BM25 matches; other strategies
+	// remain concurrent with BM25 retrieval.
 	vectorStart := time.Now()
 	var vectorResults []indexResult
 	var vectorStats vectorOverfetchStats
 	seenOrphans := make(map[string]bool)
-	pipeline, pipelineErr := s.getOrCreateVectorPipeline(ctx)
 	if pipelineErr == nil {
-		vectorResults, vectorStats, pipelineErr = s.adaptiveVectorSearch(ctx, pipeline, embedding, opts, func(results []indexResult) []indexResult {
+		vectorResults, vectorStats, pipelineErr = s.adaptiveVectorSearch(ctx, pipeline, embedding, opts, lexicalEntryIDsFromResults(bm25Result.results), func(results []indexResult) []indexResult {
 			results = s.filterDecayedCandidates(results)
 			if len(opts.Types) > 0 || len(opts.Filters) > 0 {
 				results = s.filterByTypeAndProperties(ctx, results, opts.Types, opts.Filters, seenOrphans)
@@ -4369,7 +4412,9 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	vectorMs := int(time.Since(vectorStart).Milliseconds())
 
 	// Step 2: Always join BM25 before returning or touching shared post-processing state.
-	bm25Result := <-bm25ResultCh
+	if bm25ResultCh != nil {
+		bm25Result = <-bm25ResultCh
+	}
 	bm25Results := bm25Result.results
 	bm25Ms := int(bm25Result.duration.Milliseconds())
 	if pipelineErr != nil {
@@ -4501,7 +4546,7 @@ func (s *Service) VectorSearchCandidates(ctx context.Context, embedding []float3
 	}
 
 	seenOrphans := make(map[string]bool)
-	results, _, err := s.adaptiveVectorSearch(ctx, pipeline, embedding, opts, func(results []indexResult) []indexResult {
+	results, _, err := s.adaptiveVectorSearch(ctx, pipeline, embedding, opts, nil, func(results []indexResult) []indexResult {
 		if len(opts.Types) > 0 || len(opts.Filters) > 0 {
 			results = s.filterByTypeAndProperties(ctx, results, opts.Types, opts.Filters, seenOrphans)
 		}
@@ -4624,6 +4669,7 @@ func (s *Service) adaptiveVectorSearch(
 	pipeline *VectorSearchPipeline,
 	embedding []float32,
 	opts *SearchOptions,
+	lexicalEntryIDs []string,
 	postProcess func([]indexResult) []indexResult,
 ) ([]indexResult, vectorOverfetchStats, error) {
 	if opts == nil {
@@ -4634,7 +4680,7 @@ func (s *Service) adaptiveVectorSearch(
 	requestLimit := config.initialLimit
 	var stats vectorOverfetchStats
 	for {
-		scored, exhausted, err := pipeline.searchWithExhaustion(ctx, embedding, requestLimit, opts.GetMinSimilarity(0.5))
+		scored, exhausted, err := pipeline.searchWithExhaustionFromEntries(ctx, embedding, requestLimit, opts.GetMinSimilarity(0.5), lexicalEntryIDs)
 		if err != nil {
 			return nil, stats, err
 		}
@@ -4703,6 +4749,17 @@ func (s *Service) adaptiveBM25Search(
 		requestLimit = min(nextLimit, config.maxLimit)
 		stats.retries++
 	}
+}
+
+func lexicalEntryIDsFromResults(results []indexResult) []string {
+	if len(results) == 0 {
+		return nil
+	}
+	ids := make([]string, len(results))
+	for i := range results {
+		ids[i] = results[i].ID
+	}
+	return ids
 }
 
 func normalizeVectorResultIDToNodeID(id string) string {
@@ -5091,29 +5148,20 @@ func (s *Service) switchBruteStrategy(target strategyMode) bool {
 
 func (s *Service) buildHNSWForTransition(ctx context.Context, dimensions int, vi *VectorIndex, vfs *VectorFileStore) (*HNSWIndex, error) {
 	config := HNSWConfigFromEnv()
+	s.mu.RLock()
+	fulltext := s.fulltextIndex
+	s.mu.RUnlock()
+	seedHints := s.hnswLexicalSeedHints(fulltext, config.M)
 	if vfs != nil && vfs.Count() > 0 {
 		total := vfs.Count()
-		iter := func(batchSize int, fn func([]hnswBuildPair) error) error {
-			return vfs.IterateChunked(batchSize, func(ids []string, vecs [][]float32) error {
-				batch := make([]hnswBuildPair, 0, len(ids))
-				for i := range ids {
-					batch = append(batch, hnswBuildPair{id: ids[i], vec: vecs[i]})
-				}
-				return fn(batch)
-			})
-		}
+		iter := hnswVectorFileStoreIterator(vfs, seedHints)
 		built, _, err := buildHNSWWithOptionalGPU(ctx, dimensions, config, s.getVectorLookup(), total, iter, nil)
 		return built, err
 	}
 	if vi == nil {
 		return nil, localizedError(localization.SearchVectorIndexUnavailable(), nil)
 	}
-	vi.mu.RLock()
-	pairs := make([]hnswBuildPair, 0, len(vi.vectors))
-	for id, vec := range vi.vectors {
-		pairs = append(pairs, hnswBuildPair{id: id, vec: vec})
-	}
-	vi.mu.RUnlock()
+	pairs := hnswOrderedVectorIndexPairs(vi, seedHints)
 	iter := hnswPairSliceIterator(pairs)
 	built, _, err := buildHNSWWithOptionalGPU(ctx, dimensions, config, VectorLookup(vi.getVectorRef), len(pairs), iter, nil)
 	return built, err
@@ -5135,70 +5183,6 @@ func hnswPairSliceIterator(pairs []hnswBuildPair) hnswBuildIterator {
 		}
 		return nil
 	}
-}
-
-func hnswVectorFileStoreIterator(vfs *VectorFileStore, seedNodeIDs map[string]struct{}) hnswBuildIterator {
-	return hnswVectorChunkIterator(vfs.IterateChunked, seedNodeIDs)
-}
-
-func hnswVectorReadLeaseIterator(lease *vectorFileReadLease, seedNodeIDs map[string]struct{}) hnswBuildIterator {
-	return hnswVectorChunkIterator(lease.IterateChunked, seedNodeIDs)
-}
-
-func hnswVectorChunkIterator(iterate func(int, func([]string, [][]float32) error) error, seedNodeIDs map[string]struct{}) hnswBuildIterator {
-	return func(batchSize int, fn func([]hnswBuildPair) error) error {
-		addChunk := func(ids []string, vecs [][]float32, seedOnly bool) error {
-			batch := make([]hnswBuildPair, 0, len(ids))
-			for i := range ids {
-				isSeed := vectorIDInSeedNodeSet(ids[i], seedNodeIDs)
-				if seedOnly && !isSeed {
-					continue
-				}
-				if !seedOnly && isSeed {
-					continue
-				}
-				batch = append(batch, hnswBuildPair{id: ids[i], vec: vecs[i]})
-			}
-			if len(batch) == 0 {
-				return nil
-			}
-			return fn(batch)
-		}
-		if len(seedNodeIDs) > 0 {
-			if err := iterate(batchSize, func(ids []string, vecs [][]float32) error {
-				return addChunk(ids, vecs, true)
-			}); err != nil {
-				return err
-			}
-		}
-		return iterate(batchSize, func(ids []string, vecs [][]float32) error {
-			return addChunk(ids, vecs, false)
-		})
-	}
-}
-
-func hnswOrderedVectorIndexPairs(vi *VectorIndex, seedNodeIDs map[string]struct{}) []hnswBuildPair {
-	vi.mu.RLock()
-	pairs := make([]hnswBuildPair, 0, len(vi.vectors))
-	for id, vec := range vi.vectors {
-		pairs = append(pairs, hnswBuildPair{id: id, vec: vec})
-	}
-	vi.mu.RUnlock()
-	if len(seedNodeIDs) == 0 || len(pairs) == 0 {
-		return pairs
-	}
-	seedPairs := make([]hnswBuildPair, 0, len(pairs)/8)
-	otherPairs := make([]hnswBuildPair, 0, len(pairs))
-	for _, p := range pairs {
-		if vectorIDInSeedNodeSet(p.id, seedNodeIDs) {
-			seedPairs = append(seedPairs, p)
-			continue
-		}
-		otherPairs = append(otherPairs, p)
-	}
-	pairs = append(seedPairs, otherPairs...)
-	logSearchPrintf("[HNSW] 🧭 Lexical-seeded build order: %d seeded vectors prioritized", len(seedPairs))
-	return pairs
 }
 
 func (s *Service) ensureGPUIndexSynced(vi *VectorIndex, vfs *VectorFileStore) error {
@@ -5535,9 +5519,9 @@ func (s *Service) getOrCreateHNSWIndex(ctx context.Context, dimensions int) (*HN
 	vi := s.vectorIndex
 	ft := s.fulltextIndex
 	s.mu.RUnlock()
-	seedNodeIDs := s.hnswLexicalSeedNodeSet(ft)
-	if len(seedNodeIDs) > 0 {
-		s.logPrintf("[HNSW] 🧭 Lexical seeding enabled: %d seed node IDs", len(seedNodeIDs))
+	seedHints := s.hnswLexicalSeedHints(ft, config.M)
+	if len(seedHints) > 0 {
+		s.logPrintf("[HNSW] 🧭 Lexical build metadata: %d ranked node IDs", len(seedHints))
 	}
 
 	var built *HNSWIndex
@@ -5546,11 +5530,11 @@ func (s *Service) getOrCreateHNSWIndex(ctx context.Context, dimensions int) (*HN
 		total := vfs.Count()
 		s.logPrintf("[HNSW] 🔨 Building from file store: %d vectors (chunk size 10k)", total)
 		lookup := s.getVectorLookup()
-		iterator := hnswVectorFileStoreIterator(vfs, seedNodeIDs)
+		iterator := hnswVectorFileStoreIterator(vfs, seedHints)
 		lease, leaseErr := vfs.beginReadLease()
 		if leaseErr == nil {
 			lookup = lease.Lookup
-			iterator = hnswVectorReadLeaseIterator(lease, seedNodeIDs)
+			iterator = hnswVectorReadLeaseIterator(lease, seedHints)
 		} else {
 			s.logPrintf("[HNSW] read-only vector mapping unavailable; using copied reads: %v", leaseErr)
 		}
@@ -5569,7 +5553,7 @@ func (s *Service) getOrCreateHNSWIndex(ctx context.Context, dimensions int) (*HN
 		}
 		s.logPrintf("[HNSW] 🔨 Built from file store: %d vectors", built.Size())
 	} else if vi != nil {
-		pairs := hnswOrderedVectorIndexPairs(vi, seedNodeIDs)
+		pairs := hnswOrderedVectorIndexPairs(vi, seedHints)
 		total := len(pairs)
 		s.logPrintf("[HNSW] 🔨 Building from in-memory index: %d vectors", total)
 		var err error
@@ -5604,45 +5588,6 @@ func (s *Service) getOrCreateHNSWIndex(ctx context.Context, dimensions int) (*HN
 
 	s.ensureHNSWMaintenance()
 	return built, nil
-}
-
-func (s *Service) hnswLexicalSeedNodeSet(ft bm25Index) map[string]struct{} {
-	if ft == nil || !envutil.GetBoolStrict("NORNICDB_HNSW_LEXICAL_SEED_ENABLED", true) {
-		return nil
-	}
-	maxTerms := envutil.GetInt("NORNICDB_HNSW_LEXICAL_SEED_MAX_TERMS", 256)
-	if maxTerms <= 0 {
-		maxTerms = 256
-	}
-	perTerm := envutil.GetInt("NORNICDB_HNSW_LEXICAL_SEED_PER_TERM", 8)
-	if perTerm <= 0 {
-		perTerm = 8
-	}
-	seedIDs := ft.LexicalSeedDocIDs(maxTerms, perTerm)
-	if len(seedIDs) == 0 {
-		return nil
-	}
-	out := make(map[string]struct{}, len(seedIDs))
-	for _, id := range seedIDs {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		out[id] = struct{}{}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func vectorIDInSeedNodeSet(vectorID string, seedNodeIDs map[string]struct{}) bool {
-	if len(seedNodeIDs) == 0 || vectorID == "" {
-		return false
-	}
-	nodeID := normalizeVectorResultIDToNodeID(vectorID)
-	_, ok := seedNodeIDs[nodeID]
-	return ok
 }
 
 func (s *Service) ensureHNSWMaintenance() {
@@ -5757,26 +5702,30 @@ func (s *Service) maybeRebuildHNSW(ctx context.Context, tombstoneRatioThreshold,
 	s.mu.RLock()
 	vfs := s.vectorFileStore
 	vi := s.vectorIndex
+	fulltext := s.fulltextIndex
 	s.mu.RUnlock()
 
 	rebuilt := NewHNSWIndex(old.dimensions, old.config)
 	rebuilt.SetVectorLookup(s.getVectorLookup())
+	seedHints := s.hnswLexicalSeedHints(fulltext, old.config.M)
+	rebuilt.SetBuildLexicalHints(lexicalHintValues(seedHints))
 	const rebuildProgressInterval = 50000
 	if vfs != nil && vfs.Count() > 0 {
 		total := vfs.Count()
 		s.logPrintf("[HNSW] 🔄 Rebuilding: vectors=%d reason=tombstone_ratio=%.3f overhead=%.3f",
 			total, ratio, overhead)
 		var added int
-		if err := vfs.IterateChunked(10000, func(ids []string, vecs [][]float32) error {
-			for i := range ids {
+		iterator := hnswVectorFileStoreIterator(vfs, seedHints)
+		if err := iterator(10000, func(batch []hnswBuildPair) error {
+			for i := range batch {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
 				default:
 				}
-				_ = rebuilt.Add(ids[i], vecs[i])
+				_ = rebuilt.Add(batch[i].id, batch[i].vec)
 			}
-			added += len(ids)
+			added += len(batch)
 			if added%rebuildProgressInterval == 0 || added == total {
 				s.logPrintf("[HNSW] 🔄 Rebuild progress: %d / %d vectors", added, total)
 			}
@@ -5786,18 +5735,7 @@ func (s *Service) maybeRebuildHNSW(ctx context.Context, tombstoneRatioThreshold,
 		}
 		s.logPrintf("[HNSW] 🔄 Rebuild complete: %d vectors", added)
 	} else if vi != nil {
-		vi.mu.RLock()
-		pairs := make([]struct {
-			id  string
-			vec []float32
-		}, 0, len(vi.vectors))
-		for id, vec := range vi.vectors {
-			pairs = append(pairs, struct {
-				id  string
-				vec []float32
-			}{id: id, vec: vec})
-		}
-		vi.mu.RUnlock()
+		pairs := hnswOrderedVectorIndexPairs(vi, seedHints)
 		total := len(pairs)
 		s.logPrintf("[HNSW] 🔄 Rebuilding: vectors=%d reason=tombstone_ratio=%.3f overhead=%.3f",
 			total, ratio, overhead)
@@ -6569,7 +6507,7 @@ func (s *Service) vectorSearchOnly(ctx context.Context, embedding []float32, opt
 		return nil, pipelineErr
 	}
 	seenOrphans := make(map[string]bool)
-	results, vectorStats, searchErr := s.adaptiveVectorSearch(ctx, pipeline, embedding, opts, func(results []indexResult) []indexResult {
+	results, vectorStats, searchErr := s.adaptiveVectorSearch(ctx, pipeline, embedding, opts, nil, func(results []indexResult) []indexResult {
 		if len(opts.Types) > 0 || len(opts.Filters) > 0 {
 			results = s.filterByTypeAndProperties(ctx, results, opts.Types, opts.Filters, seenOrphans)
 		}

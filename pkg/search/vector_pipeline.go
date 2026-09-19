@@ -72,6 +72,10 @@ type candidateGeneratorWithExhaustion interface {
 	searchCandidatesWithExhaustion(ctx context.Context, query []float32, k int, minSimilarity float64) ([]Candidate, bool, error)
 }
 
+type candidateGeneratorWithLexicalEntries interface {
+	searchCandidatesWithLexicalEntries(ctx context.Context, query []float32, k int, minSimilarity float64, entryIDs []string) ([]Candidate, bool, error)
+}
+
 // ExactScorer computes exact similarity scores for candidate vectors.
 //
 // Implementations:
@@ -225,6 +229,10 @@ func (h *HNSWCandidateGen) SearchCandidates(ctx context.Context, query []float32
 }
 
 func (h *HNSWCandidateGen) searchCandidatesWithExhaustion(ctx context.Context, query []float32, k int, minSimilarity float64) ([]Candidate, bool, error) {
+	return h.searchCandidatesWithLexicalEntries(ctx, query, k, minSimilarity, nil)
+}
+
+func (h *HNSWCandidateGen) searchCandidatesWithLexicalEntries(ctx context.Context, query []float32, k int, minSimilarity float64, entryIDs []string) ([]Candidate, bool, error) {
 	candidateLimit := boundCandidateLimit(k)
 	config := h.hnswIndex.Config()
 	searchBeam := hnswSearchBeam(candidateLimit, config.EfSearch, config.SearchBeamFactor)
@@ -233,7 +241,7 @@ func (h *HNSWCandidateGen) searchCandidatesWithExhaustion(ctx context.Context, q
 	// graph traversal clamps recall to ef == k even when traversal was wider.
 	// The widened result also gives chunked corpora room to produce k distinct
 	// owning nodes rather than spending the entire budget on one document.
-	results, exhausted, err := h.hnswIndex.searchWithEfExhaustion(ctx, query, searchBeam, minSimilarity, searchBeam)
+	results, exhausted, err := h.hnswIndex.searchWithEfExhaustionFromEntries(ctx, query, searchBeam, minSimilarity, searchBeam, entryIDs)
 	if err != nil {
 		return nil, false, err
 	}
@@ -464,11 +472,17 @@ func (p *VectorSearchPipeline) Search(ctx context.Context, query []float32, k in
 }
 
 func (p *VectorSearchPipeline) searchWithExhaustion(ctx context.Context, query []float32, k int, minSimilarity float64) ([]ScoredCandidate, bool, error) {
+	return p.searchWithExhaustionFromEntries(ctx, query, k, minSimilarity, nil)
+}
+
+func (p *VectorSearchPipeline) searchWithExhaustionFromEntries(ctx context.Context, query []float32, k int, minSimilarity float64, entryIDs []string) ([]ScoredCandidate, bool, error) {
 	// Stage 1: Candidate generation
 	var candidates []Candidate
 	var exhausted bool
 	var err error
-	if generator, ok := p.candidateGen.(candidateGeneratorWithExhaustion); ok {
+	if generator, ok := p.candidateGen.(candidateGeneratorWithLexicalEntries); ok && len(entryIDs) > 0 {
+		candidates, exhausted, err = generator.searchCandidatesWithLexicalEntries(ctx, query, k, minSimilarity, entryIDs)
+	} else if generator, ok := p.candidateGen.(candidateGeneratorWithExhaustion); ok {
 		candidates, exhausted, err = generator.searchCandidatesWithExhaustion(ctx, query, k, minSimilarity)
 	} else {
 		candidates, err = p.candidateGen.SearchCandidates(ctx, query, k, minSimilarity)

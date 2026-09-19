@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Feed the already-computed BM25 result prefix into HNSW as multiple layer-zero
+  entry points, and preserve compact high-IDF rank/topic signatures during graph
+  construction for deterministic diversity tie-breaking. The integration is
+  always active when lexical data exists and performs no per-node BM25 queries.
+- Build HNSW graphs with the diversity heuristic used by the reference
+  algorithm and reserve `2*M` links on layer zero. Persisted graphs use a new
+  topology version so indexes built with the recall-losing layout are rebuilt.
+- Create the configured file-backed vector store during the first live vector
+  write, including migration of any vectors already accepted in memory, so an
+  initially empty database does not retain its entire bulk load in RAM.
 - Apply HNSW additions, updates, and removals synchronously at every index size,
   removing the arbitrary live-update cutoff and deferred-rebuild thresholds.
   Mutations concurrent with a rebuild are replayed before its atomic swap so

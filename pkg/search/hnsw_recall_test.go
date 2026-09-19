@@ -262,6 +262,53 @@ func BenchmarkHNSWCandidateGenerationBeamFactor(b *testing.B) {
 	}
 }
 
+func BenchmarkHNSWSearchLexicalEntryPoints(b *testing.B) {
+	const (
+		dimensions = 128
+		vectors    = 10_000
+		limit      = 200
+	)
+	config := DefaultHNSWConfig()
+	index := NewHNSWIndex(dimensions, config)
+	rng := rand.New(rand.NewSource(433))
+	for i := 0; i < vectors; i++ {
+		value := make([]float32, dimensions)
+		for dimension := range value {
+			value[dimension] = rng.Float32()*2 - 1
+		}
+		require.NoError(b, index.Add(fmt.Sprintf("vector-%05d", i), vector.Normalize(value)))
+	}
+	query := make([]float32, dimensions)
+	for dimension := range query {
+		query[dimension] = rng.Float32()*2 - 1
+	}
+	entryIDs := make([]string, 32)
+	for i := range entryIDs {
+		entryIDs[i] = fmt.Sprintf("vector-%05d", i*97)
+	}
+
+	for _, benchmark := range []struct {
+		name    string
+		entries []string
+	}{
+		{name: "vector_entry", entries: nil},
+		{name: "bm25_entries", entries: entryIDs},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				results, err := index.SearchWithEfFromEntries(context.Background(), query, limit, -1, limit, benchmark.entries)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(results) != limit {
+					b.Fatalf("got %d results, want %d", len(results), limit)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkHNSWRecall_ANNOnly benchmarks ANN-only recall for different dataset sizes.
 func BenchmarkHNSWRecall_ANNOnly(b *testing.B) {
 	dimensions := 128

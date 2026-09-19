@@ -1727,32 +1727,32 @@ func TestEnableClustering_ReentrantAndEnvOverrides(t *testing.T) {
 	})
 }
 
-func TestSearchService_EnsureBuildVectorFileStore_Branches(t *testing.T) {
+func TestVectorFileStoreCreationHonorsPersistenceConfiguration(t *testing.T) {
 	engine := storage.NewNamespacedEngine(newNamespacedEngine(t), "test")
 	svc := NewServiceWithDimensions(engine, 2)
 
 	// persistence disabled branch
 	svc.vectorIndex.vectors["keep"] = []float32{1, 0}
-	svc.ensureBuildVectorFileStore()
+	svc.ensureVectorFileStore()
 	require.Nil(t, svc.vectorFileStore)
 	require.Contains(t, svc.vectorIndex.vectors, "keep")
 
 	// empty vector path branch
 	svc.SetPersistenceEnabled(true)
-	svc.ensureBuildVectorFileStore()
+	svc.ensureVectorFileStore()
 	require.Nil(t, svc.vectorFileStore)
 
 	// nil vector index branch
 	svc.SetVectorIndexPath(filepath.Join(t.TempDir(), "vectors"))
 	orig := svc.vectorIndex
 	svc.vectorIndex = nil
-	svc.ensureBuildVectorFileStore()
+	svc.ensureVectorFileStore()
 	require.Nil(t, svc.vectorFileStore)
 	svc.vectorIndex = orig
 
 	// dimensions <= 0 branch
 	svc.vectorIndex = NewVectorIndex(0)
-	svc.ensureBuildVectorFileStore()
+	svc.ensureVectorFileStore()
 	require.Nil(t, svc.vectorFileStore)
 
 	// create fail branch (invalid parent path from file)
@@ -1760,14 +1760,14 @@ func TestSearchService_EnsureBuildVectorFileStore_Branches(t *testing.T) {
 	require.NoError(t, os.WriteFile(badParent, []byte("x"), 0o644))
 	svc.vectorIndex = NewVectorIndex(2)
 	svc.vectorIndexPath = filepath.Join(badParent, "vectors")
-	svc.ensureBuildVectorFileStore()
+	svc.ensureVectorFileStore()
 	require.Nil(t, svc.vectorFileStore)
 
 	// success branch creates file store and clears in-memory vector maps.
 	okPath := filepath.Join(t.TempDir(), "ok-vectors")
 	svc.vectorIndexPath = okPath
 	svc.vectorIndex.vectors["a"] = []float32{1, 0}
-	svc.ensureBuildVectorFileStore()
+	svc.ensureVectorFileStore()
 	require.NotNil(t, svc.vectorFileStore)
 	require.Empty(t, svc.vectorIndex.vectors)
 }
@@ -2759,9 +2759,7 @@ func TestSearchHelpers_HNSWLexicalSeedsAndGetOrCreateBranches(t *testing.T) {
 	_, okB := seedSet["doc-b"]
 	require.True(t, okA)
 	require.True(t, okB)
-	t.Setenv("NORNICDB_HNSW_LEXICAL_SEED_ENABLED", "false")
-	require.Nil(t, svc.hnswLexicalSeedNodeSet(ft))
-	t.Setenv("NORNICDB_HNSW_LEXICAL_SEED_ENABLED", "true")
+	require.Len(t, svc.hnswLexicalSeedNodeSet(ft), 2, "lexical graph metadata is always applied")
 
 	// Error branch when neither vector store nor in-memory vector index is available.
 	svc.mu.Lock()

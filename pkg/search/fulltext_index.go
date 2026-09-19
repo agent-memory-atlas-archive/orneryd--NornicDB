@@ -508,6 +508,20 @@ func (f *FulltextIndex) GetDocument(id string) (string, bool) {
 // LexicalSeedDocIDs returns document IDs selected from high-IDF terms to provide
 // lexical priors for clustering seed selection.
 func (f *FulltextIndex) LexicalSeedDocIDs(maxTerms, docsPerTerm int) []string {
+	hints := f.LexicalSeedHints(maxTerms, docsPerTerm)
+	if len(hints) == 0 {
+		return nil
+	}
+	out := make([]string, len(hints))
+	for i := range hints {
+		out[i] = hints[i].ID
+	}
+	return out
+}
+
+// LexicalSeedHints returns ranked compact lexical metadata directly from the
+// inverted index, without executing a BM25 search for each document.
+func (f *FulltextIndex) LexicalSeedHints(maxTerms, docsPerTerm int) []LexicalSeedHint {
 	if maxTerms <= 0 || docsPerTerm <= 0 {
 		return nil
 	}
@@ -530,6 +544,9 @@ func (f *FulltextIndex) LexicalSeedDocIDs(maxTerms, docsPerTerm int) []string {
 	}
 	sort.Slice(terms, func(i, j int) bool {
 		if terms[i].idf == terms[j].idf {
+			if terms[i].df == terms[j].df {
+				return terms[i].term < terms[j].term
+			}
 			return terms[i].df < terms[j].df
 		}
 		return terms[i].idf > terms[j].idf
@@ -537,8 +554,7 @@ func (f *FulltextIndex) LexicalSeedDocIDs(maxTerms, docsPerTerm int) []string {
 	if len(terms) > maxTerms {
 		terms = terms[:maxTerms]
 	}
-	seen := make(map[string]struct{}, maxTerms*docsPerTerm)
-	out := make([]string, 0, maxTerms*docsPerTerm)
+	selectedTerms := make([]lexicalSeedTerm, 0, len(terms))
 	for _, t := range terms {
 		postings := f.invertedIndex[t.term]
 		type docTF struct {
@@ -549,22 +565,24 @@ func (f *FulltextIndex) LexicalSeedDocIDs(maxTerms, docsPerTerm int) []string {
 		for id, tf := range postings {
 			docs = append(docs, docTF{id: id, tf: tf})
 		}
-		sort.Slice(docs, func(i, j int) bool { return docs[i].tf > docs[j].tf })
+		sort.Slice(docs, func(i, j int) bool {
+			if docs[i].tf == docs[j].tf {
+				return docs[i].id < docs[j].id
+			}
+			return docs[i].tf > docs[j].tf
+		})
 		limit := docsPerTerm
 		if limit > len(docs) {
 			limit = len(docs)
 		}
+		selected := lexicalSeedTerm{term: t.term, idf: t.idf, docs: make([]lexicalSeedDocument, limit)}
 		for i := 0; i < limit; i++ {
-			id := docs[i].id
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			out = append(out, id)
+			selected.docs[i] = lexicalSeedDocument{id: docs[i].id, tf: uint32(docs[i].tf)}
 		}
+		selectedTerms = append(selectedTerms, selected)
 	}
 	f.mu.RUnlock()
-	return out
+	return lexicalSeedHints(selectedTerms)
 }
 
 func lexicalSeedMinDocumentFrequency() int {

@@ -247,7 +247,7 @@ func (s *Service) vectorQueryNodesIndexedWithOptions(ctx context.Context, queryE
 	}
 
 	var postProcessErr error
-	results, _, err := s.adaptiveVectorSearch(ctx, pipeline, queryEmbedding, resolved, func(candidates []indexResult) []indexResult {
+	results, _, err := s.adaptiveVectorSearch(ctx, pipeline, queryEmbedding, resolved, nil, func(candidates []indexResult) []indexResult {
 		if postProcessErr != nil {
 			return nil
 		}

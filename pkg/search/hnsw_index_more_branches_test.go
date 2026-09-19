@@ -84,8 +84,8 @@ func TestHNSWIndex_SaveLoadAndIVFMoreErrorBranches(t *testing.T) {
 		base := filepath.Join(tmp, "idx")
 
 		cases := []hnswIndexSnapshot{
-			{Version: hnswIndexFormatVersion, Dimensions: 0, InternalToID: []string{"a"}},
-			{Version: hnswIndexFormatVersion, Dimensions: 2, InternalToID: nil},
+			{Version: "1.0.0", Dimensions: 0, InternalToID: []string{"a"}},
+			{Version: "1.0.0", Dimensions: 2, InternalToID: nil},
 			{Version: "0.0.1", Dimensions: 2, InternalToID: []string{"a"}},
 			{Version: hnswIndexFormatVersionGraphOnly, Dimensions: 2, InternalToID: []string{"a"}},
 		}

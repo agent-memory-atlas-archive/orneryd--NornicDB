@@ -88,12 +88,10 @@ term to participate in BM25 lexical seed selection. It defaults to `2`, matching
 the previous hard-coded behavior; values below `1` are treated as `1`. This is a
 clustering seed control, not a BM25 rank-score formula or a query-expansion rule.
 
-`NORNICDB_HNSW_LEXICAL_SEED_ENABLED=false` disables BM25-selected passage
-ordering during HNSW construction. It defaults to `true`; changing it invalidates
-the persisted HNSW build settings, so compare fresh graph builds rather than two
-runs against one persisted graph. GPU-assisted construction can vary between
-fresh builds, so use multiple independent pairs before changing a production
-default.
+HNSW construction always consumes the ranked compact metadata already available
+from BM25. Query-time hybrid search likewise uses its existing BM25 result
+prefix as additional layer-zero entry points. Neither behavior has a feature
+flag, and neither performs per-node BM25 searches during graph construction.
 
 ### Large-Corpus Construction Result
 
@@ -110,15 +108,9 @@ large-corpus traversal-work saving. See [the full 1M construction
 measurement](https://github.com/orneryd/NornicDB/discussions/22) for its corpus
 and timing methodology.
 
-For a CPU-only construction comparison, set both switches on a fresh data
-directory and change only the lexical-seeding value between runs:
-
-```sh
-NORNICDB_HNSW_BUILD_GPU_ENABLED=false \
-NORNICDB_HNSW_LEXICAL_SEED_ENABLED=false \
-NORNICDB_VECTOR_ANN_QUALITY=accurate \
-bin/recall-bench run --mode rrf ...
-```
+For a CPU-only construction measurement, use a fresh data directory with
+`NORNICDB_HNSW_BUILD_GPU_ENABLED=false`; lexical metadata remains part of the
+standard build path.
 
 Use paired bootstrap comparison when choosing a profile:
 
@@ -162,6 +154,7 @@ and differ in models, chunking, and indexing.
 | BM25 V2, historical 32-prefix baseline               |         - |    0.88422 | 0.59974 |       - |       - |
 | BM25 V2, exact Unicode title/text projection         |   0.78761 |    0.88256 | 0.66345 | 0.63089 | 0.62315 |
 | HNSW accurate, equal RRF weights (historical)        |         - |    0.93767 | 0.65534 |       - |       - |
+| HNSW fast, lexical build + query entry points        |   0.80167 |    0.94433 | 0.68662 | 0.66166 | 0.65116 |
 | Exact CPU, previous adaptive policy                  |   0.79233 |    0.92600 | 0.67321 | 0.64384 | 0.63588 |
 | Exact CPU, current adaptive bounded overfetch        |   0.80167 |    0.93933 | 0.68762 | 0.66305 | 0.65247 |
 | Exact CPU, fixed-depth equal RRF zero-floor baseline |   0.79622 |    0.94433 | 0.68178 | 0.65674 | 0.64624 |
@@ -231,3 +224,14 @@ were recreated from the same embedded corpus for every pair.
 | ------------ | --------: | ---------: | ------: |
 | Seeded run   |   0.78622 |    0.94100 | 0.66995 |
 | Unseeded run |   0.75622 |    0.93767 | 0.64659 |
+
+The current always-on lexical build metadata plus query-time BM25 entry points
+was rerun on the same 300-query manifest with CPU-only `fast` HNSW, equal RRF
+weights, and a zero score floor. It reached Recall@10 `0.80167`, Recall@100
+`0.94433`, and nDCG@10 `0.68662`. Against recorded seeded trial 10, the absolute
+changes were `+0.01878`, `+0.00333`, and `+0.01870` respectively. The paired
+bootstrap 95% interval was wholly positive for nDCG@10
+(`+0.00245..+0.03626`), while Recall@10 (`-0.00411..+0.04250`) and Recall@100
+(`-0.01667..+0.02333`) still crossed zero. The run indexed 16,442 vectors from
+the existing 5,183-document benchmark database and used `bge-m3:latest` at
+1,024 dimensions.

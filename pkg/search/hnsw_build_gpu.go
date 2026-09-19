@@ -29,8 +29,10 @@ type HNSWGraphBuildAccelerator interface {
 }
 
 type hnswBuildPair struct {
-	id  string
-	vec []float32
+	id      string
+	vec     []float32
+	hint    LexicalSeedHint
+	hasHint bool
 }
 
 type hnswBuildStats struct {
@@ -528,6 +530,9 @@ func buildHNSWCPU(ctx context.Context, dimensions int, config HNSWConfig, lookup
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if p.hasHint {
+				built.setBuildLexicalHint(p.hint)
+			}
 			if err := built.Add(p.id, p.vec); err != nil {
 				return fmt.Errorf("failed to add vector to HNSW: %w", err)
 			}
@@ -642,6 +647,9 @@ func buildHNSWAccelerated(ctx context.Context, dimensions int, config HNSWConfig
 		for i, p := range batch {
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			if p.hasHint {
+				built.setBuildLexicalHint(p.hint)
 			}
 			var candidates []uint32
 			if i < len(candidateInternalIDs) {

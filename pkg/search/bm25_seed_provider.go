@@ -2,6 +2,85 @@ package search
 
 import "github.com/orneryd/nornicdb/pkg/envutil"
 
+// LexicalSeedHint is compact build metadata derived directly from the BM25
+// inverted index. Rank preserves high-IDF selection order, while Signature is
+// a weighted SimHash used only to break equal vector-distance choices.
+type LexicalSeedHint struct {
+	ID        string
+	Rank      uint32
+	Signature uint64
+}
+
+type lexicalSeedTerm struct {
+	term string
+	idf  float64
+	docs []lexicalSeedDocument
+}
+
+type lexicalSeedDocument struct {
+	id string
+	tf uint32
+}
+
+type lexicalSeedAccumulator struct {
+	hint LexicalSeedHint
+	bits [64]int64
+}
+
+func lexicalSeedHints(terms []lexicalSeedTerm) []LexicalSeedHint {
+	if len(terms) == 0 {
+		return nil
+	}
+	byID := make(map[string]*lexicalSeedAccumulator)
+	ordered := make([]*lexicalSeedAccumulator, 0)
+	for _, term := range terms {
+		hash := stableLexicalHash(term.term)
+		weight := int64(term.idf*1024) + 1
+		for _, doc := range term.docs {
+			acc := byID[doc.id]
+			if acc == nil {
+				acc = &lexicalSeedAccumulator{hint: LexicalSeedHint{ID: doc.id, Rank: uint32(len(ordered))}}
+				byID[doc.id] = acc
+				ordered = append(ordered, acc)
+			}
+			docWeight := weight * int64(max(uint32(1), doc.tf))
+			for bit := uint(0); bit < 64; bit++ {
+				if hash&(uint64(1)<<bit) != 0 {
+					acc.bits[bit] += docWeight
+				} else {
+					acc.bits[bit] -= docWeight
+				}
+			}
+		}
+	}
+	out := make([]LexicalSeedHint, len(ordered))
+	for i, acc := range ordered {
+		for bit, weight := range acc.bits {
+			if weight >= 0 {
+				acc.hint.Signature |= uint64(1) << uint(bit)
+			}
+		}
+		if acc.hint.Signature == 0 {
+			acc.hint.Signature = 1
+		}
+		out[i] = acc.hint
+	}
+	return out
+}
+
+func stableLexicalHash(value string) uint64 {
+	const (
+		offset = uint64(14695981039346656037)
+		prime  = uint64(1099511628211)
+	)
+	hash := offset
+	for i := 0; i < len(value); i++ {
+		hash ^= uint64(value[i])
+		hash *= prime
+	}
+	return hash
+}
+
 type lexicalSeedProvider interface {
 	LexicalSeedDocIDs(maxTerms, perTerm int) []string
 }

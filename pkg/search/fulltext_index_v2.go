@@ -398,6 +398,20 @@ func (f *FulltextIndexV2) PhraseSearch(phrase string, limit int) []indexResult {
 }
 
 func (f *FulltextIndexV2) LexicalSeedDocIDs(maxTerms, docsPerTerm int) []string {
+	hints := f.LexicalSeedHints(maxTerms, docsPerTerm)
+	if len(hints) == 0 {
+		return nil
+	}
+	out := make([]string, len(hints))
+	for i := range hints {
+		out[i] = hints[i].ID
+	}
+	return out
+}
+
+// LexicalSeedHints returns ranked compact lexical metadata directly from the
+// inverted index, without executing a BM25 search for each document.
+func (f *FulltextIndexV2) LexicalSeedHints(maxTerms, docsPerTerm int) []LexicalSeedHint {
 	if maxTerms <= 0 || docsPerTerm <= 0 {
 		return nil
 	}
@@ -433,8 +447,7 @@ func (f *FulltextIndexV2) LexicalSeedDocIDs(maxTerms, docsPerTerm int) []string 
 		terms = terms[:maxTerms]
 	}
 
-	seen := make(map[string]struct{}, maxTerms*docsPerTerm)
-	out := make([]string, 0, maxTerms*docsPerTerm)
+	selectedTerms := make([]lexicalSeedTerm, 0, len(terms))
 	for _, t := range terms {
 		st := f.termIndex[t.term]
 		if st == nil {
@@ -462,16 +475,13 @@ func (f *FulltextIndexV2) LexicalSeedDocIDs(maxTerms, docsPerTerm int) []string 
 		if lim > len(docs) {
 			lim = len(docs)
 		}
+		selected := lexicalSeedTerm{term: t.term, idf: t.idf, docs: make([]lexicalSeedDocument, lim)}
 		for i := 0; i < lim; i++ {
-			id := docs[i].id
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			out = append(out, id)
+			selected.docs[i] = lexicalSeedDocument{id: docs[i].id, tf: uint32(docs[i].tf)}
 		}
+		selectedTerms = append(selectedTerms, selected)
 	}
-	return out
+	return lexicalSeedHints(selectedTerms)
 }
 
 func (f *FulltextIndexV2) updateAvgDocLengthLocked() {

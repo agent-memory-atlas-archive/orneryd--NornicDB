@@ -20,13 +20,16 @@
 package search
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -38,6 +41,8 @@ import (
 )
 
 var errHNSWIndexFull = errors.New("hnsw index full")
+
+const hnswLevelSeed int64 = 1
 
 func validHNSWIndex(index uint32, length int) bool {
 	return uint64(index) < uint64(length)
@@ -97,7 +102,8 @@ type HNSWIndex struct {
 
 	// Neighbor links stored in one arena to keep iteration cache-friendly.
 	// For node i:
-	//   - neighborsOff[i] points to (level+1)*M slots in neighborsArena
+	//   - neighborsOff[i] points to 2*M base-layer slots followed by M slots
+	//     for every upper layer
 	//   - neighborCountsOff[i] points to (level+1) counts in neighborCountsArena
 	neighborsArena      []uint32
 	neighborsOff        []int32
@@ -117,6 +123,7 @@ type HNSWIndex struct {
 	entryPoint    uint32
 	hasEntryPoint bool
 	maxLevel      int
+	levelRNG      *rand.Rand
 
 	queryBufPool sync.Pool
 	visitedPool  sync.Pool
@@ -128,9 +135,11 @@ type HNSWIndex struct {
 	// so reusing these buffers avoids sync.Pool boxing and per-neighbor pruning
 	// allocations on the write path.
 	selectDistScratch []hnswDistNode
+	selectVecScratch  [][]float32
 	addBestScratch    []uint32
 	insertAllScratch  []uint32
 	insertBestScratch []uint32
+	buildLexicalHints map[string]LexicalSeedHint
 }
 
 type visitedGenState struct {
@@ -141,6 +150,7 @@ type visitedGenState struct {
 type hnswDistNode struct {
 	id   uint32
 	dist float32
+	vec  []float32
 }
 
 // NewHNSWIndex creates a new HNSW index with the given dimensions and config.
@@ -153,7 +163,7 @@ func NewHNSWIndex(dimensions int, config HNSWConfig) *HNSWIndex {
 		dimensions:          dimensions,
 		nodeLevel:           make([]uint16, 0, 1024),
 		vecOff:              make([]int32, 0, 1024),
-		neighborsArena:      make([]uint32, 0, util.SafePreallocProduct(1024, config.M)),
+		neighborsArena:      make([]uint32, 0, util.SafePreallocProduct(2048, config.M)),
 		neighborsOff:        make([]int32, 0, 1024),
 		neighborCountsArena: make([]uint16, 0, 1024),
 		neighborCountsOff:   make([]int32, 0, 1024),
@@ -163,6 +173,7 @@ func NewHNSWIndex(dimensions int, config HNSWConfig) *HNSWIndex {
 		liveCount:           0,
 		vectors:             make([]float32, 0, util.SafePreallocProduct(1024, dimensions)),
 		maxLevel:            0,
+		levelRNG:            rand.New(rand.NewSource(hnswLevelSeed)),
 	}
 	h.queryBufPool.New = func() any {
 		return make([]float32, dimensions)
@@ -180,9 +191,10 @@ func NewHNSWIndex(dimensions int, config HNSWConfig) *HNSWIndex {
 		return make([]hnswDistItem, 0, util.SafePreallocProduct(config.EfSearch, 2))
 	}
 	h.selectDistScratch = make([]hnswDistNode, 0, util.SafePreallocProduct(config.M, 2))
+	h.selectVecScratch = make([][]float32, 0, util.SafePreallocProduct(config.M, 2))
 	h.addBestScratch = make([]uint32, 0, config.M)
-	h.insertAllScratch = make([]uint32, 0, config.M+1)
-	h.insertBestScratch = make([]uint32, 0, config.M)
+	h.insertAllScratch = make([]uint32, 0, util.SafePreallocSum(util.SafePreallocProduct(config.M, 2), 1))
+	h.insertBestScratch = make([]uint32, 0, util.SafePreallocProduct(config.M, 2))
 	return h
 }
 
@@ -193,6 +205,37 @@ func (h *HNSWIndex) SetVectorLookup(lookup VectorLookup) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.vectorLookup = lookup
+}
+
+// SetBuildLexicalHints installs compact lexical metadata used to make
+// deterministic diversity choices between vector-distance ties. The hints do
+// not affect distance ordering. They remain compact enough to guide later live
+// insertions and maintenance rebuilds without retaining BM25 postings here.
+func (h *HNSWIndex) SetBuildLexicalHints(hints []LexicalSeedHint) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(hints) == 0 {
+		h.buildLexicalHints = nil
+		return
+	}
+	h.buildLexicalHints = make(map[string]LexicalSeedHint, len(hints))
+	for _, hint := range hints {
+		if hint.ID != "" {
+			h.buildLexicalHints[hint.ID] = hint
+		}
+	}
+}
+
+func (h *HNSWIndex) setBuildLexicalHint(hint LexicalSeedHint) {
+	if hint.ID == "" {
+		return
+	}
+	h.mu.Lock()
+	if h.buildLexicalHints == nil {
+		h.buildLexicalHints = make(map[string]LexicalSeedHint)
+	}
+	h.buildLexicalHints[hint.ID] = hint
+	h.mu.Unlock()
 }
 
 // Config returns a copy of the index configuration.
@@ -288,7 +331,11 @@ func (h *HNSWIndex) Add(id string, vec []float32) error {
 	h.nodeLevel = append(h.nodeLevel, level16)
 
 	neighborsOff := len(h.neighborsArena)
-	h.neighborsArena = append(h.neighborsArena, make([]uint32, (level+1)*m)...)
+	neighborSlots, ok := h.neighborSlotsForNode(level)
+	if !ok {
+		return errHNSWIndexFull
+	}
+	h.neighborsArena = append(h.neighborsArena, make([]uint32, neighborSlots)...)
 	neighborsOff32, ok := util.SafeIntToInt32(neighborsOff)
 	if !ok {
 		return errHNSWIndexFull
@@ -409,7 +456,11 @@ func (h *HNSWIndex) addWithLevel0Candidates(id string, vec []float32, level0Cand
 	}
 	h.nodeLevel = append(h.nodeLevel, level16)
 	neighborsOff := len(h.neighborsArena)
-	h.neighborsArena = append(h.neighborsArena, make([]uint32, (level+1)*m)...)
+	neighborSlots, ok := h.neighborSlotsForNode(level)
+	if !ok {
+		return errHNSWIndexFull
+	}
+	h.neighborsArena = append(h.neighborsArena, make([]uint32, neighborSlots)...)
 	neighborsOff32, ok := util.SafeIntToInt32(neighborsOff)
 	if !ok {
 		return errHNSWIndexFull
@@ -530,7 +581,7 @@ func (h *HNSWIndex) Clear() {
 	// Reset all internal state
 	h.nodeLevel = make([]uint16, 0, 1024)
 	h.vecOff = make([]int32, 0, 1024)
-	h.neighborsArena = make([]uint32, 0, util.SafePreallocProduct(1024, h.config.M))
+	h.neighborsArena = make([]uint32, 0, util.SafePreallocProduct(2048, h.config.M))
 	h.neighborsOff = make([]int32, 0, 1024)
 	h.neighborCountsArena = make([]uint16, 0, 1024)
 	h.neighborCountsOff = make([]int32, 0, 1024)
@@ -542,6 +593,7 @@ func (h *HNSWIndex) Clear() {
 	h.entryPoint = 0
 	h.hasEntryPoint = false
 	h.maxLevel = 0
+	h.levelRNG = rand.New(rand.NewSource(hnswLevelSeed))
 }
 
 // Search finds the k nearest neighbors to the query vector.
@@ -561,12 +613,29 @@ func (h *HNSWIndex) SearchWithEf(ctx context.Context, query []float32, k int, mi
 	return h.searchWithEf(ctx, query, k, minSimilarity, ef)
 }
 
+// SearchWithEfFromEntries searches with the normal hierarchical entry point
+// plus known relevant vector IDs as additional layer-zero entry points. Missing
+// and duplicate IDs are ignored. Hybrid retrieval uses this to enter semantic
+// regions already identified by its lexical ranking without changing cosine
+// scoring or final result ordering.
+func (h *HNSWIndex) SearchWithEfFromEntries(ctx context.Context, query []float32, k int, minSimilarity float64, ef int, entryIDs []string) ([]ANNResult, error) {
+	if ef <= 0 {
+		ef = h.config.EfSearch
+	}
+	results, _, err := h.searchWithEfExhaustionFromEntries(ctx, query, k, minSimilarity, ef, entryIDs)
+	return results, err
+}
+
 func (h *HNSWIndex) searchWithEf(ctx context.Context, query []float32, k int, minSimilarity float64, ef int) ([]ANNResult, error) {
 	results, _, err := h.searchWithEfExhaustion(ctx, query, k, minSimilarity, ef)
 	return results, err
 }
 
 func (h *HNSWIndex) searchWithEfExhaustion(ctx context.Context, query []float32, k int, minSimilarity float64, ef int) ([]ANNResult, bool, error) {
+	return h.searchWithEfExhaustionFromEntries(ctx, query, k, minSimilarity, ef, nil)
+}
+
+func (h *HNSWIndex) searchWithEfExhaustionFromEntries(ctx context.Context, query []float32, k int, minSimilarity float64, ef int, entryIDs []string) ([]ANNResult, bool, error) {
 	if len(query) != h.dimensions {
 		return nil, false, ErrDimensionMismatch
 	}
@@ -620,7 +689,18 @@ func (h *HNSWIndex) searchWithEfExhaustion(ctx context.Context, query []float32,
 		}
 	}
 
-	candidates, err := h.searchLayerHeapPooledWithContext(ctx, normalized, ep, ef, 0)
+	entryBufAny := h.idsPool.Get()
+	entries := entryBufAny.([]uint32)[:0]
+	defer h.idsPool.Put(entries[:0])
+	entries = append(entries, ep)
+	for _, id := range entryIDs {
+		internalID, ok := h.idToInternal[id]
+		if !ok || !validHNSWIndex(internalID, len(h.deleted)) || h.deleted[internalID] {
+			continue
+		}
+		entries = append(entries, internalID)
+	}
+	candidates, err := h.searchLayerHeapPooledFromEntriesWithContext(ctx, normalized, entries, ef, 0)
 	if err != nil {
 		return nil, false, err
 	}
@@ -708,12 +788,11 @@ func (h *HNSWIndex) ShouldRebuild() bool {
 }
 
 const (
-	hnswIndexFormatVersion          = "1.0.0" // full snapshot (vectors included), legacy
-	hnswIndexFormatVersionGraphOnly = "1.1.0" // graph + IDs only; vectors come from vector index on load
+	hnswIndexFormatVersionGraphOnly = "1.2.0" // diverse graph, 2*M base layer, vectors resolved by ID
 )
 
 // hnswIndexSnapshot is the serializable form of the HNSW index for persistence.
-// For format 1.1.0 we save with Vectors and VecOff nil (graph-only); they are reconstructed on load from the vector index.
+// Vectors and VecOff are omitted; they are reconstructed on load from the vector index.
 type hnswIndexSnapshot struct {
 	Version           string
 	Config            HNSWConfig
@@ -811,10 +890,11 @@ func (h *HNSWIndex) Save(path string) error {
 type VectorLookup func(id string) ([]float32, bool)
 
 // LoadHNSWIndex loads an HNSW index from path (msgpack format) and returns it.
-// For graph-only format (1.1.0), vectorLookup must be non-nil and vectors are
+// For the graph-only format, vectorLookup must be non-nil and vectors are
 // resolved by ID at search time (no in-memory vector copy in HNSW).
-// For legacy full format (1.0.0), vectorLookup is ignored. If the file does not exist or decode fails,
-// returns (nil, nil) so the caller can rebuild. Returns an error only for unexpected I/O (e.g. permission denied).
+// Older graph topologies are rejected so callers rebuild them. If the file
+// does not exist or decode fails, returns (nil, nil) so the caller can rebuild.
+// Returns an error only for unexpected I/O (e.g. permission denied).
 func LoadHNSWIndex(path string, vectorLookup VectorLookup) (*HNSWIndex, error) {
 	file, err := security.OpenRootedFile(path, os.O_RDONLY, 0)
 	if err != nil {
@@ -832,8 +912,7 @@ func LoadHNSWIndex(path string, vectorLookup VectorLookup) (*HNSWIndex, error) {
 	if snap.Dimensions <= 0 || snap.InternalToID == nil {
 		return nil, nil
 	}
-	// Accept only 1.0.0 (full, legacy) and 1.1.0 (graph-only).
-	if snap.Version != hnswIndexFormatVersion && snap.Version != hnswIndexFormatVersionGraphOnly {
+	if snap.Version != hnswIndexFormatVersionGraphOnly {
 		return nil, nil
 	}
 
@@ -859,23 +938,17 @@ func LoadHNSWIndex(path string, vectorLookup VectorLookup) (*HNSWIndex, error) {
 		h.idToInternal = make(map[string]uint32)
 	}
 
-	if snap.Version == hnswIndexFormatVersionGraphOnly {
-		// Keep graph-only in lookup mode to avoid duplicating vector storage in RAM.
-		if vectorLookup == nil {
-			h.mu.Unlock()
-			return nil, nil
-		}
-		vecOff := make([]int32, len(snap.InternalToID))
-		for i := range vecOff {
-			vecOff[i] = -1
-		}
-		h.vectorLookup = vectorLookup
-		h.vecOff = vecOff
-	} else {
-		// Legacy full snapshot.
-		h.vecOff = snap.VecOff
-		h.vectors = snap.Vectors
+	// Keep graph-only in lookup mode to avoid duplicating vector storage in RAM.
+	if vectorLookup == nil {
+		h.mu.Unlock()
+		return nil, nil
 	}
+	vecOff := make([]int32, len(snap.InternalToID))
+	for i := range vecOff {
+		vecOff[i] = -1
+	}
+	h.vectorLookup = vectorLookup
+	h.vecOff = vecOff
 	h.mu.Unlock()
 	return h, nil
 }
@@ -1264,6 +1337,10 @@ func (h *HNSWIndex) searchLayerHeapPooled(query []float32, entryID uint32, ef in
 }
 
 func (h *HNSWIndex) searchLayerHeapPooledWithContext(ctx context.Context, query []float32, entryID uint32, ef int, level int) ([]hnswDistItem, error) {
+	return h.searchLayerHeapPooledFromEntriesWithContext(ctx, query, []uint32{entryID}, ef, level)
+}
+
+func (h *HNSWIndex) searchLayerHeapPooledFromEntriesWithContext(ctx context.Context, query []float32, entryIDs []uint32, ef int, level int) ([]hnswDistItem, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1286,8 +1363,6 @@ func (h *HNSWIndex) searchLayerHeapPooledWithContext(ctx context.Context, query 
 		visited.cur = 1
 	}
 	curGen := visited.cur
-	visited.gen[entryID] = curGen
-
 	candidates := h.heapPool.Get().(*distHeap)
 	candidates.Reset(false, ef*2)
 	defer h.heapPool.Put(candidates)
@@ -1296,9 +1371,23 @@ func (h *HNSWIndex) searchLayerHeapPooledWithContext(ctx context.Context, query 
 	results.Reset(true, ef*2)
 	defer h.heapPool.Put(results)
 
-	entryDist := float32(1.0) - vector.DotProductSIMD(query, h.vectorAtLocked(entryID))
-	candidates.Push(hnswDistItem{id: entryID, dist: entryDist})
-	results.Push(hnswDistItem{id: entryID, dist: entryDist})
+	for _, entryID := range entryIDs {
+		if !validHNSWIndex(entryID, len(h.nodeLevel)) || h.deleted[entryID] || visited.gen[entryID] == curGen {
+			continue
+		}
+		entryVector := h.vectorAtLocked(entryID)
+		if len(entryVector) != h.dimensions {
+			continue
+		}
+		visited.gen[entryID] = curGen
+		entryDist := float32(1.0) - vector.DotProductSIMD(query, entryVector)
+		item := hnswDistItem{id: entryID, dist: entryDist}
+		candidates.Push(item)
+		results.Push(item)
+		if results.Len() > ef {
+			_ = results.Pop()
+		}
+	}
 
 	for candidates.Len() > 0 {
 		if err := ctx.Err(); err != nil {
@@ -1376,38 +1465,119 @@ func (h *HNSWIndex) selectNeighborsInto(query []float32, candidates []uint32, m 
 		if !validHNSWIndex(cid, len(h.nodeLevel)) || h.deleted[cid] {
 			continue
 		}
+		candidateVector := h.vectorAtLocked(cid)
+		if len(candidateVector) != h.dimensions {
+			continue
+		}
+		distance := float32(1.0) - vector.DotProductSIMD(query, candidateVector)
 		dists = append(dists, hnswDistNode{
 			id:   cid,
-			dist: float32(1.0) - vector.DotProductSIMD(query, h.vectorAtLocked(cid)),
+			dist: distance,
+			vec:  candidateVector,
 		})
 	}
-
-	if len(dists) <= m {
-		out = out[:0]
-		for i := range dists {
-			out = append(out, dists[i].id)
+	slices.SortFunc(dists, func(left, right hnswDistNode) int {
+		if order := cmp.Compare(left.dist, right.dist); order != 0 {
+			return order
 		}
-		h.selectDistScratch = dists[:0]
-		return out
-	}
-
-	sort.Slice(dists, func(i, j int) bool {
-		if dists[i].dist == dists[j].dist {
-			return dists[i].id < dists[j].id
+		leftHint, leftOK := h.buildLexicalHintLocked(left.id)
+		rightHint, rightOK := h.buildLexicalHintLocked(right.id)
+		if leftOK != rightOK {
+			if leftOK {
+				return -1
+			}
+			return 1
 		}
-		return dists[i].dist < dists[j].dist
+		if leftOK {
+			if order := cmp.Compare(leftHint.Rank, rightHint.Rank); order != 0 {
+				return order
+			}
+		}
+		return cmp.Compare(left.id, right.id)
 	})
 
 	out = out[:0]
-	for i := 0; i < m; i++ {
-		out = append(out, dists[i].id)
+	selectedVectors := h.selectVecScratch[:0]
+	for i := range dists {
+		if len(out) >= m {
+			break
+		}
+		h.preferLexicallyDiverseTieLocked(dists, i, out)
+		candidate := &dists[i]
+		diverse := true
+		for _, selectedVector := range selectedVectors {
+			interNeighborDistance := float32(1.0) - vector.DotProductSIMD(candidate.vec, selectedVector)
+			if interNeighborDistance < candidate.dist {
+				diverse = false
+				break
+			}
+		}
+		if diverse {
+			out = append(out, candidate.id)
+			selectedVectors = append(selectedVectors, candidate.vec)
+		}
 	}
+	clear(dists)
 	h.selectDistScratch = dists[:0]
+	clear(selectedVectors)
+	h.selectVecScratch = selectedVectors[:0]
 	return out
 }
 
+func (h *HNSWIndex) buildLexicalHintLocked(internalID uint32) (LexicalSeedHint, bool) {
+	if len(h.buildLexicalHints) == 0 || !validHNSWIndex(internalID, len(h.internalToID)) {
+		return LexicalSeedHint{}, false
+	}
+	id := normalizeVectorResultIDToNodeID(h.internalToID[internalID])
+	hint, ok := h.buildLexicalHints[id]
+	return hint, ok
+}
+
+func (h *HNSWIndex) preferLexicallyDiverseTieLocked(candidates []hnswDistNode, start int, selected []uint32) {
+	if len(h.buildLexicalHints) == 0 || len(selected) == 0 || start >= len(candidates) {
+		return
+	}
+	end := start + 1
+	for end < len(candidates) && candidates[end].dist == candidates[start].dist {
+		end++
+	}
+	if end-start < 2 {
+		return
+	}
+	best := start
+	bestDiversity := -1
+	bestRank := ^uint32(0)
+	for i := start; i < end; i++ {
+		hint, ok := h.buildLexicalHintLocked(candidates[i].id)
+		if !ok {
+			continue
+		}
+		minDiversity := 64
+		compared := false
+		for _, selectedID := range selected {
+			selectedHint, selectedOK := h.buildLexicalHintLocked(selectedID)
+			if !selectedOK {
+				continue
+			}
+			compared = true
+			minDiversity = min(minDiversity, bits.OnesCount64(hint.Signature^selectedHint.Signature))
+		}
+		if !compared {
+			continue
+		}
+		if minDiversity > bestDiversity || (minDiversity == bestDiversity && hint.Rank < bestRank) {
+			best = i
+			bestDiversity = minDiversity
+			bestRank = hint.Rank
+		}
+	}
+	if best != start {
+		candidates[start], candidates[best] = candidates[best], candidates[start]
+	}
+}
+
 func (h *HNSWIndex) randomLevel() int {
-	r := rand.Float64()
+	r := h.levelRNG.Float64()
 	return int(-math.Log(r) * h.config.LevelMultiplier)
 }
 
@@ -1429,6 +1599,28 @@ func (h *HNSWIndex) vectorAtLocked(internalID uint32) []float32 {
 	return h.vectors[off : off+h.dimensions]
 }
 
+func (h *HNSWIndex) neighborCapacity(level int) int {
+	if level == 0 {
+		capacity, ok := util.SafeIntProduct(h.config.M, 2)
+		if !ok {
+			return 0
+		}
+		return capacity
+	}
+	return h.config.M
+}
+
+func (h *HNSWIndex) neighborLevelOffset(level int) (int, bool) {
+	if level == 0 {
+		return 0, true
+	}
+	return util.SafeIntProduct(level+1, h.config.M)
+}
+
+func (h *HNSWIndex) neighborSlotsForNode(maxLevel int) (int, bool) {
+	return util.SafeIntProduct(maxLevel+2, h.config.M)
+}
+
 func (h *HNSWIndex) neighborsAtLevelLocked(nodeID uint32, level int) ([]uint32, bool) {
 	if !validHNSWIndex(nodeID, len(h.neighborsOff)) || !validHNSWIndex(nodeID, len(h.neighborCountsOff)) {
 		return nil, false
@@ -1436,8 +1628,8 @@ func (h *HNSWIndex) neighborsAtLevelLocked(nodeID uint32, level int) ([]uint32, 
 	if level < 0 || level > int(h.nodeLevel[nodeID]) {
 		return nil, false
 	}
-	m := h.config.M
-	if m <= 0 {
+	capacity := h.neighborCapacity(level)
+	if capacity <= 0 {
 		return nil, false
 	}
 
@@ -1445,7 +1637,11 @@ func (h *HNSWIndex) neighborsAtLevelLocked(nodeID uint32, level int) ([]uint32, 
 	if !ok {
 		return nil, false
 	}
-	neighborsBase += level * m
+	levelOffset, ok := h.neighborLevelOffset(level)
+	if !ok {
+		return nil, false
+	}
+	neighborsBase += levelOffset
 	countsBase, ok := util.SafeInt32ToInt(h.neighborCountsOff[nodeID])
 	if !ok {
 		return nil, false
@@ -1473,25 +1669,29 @@ func (h *HNSWIndex) setNeighborsAtLevelLocked(nodeID uint32, level int, neighbor
 		return
 	}
 
-	m := h.config.M
-	if m <= 0 {
+	capacity := h.neighborCapacity(level)
+	if capacity <= 0 {
 		return
 	}
-	if len(neighbors) > m {
-		neighbors = neighbors[:m]
+	if len(neighbors) > capacity {
+		neighbors = neighbors[:capacity]
 	}
 
 	neighborsBase, ok := util.SafeInt32ToInt(h.neighborsOff[nodeID])
 	if !ok {
 		return
 	}
-	neighborsBase += level * m
+	levelOffset, ok := h.neighborLevelOffset(level)
+	if !ok {
+		return
+	}
+	neighborsBase += levelOffset
 	countsBase, ok := util.SafeInt32ToInt(h.neighborCountsOff[nodeID])
 	if !ok {
 		return
 	}
 	countsBase += level
-	if neighborsBase < 0 || neighborsBase+m > len(h.neighborsArena) {
+	if neighborsBase < 0 || neighborsBase+capacity > len(h.neighborsArena) {
 		return
 	}
 	if countsBase < 0 || countsBase >= len(h.neighborCountsArena) {
@@ -1512,8 +1712,8 @@ func (h *HNSWIndex) insertNeighborAtLevelLocked(neighborID uint32, level int, ne
 		return
 	}
 
-	m := h.config.M
-	if m <= 0 {
+	capacity := h.neighborCapacity(level)
+	if capacity <= 0 {
 		return
 	}
 
@@ -1521,13 +1721,17 @@ func (h *HNSWIndex) insertNeighborAtLevelLocked(neighborID uint32, level int, ne
 	if !ok {
 		return
 	}
-	neighborsBase += level * m
+	levelOffset, ok := h.neighborLevelOffset(level)
+	if !ok {
+		return
+	}
+	neighborsBase += levelOffset
 	countsBase, ok := util.SafeInt32ToInt(h.neighborCountsOff[neighborID])
 	if !ok {
 		return
 	}
 	countsBase += level
-	if neighborsBase < 0 || neighborsBase+m > len(h.neighborsArena) {
+	if neighborsBase < 0 || neighborsBase+capacity > len(h.neighborsArena) {
 		return
 	}
 	if countsBase < 0 || countsBase >= len(h.neighborCountsArena) {
@@ -1535,7 +1739,7 @@ func (h *HNSWIndex) insertNeighborAtLevelLocked(neighborID uint32, level int, ne
 	}
 
 	cnt := int(h.neighborCountsArena[countsBase])
-	if cnt < m {
+	if cnt < capacity {
 		h.neighborsArena[neighborsBase+cnt] = newNeighborID
 		if nextCount, ok := util.SafeIntToUint16(cnt + 1); ok {
 			h.neighborCountsArena[countsBase] = nextCount
@@ -1543,13 +1747,14 @@ func (h *HNSWIndex) insertNeighborAtLevelLocked(neighborID uint32, level int, ne
 		return
 	}
 
-	// Full: select best M among existing + new.
+	// Full: apply the same diversity heuristic used for the new node's links.
 	all := h.insertAllScratch[:0]
-	all = append(all, h.neighborsArena[neighborsBase:neighborsBase+m]...)
+	all = append(all, h.neighborsArena[neighborsBase:neighborsBase+capacity]...)
 	all = append(all, newNeighborID)
-	best := h.selectNeighborsInto(h.vectorAtLocked(neighborID), all, m, h.insertBestScratch[:0])
-	copy(h.neighborsArena[neighborsBase:neighborsBase+m], best)
-	if bestCount, ok := util.SafeIntToUint16(min(len(best), m)); ok {
+	best := h.selectNeighborsInto(h.vectorAtLocked(neighborID), all, capacity, h.insertBestScratch[:0])
+	copy(h.neighborsArena[neighborsBase:neighborsBase+capacity], best)
+	clear(h.neighborsArena[neighborsBase+len(best) : neighborsBase+capacity])
+	if bestCount, ok := util.SafeIntToUint16(min(len(best), capacity)); ok {
 		h.neighborCountsArena[countsBase] = bestCount
 	}
 	h.insertAllScratch = all[:0]
