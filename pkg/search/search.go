@@ -702,9 +702,9 @@ type Service struct {
 	hnswMaintDone       chan struct{}
 	hnswRebuildInFlight atomic.Bool
 	hnswLastRebuildUnix atomic.Int64
-	// hnswDeferredMutations counts vector add/remove mutations that skipped live HNSW updates
-	// (to keep read latency low under heavy write/embed load). Maintenance rebuild consumes this.
-	hnswDeferredMutations atomic.Int64
+	// hnswRebuildOverlay records only mutations that race an active rebuild.
+	// Normal writes always update HNSW synchronously at every index size.
+	hnswRebuildOverlay *annMutationOverlay
 
 	// Optional GPU-accelerated brute-force embedding index.
 	// When enabled, this is used as an exact vector-search backend.
@@ -1049,6 +1049,7 @@ func NewServiceWithDimensionsAndBM25EngineAndOptions(engine storage.Engine, dime
 		edgePropVector:             make(map[string]map[string][]float32, 1024),
 		clusterLexicalProfiles:     make(map[int]map[string]float64),
 		ivfpqOverlay:               newANNMutationOverlay(),
+		hnswRebuildOverlay:         newANNMutationOverlay(),
 		resultCache:                resultCache,
 		cacheNamespace:             cacheNamespace,
 		lifecycleCtx:               lifecycleCtx,
@@ -1342,7 +1343,7 @@ func (s *Service) resetANNForBuild() {
 	// Drop the pointer without clearing the old graph; readers that already
 	// captured it can finish without contending with a reset we would discard.
 	s.hnswIndex = nil
-	s.hnswDeferredMutations.Store(0)
+	s.hnswRebuildOverlay.Reset()
 	s.hnswMu.Unlock()
 
 	s.clusterHNSWMu.Lock()
@@ -1975,14 +1976,14 @@ func (s *Service) schedulePersist() {
 // and IndexNode are not blocked while writing to disk.
 // persistBaseIndexes writes BM25 + vector store only (no HNSW/IVF-HNSW).
 // Used after BuildIndexes iteration to make base indexes durable before HNSW/k-means.
-func (s *Service) persistBaseIndexes() {
+func (s *Service) persistBaseIndexes() error {
 	if !s.persistEnabled.Load() {
-		return
+		return nil
 	}
 	s.persistRunMu.Lock()
 	defer s.persistRunMu.Unlock()
 	if !s.persistEnabled.Load() {
-		return
+		return nil
 	}
 	s.mu.RLock()
 	ftPath := s.fulltextIndexPath
@@ -1991,8 +1992,9 @@ func (s *Service) persistBaseIndexes() {
 	vfs := s.vectorFileStore
 	s.mu.RUnlock()
 	if ftPath == "" && vPath == "" && hnswPath == "" {
-		return
+		return nil
 	}
+	var persistErr error
 	if ftPath != "" {
 		if !s.fulltextIndex.IsDirty() {
 			s.logPrintf("📇 Persist: BM25 skip (unchanged)")
@@ -2000,6 +2002,7 @@ func (s *Service) persistBaseIndexes() {
 			s.logPrintf("📇 Persist: saving BM25 to %s...", ftPath)
 			if err := s.fulltextIndex.SaveNoCopy(ftPath); err != nil {
 				s.logPrintf("⚠️ Background persist: failed to save BM25 index to %s: %v", ftPath, err)
+				persistErr = errors.Join(persistErr, fmt.Errorf("save BM25 index: %w", err))
 			} else {
 				s.logPrintf("📇 Background persist: BM25 index saved to %s", ftPath)
 			}
@@ -2017,9 +2020,12 @@ func (s *Service) persistBaseIndexes() {
 				}
 			}
 			s.logPrintf("📇 Persist: syncing %s.vec and saving %s.meta...", vPath, vPath)
-			_ = vfs.Sync()
+			if err := vfs.Sync(); err != nil {
+				persistErr = errors.Join(persistErr, fmt.Errorf("sync vector file store: %w", err))
+			}
 			if err := vfs.Save(); err != nil {
 				s.logPrintf("⚠️ Background persist: failed to save vector file store to %s: %v", vPath, err)
+				persistErr = errors.Join(persistErr, fmt.Errorf("save vector file store: %w", err))
 			} else {
 				s.logPrintf("📇 Background persist: vector file store synced; meta saved to %s.meta", vPath)
 			}
@@ -2028,6 +2034,7 @@ func (s *Service) persistBaseIndexes() {
 		}
 	}
 	s.persistSearchBuildSettings(ftPath, vPath, hnswPath)
+	return persistErr
 }
 
 func (s *Service) runPersist() {
@@ -2175,6 +2182,18 @@ func (s *Service) persistHNSWBackground(hnswPath string) {
 		return
 	}
 	s.logPrintf("📇 Background persist: HNSW index saved to %s", hnswPath)
+}
+
+func applyHNSWMutationSnapshot(index *HNSWIndex, pending annMutationOverlaySnapshot) error {
+	for _, id := range pending.Tombstones {
+		index.Remove(id)
+	}
+	for id, value := range pending.Vectors {
+		if err := index.Update(id, value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) persistIVFHNSWBackground(ctx context.Context, hnswPath string) {
@@ -2559,34 +2578,15 @@ func (s *Service) addVectorLocked(id string, vec []float32) error {
 	return err
 }
 
-// allowLiveHNSWUpdatesLocked reports whether per-node live HNSW mutations should run.
-// Caller must hold s.indexMu.
-func (s *Service) allowLiveHNSWUpdatesLocked() bool {
-	s.hnswMu.RLock()
-	hasHNSW := s.hnswIndex != nil
-	s.hnswMu.RUnlock()
-	if !hasHNSW {
-		return false
-	}
-	// Keep search latency prioritized for large indexes by deferring live mutations.
-	// Set < 0 to force-enable live updates for all sizes.
-	maxN := envutil.GetInt("NORNICDB_HNSW_LIVE_UPDATE_MAX_N", 50000)
-	if maxN < 0 {
-		return true
-	}
-	return s.embeddingCountLocked() <= maxN
-}
-
 // hnswUpdateLive applies a best-effort live HNSW vector update.
-func (s *Service) hnswUpdateLive(id string, embedding []float32, allowLive bool) {
-	if !allowLive {
-		s.hnswMu.RLock()
-		hasHNSW := s.hnswIndex != nil
-		s.hnswMu.RUnlock()
-		if hasHNSW {
-			s.hnswDeferredMutations.Add(1)
+func (s *Service) hnswUpdateLive(id string, embedding []float32) {
+	if s.hnswRebuildInFlight.Load() {
+		canonical, ok := s.getVectorLookup()(id)
+		if ok {
+			s.hnswRebuildOverlay.addNormalized(id, canonical)
+		} else {
+			s.hnswRebuildOverlay.Add(id, embedding)
 		}
-		return
 	}
 	s.hnswMu.RLock()
 	idx := s.hnswIndex
@@ -2597,15 +2597,9 @@ func (s *Service) hnswUpdateLive(id string, embedding []float32, allowLive bool)
 }
 
 // hnswRemoveLive applies a best-effort live HNSW vector remove.
-func (s *Service) hnswRemoveLive(id string, allowLive bool) {
-	if !allowLive {
-		s.hnswMu.RLock()
-		hasHNSW := s.hnswIndex != nil
-		s.hnswMu.RUnlock()
-		if hasHNSW {
-			s.hnswDeferredMutations.Add(1)
-		}
-		return
+func (s *Service) hnswRemoveLive(id string) {
+	if s.hnswRebuildInFlight.Load() {
+		s.hnswRebuildOverlay.Remove(id)
 	}
 	s.hnswMu.RLock()
 	idx := s.hnswIndex
@@ -2720,7 +2714,6 @@ func (s *Service) shouldIndexNode(node *storage.Node) (bool, error) {
 // When skipFulltext is true, removeNodeLocked is also skipped so we don't remove the doc just added by IndexBatch.
 func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 	nodeIDStr := string(node.ID)
-	allowLiveHNSW := s.allowLiveHNSWUpdatesLocked()
 	shouldIndex, err := s.shouldIndexNode(node)
 	if err != nil {
 		return err
@@ -2806,8 +2799,8 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 				_ = s.gpuEmbeddingIndex.Add(namedID, embedding) // Best effort
 			}
 
-			// Keep search latency priority under heavy write/embed load.
-			s.hnswUpdateLive(namedID, embedding, allowLiveHNSW)
+			// Keep the active graph current with the canonical vector store.
+			s.hnswUpdateLive(namedID, embedding)
 
 			// Also add to cluster index if enabled
 			if s.clusterIndex != nil {
@@ -2844,9 +2837,9 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 				_ = s.gpuEmbeddingIndex.Add(string(node.ID), mainEmbedding) // Best effort
 			}
 
-			// Keep search latency priority under heavy write/embed load.
-			// Use Update() to handle both new and existing vectors correctly.
-			s.hnswUpdateLive(string(node.ID), mainEmbedding, allowLiveHNSW)
+			// Use Update() to keep the active graph current for both new and
+			// existing vectors.
+			s.hnswUpdateLive(string(node.ID), mainEmbedding)
 
 			// Also add to cluster index if enabled
 			if s.clusterIndex != nil {
@@ -2911,7 +2904,7 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 			if s.gpuEmbeddingIndex != nil {
 				_ = s.gpuEmbeddingIndex.Add(propID, vec) // Best effort
 			}
-			s.hnswUpdateLive(propID, vec, allowLiveHNSW)
+			s.hnswUpdateLive(propID, vec)
 			if s.clusterIndex != nil {
 				_ = s.clusterIndex.Add(propID, vec) // Best effort
 			}
@@ -3068,7 +3061,6 @@ func (s *Service) removeNodeLocked(nodeIDStr string) {
 		return
 	}
 	s.releaseNodeIndexCapacityLocked(nodeIDStr)
-	allowLiveHNSW := s.allowLiveHNSWUpdatesLocked()
 
 	// Remove main embedding
 	s.removeVectorLocked(nodeIDStr)
@@ -3079,8 +3071,8 @@ func (s *Service) removeNodeLocked(nodeIDStr string) {
 		s.fulltextIndex.Remove(nodeIDStr)
 	}
 
-	// Keep search latency priority under heavy write/embed load.
-	s.hnswRemoveLive(nodeIDStr, allowLiveHNSW)
+	// Keep the active graph current with the canonical vector store.
+	s.hnswRemoveLive(nodeIDStr)
 
 	// Also remove from cluster index if enabled
 	if s.clusterIndex != nil {
@@ -3096,7 +3088,7 @@ func (s *Service) removeNodeLocked(nodeIDStr string) {
 			if s.gpuEmbeddingIndex != nil {
 				_ = s.gpuEmbeddingIndex.Remove(propID)
 			}
-			s.hnswRemoveLive(propID, allowLiveHNSW)
+			s.hnswRemoveLive(propID)
 			if s.clusterIndex != nil {
 				s.clusterIndex.Remove(propID)
 			}
@@ -3112,7 +3104,7 @@ func (s *Service) removeNodeLocked(nodeIDStr string) {
 				_ = s.gpuEmbeddingIndex.Remove(namedID)
 			}
 
-			s.hnswRemoveLive(namedID, allowLiveHNSW)
+			s.hnswRemoveLive(namedID)
 
 			if s.clusterIndex != nil {
 				s.clusterIndex.Remove(namedID)
@@ -3129,8 +3121,8 @@ func (s *Service) removeNodeLocked(nodeIDStr string) {
 				_ = s.gpuEmbeddingIndex.Remove(chunkID)
 			}
 
-			// Keep search latency priority under heavy write/embed load.
-			s.hnswRemoveLive(chunkID, allowLiveHNSW)
+			// Keep the active graph current with the canonical vector store.
+			s.hnswRemoveLive(chunkID)
 
 			if s.clusterIndex != nil {
 				s.clusterIndex.Remove(chunkID)
@@ -3328,7 +3320,6 @@ func (s *Service) RemovePropertyVectorIndex(propertyKey string) {
 			s.resultCache.Invalidate()
 		}
 	}
-	allowLiveHNSW := s.allowLiveHNSWUpdatesLocked()
 	s.indexMu.Lock()
 	defer s.indexMu.Unlock()
 	for nodeID, props := range s.nodePropVector {
@@ -3340,7 +3331,7 @@ func (s *Service) RemovePropertyVectorIndex(propertyKey string) {
 		if s.gpuEmbeddingIndex != nil {
 			_ = s.gpuEmbeddingIndex.Remove(propID)
 		}
-		s.hnswRemoveLive(propID, allowLiveHNSW)
+		s.hnswRemoveLive(propID)
 		if s.clusterIndex != nil {
 			s.clusterIndex.Remove(propID)
 		}
@@ -3885,8 +3876,11 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 		}
 		// Persist BM25 + vector store before HNSW/k-means build so base indexes are durable.
 		s.setBuildPhase("persisting_base_indexes")
-		s.persistBaseIndexes()
+		if err := s.persistBaseIndexes(); err != nil {
+			return err
+		}
 		// Drop BM25 from RAM during HNSW/IVF build to keep memory bounded.
+		expectedFulltextCount := s.fulltextIndex.Count()
 		if fulltextPath != "" {
 			s.fulltextIndex.Clear()
 			s.logPrintf("📇 BuildIndexes: cleared BM25 in-memory state (will reload after warmup)")
@@ -3895,7 +3889,9 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 		s.setBuildPhase("warmup_hnsw_or_kmeans")
 		s.warmupVectorPipeline(ctx)
 		if fulltextPath != "" {
-			_ = s.fulltextIndex.Load(fulltextPath)
+			if err := s.reloadFulltextAfterWarmup(fulltextPath, expectedFulltextCount); err != nil {
+				return err
+			}
 			s.logPrintf("📇 BuildIndexes: reloaded BM25 from disk after warmup")
 		}
 		s.finishBuildWithFinalPersist(ctx)
@@ -3997,8 +3993,11 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 	}
 	// Persist BM25 + vector store before HNSW/k-means build so base indexes are durable.
 	s.setBuildPhase("persisting_base_indexes")
-	s.persistBaseIndexes()
+	if err := s.persistBaseIndexes(); err != nil {
+		return err
+	}
 	// Drop BM25 from RAM during HNSW/IVF build to keep memory bounded.
+	expectedFulltextCount := s.fulltextIndex.Count()
 	if fulltextPath != "" {
 		s.fulltextIndex.Clear()
 		s.logPrintf("📇 BuildIndexes: cleared BM25 in-memory state (will reload after warmup)")
@@ -4007,10 +4006,22 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 	s.setBuildPhase("warmup_hnsw_or_kmeans")
 	s.warmupVectorPipeline(ctx)
 	if fulltextPath != "" {
-		_ = s.fulltextIndex.Load(fulltextPath)
+		if err := s.reloadFulltextAfterWarmup(fulltextPath, expectedFulltextCount); err != nil {
+			return err
+		}
 		s.logPrintf("📇 BuildIndexes: reloaded BM25 from disk after warmup")
 	}
 	s.finishBuildWithFinalPersist(ctx)
+	return nil
+}
+
+func (s *Service) reloadFulltextAfterWarmup(path string, expectedCount int) error {
+	if err := s.fulltextIndex.Load(path); err != nil {
+		return fmt.Errorf("reload BM25 index after vector warmup: %w", err)
+	}
+	if actual := s.fulltextIndex.Count(); actual != expectedCount {
+		return fmt.Errorf("reload BM25 index after vector warmup: document count mismatch: got %d, want %d", actual, expectedCount)
+	}
 	return nil
 }
 
@@ -4998,6 +5009,7 @@ func (s *Service) applyTransitionSwapLocked(target strategyMode, targetHNSW *HNS
 			old.Clear()
 		}
 	}
+	s.hnswRebuildOverlay.Reset()
 	if target == strategyModeBruteGPU {
 		_ = s.ensureGPUIndexSynced(vi, vfs)
 	}
@@ -5706,10 +5718,6 @@ func (s *Service) maybeRebuildHNSW(ctx context.Context, tombstoneRatioThreshold,
 	if !last.IsZero() && time.Since(last) < minInterval {
 		return nil
 	}
-	deferredMutations := s.hnswDeferredMutations.Load()
-	deferredThreshold := int64(envutil.GetInt("NORNICDB_HNSW_DEFERRED_REBUILD_THRESHOLD", 10000))
-	rebuildForDeferred := deferredThreshold > 0 && deferredMutations >= deferredThreshold
-
 	s.hnswMu.RLock()
 	old := s.hnswIndex
 	s.hnswMu.RUnlock()
@@ -5729,14 +5737,22 @@ func (s *Service) maybeRebuildHNSW(ctx context.Context, tombstoneRatioThreshold,
 	deleted := total - live
 	ratio := float64(deleted) / float64(total)
 	overhead := float64(total) / float64(live)
-	if ratio <= tombstoneRatioThreshold && overhead <= maxOverheadFactor && !rebuildForDeferred {
+	if ratio <= tombstoneRatioThreshold && overhead <= maxOverheadFactor {
 		return nil
 	}
 
 	if !s.hnswRebuildInFlight.CompareAndSwap(false, true) {
 		return nil
 	}
-	defer s.hnswRebuildInFlight.Store(false)
+	s.indexMu.Lock()
+	s.hnswRebuildOverlay.Reset()
+	s.indexMu.Unlock()
+	defer func() {
+		s.indexMu.Lock()
+		s.hnswRebuildInFlight.Store(false)
+		s.hnswRebuildOverlay.Reset()
+		s.indexMu.Unlock()
+	}()
 
 	s.mu.RLock()
 	vfs := s.vectorFileStore
@@ -5748,8 +5764,8 @@ func (s *Service) maybeRebuildHNSW(ctx context.Context, tombstoneRatioThreshold,
 	const rebuildProgressInterval = 50000
 	if vfs != nil && vfs.Count() > 0 {
 		total := vfs.Count()
-		s.logPrintf("[HNSW] 🔄 Rebuilding: vectors=%d reason=tombstone_ratio=%.3f overhead=%.3f deferred=%d",
-			total, ratio, overhead, deferredMutations)
+		s.logPrintf("[HNSW] 🔄 Rebuilding: vectors=%d reason=tombstone_ratio=%.3f overhead=%.3f",
+			total, ratio, overhead)
 		var added int
 		if err := vfs.IterateChunked(10000, func(ids []string, vecs [][]float32) error {
 			for i := range ids {
@@ -5783,8 +5799,8 @@ func (s *Service) maybeRebuildHNSW(ctx context.Context, tombstoneRatioThreshold,
 		}
 		vi.mu.RUnlock()
 		total := len(pairs)
-		s.logPrintf("[HNSW] 🔄 Rebuilding: vectors=%d reason=tombstone_ratio=%.3f overhead=%.3f deferred=%d",
-			total, ratio, overhead, deferredMutations)
+		s.logPrintf("[HNSW] 🔄 Rebuilding: vectors=%d reason=tombstone_ratio=%.3f overhead=%.3f",
+			total, ratio, overhead)
 		for i, p := range pairs {
 			select {
 			case <-ctx.Done():
@@ -5801,7 +5817,25 @@ func (s *Service) maybeRebuildHNSW(ctx context.Context, tombstoneRatioThreshold,
 		return nil
 	}
 
-	// Swap only if the index hasn't changed.
+	// Close the rebuild race under the mutation lock. Replaying the complete
+	// overlay is idempotent for vectors already observed by the store snapshot,
+	// and captures mutations that arrived while the graph was being rebuilt.
+	s.indexMu.Lock()
+	s.hnswMu.RLock()
+	currentIsOld := s.hnswIndex == old
+	s.hnswMu.RUnlock()
+	if !currentIsOld {
+		s.indexMu.Unlock()
+		return nil
+	}
+	if s.hnswRebuildOverlay != nil {
+		pending := s.hnswRebuildOverlay.snapshot()
+		if err := applyHNSWMutationSnapshot(rebuilt, pending); err != nil {
+			s.indexMu.Unlock()
+			return err
+		}
+	}
+
 	// IMPORTANT: do NOT take pipelineMu while holding hnswMu.
 	// Search pipeline creation uses lock order pipelineMu -> hnswMu, so taking
 	// hnswMu -> pipelineMu here can deadlock.
@@ -5813,13 +5847,13 @@ func (s *Service) maybeRebuildHNSW(ctx context.Context, tombstoneRatioThreshold,
 		swapped = true
 	}
 	s.hnswMu.Unlock()
+	s.indexMu.Unlock()
 
 	if swapped {
 		// Invalidate pipeline after releasing hnswMu so lock order remains consistent.
 		s.pipelineMu.Lock()
 		s.vectorPipeline = nil
 		s.pipelineMu.Unlock()
-		s.hnswDeferredMutations.Store(0)
 	}
 
 	return nil

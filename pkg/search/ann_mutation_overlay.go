@@ -35,8 +35,18 @@ func (o *annMutationOverlay) Add(id string, value []float32) {
 	if o == nil || id == "" || len(value) == 0 {
 		return
 	}
+	o.addNormalized(id, vector.Normalize(value))
+}
+
+// addNormalized stores an immutable normalized vector reference. The caller
+// owns the immutability contract; this avoids duplicating the canonical
+// in-memory vector for HNSW's short-lived rebuild delta log.
+func (o *annMutationOverlay) addNormalized(id string, value []float32) {
+	if o == nil || id == "" || len(value) == 0 {
+		return
+	}
 	o.mu.Lock()
-	o.vectors[id] = vector.Normalize(value)
+	o.vectors[id] = value
 	delete(o.tombstones, id)
 	o.mu.Unlock()
 }

@@ -1500,14 +1500,14 @@ func TestSearchService_PersistBaseIndexes_Branches(t *testing.T) {
 
 	// Persistence disabled: no files should be written.
 	svc.SetPersistenceEnabled(false)
-	svc.persistBaseIndexes()
+	require.NoError(t, svc.persistBaseIndexes())
 	_, err := os.Stat(bm25Path)
 	require.Error(t, err)
 	require.True(t, os.IsNotExist(err))
 
 	// Persistence enabled but no dirty BM25 / nil vector store.
 	svc.SetPersistenceEnabled(true)
-	svc.persistBaseIndexes()
+	require.NoError(t, svc.persistBaseIndexes())
 	_, err = os.Stat(vectorPath + ".meta")
 	require.Error(t, err)
 	require.True(t, os.IsNotExist(err))
@@ -1528,7 +1528,7 @@ func TestSearchService_PersistBaseIndexes_Branches(t *testing.T) {
 	t.Setenv("NORNICDB_VECTOR_VFS_COMPACT_MIN_SIZE_MB", "0")
 	t.Setenv("NORNICDB_VECTOR_VFS_COMPACT_DEAD_RATIO", "0")
 	svc.buildInProgress.Store(false) // compaction path enabled
-	svc.persistBaseIndexes()
+	require.NoError(t, svc.persistBaseIndexes())
 
 	_, err = os.Stat(bm25Path)
 	require.NoError(t, err)
@@ -1538,7 +1538,7 @@ func TestSearchService_PersistBaseIndexes_Branches(t *testing.T) {
 	// buildInProgress=true path: persist still succeeds while compaction is skipped.
 	svc.buildInProgress.Store(true)
 	require.NoError(t, vfs.Add("v-3", []float32{0, 1}))
-	svc.persistBaseIndexes()
+	require.NoError(t, svc.persistBaseIndexes())
 	_, err = os.Stat(vectorPath + ".meta")
 	require.NoError(t, err)
 	svc.buildInProgress.Store(false)
@@ -2907,13 +2907,11 @@ func TestSearchHelpers_MaybeRebuildHNSW_RebuildAndCancelBranches(t *testing.T) {
 	svc.hnswRebuildInFlight.Store(false)
 }
 
-func TestSearchHelpers_HNSWUpdateLive_Branches(t *testing.T) {
+func TestSearchHelpers_HNSWLiveUpdateAddsAndReplacesVectors(t *testing.T) {
 	svc := NewServiceWithDimensions(storage.NewMemoryEngine(), 2)
 
-	// No HNSW index: deferred counter should remain unchanged.
-	svc.hnswUpdateLive("missing", []float32{1, 0}, false)
-	require.Equal(t, int64(0), svc.hnswDeferredMutations.Load())
-	svc.hnswUpdateLive("missing", []float32{1, 0}, true) // no-op with nil index
+	// No HNSW index is a no-op.
+	svc.hnswUpdateLive("missing", []float32{1, 0})
 
 	idx := NewHNSWIndex(2, DefaultHNSWConfig())
 	require.NoError(t, idx.Add("doc-a", []float32{1, 0}))
@@ -2921,13 +2919,8 @@ func TestSearchHelpers_HNSWUpdateLive_Branches(t *testing.T) {
 	svc.hnswIndex = idx
 	svc.hnswMu.Unlock()
 
-	// allowLive=false increments deferred mutations when HNSW exists.
-	svc.hnswUpdateLive("doc-a", []float32{0.5, 0.5}, false)
-	require.Equal(t, int64(1), svc.hnswDeferredMutations.Load())
-
-	// allowLive=true updates existing vector and can add a new vector ID through Update().
-	svc.hnswUpdateLive("doc-a", []float32{0.5, 0.5}, true)
-	svc.hnswUpdateLive("doc-b", []float32{0, 1}, true)
+	svc.hnswUpdateLive("doc-a", []float32{0.5, 0.5})
+	svc.hnswUpdateLive("doc-b", []float32{0, 1})
 	svc.hnswMu.RLock()
 	size := svc.hnswIndex.Size()
 	svc.hnswMu.RUnlock()

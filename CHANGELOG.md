@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Apply HNSW additions, updates, and removals synchronously at every index size,
+  removing the arbitrary live-update cutoff and deferred-rebuild thresholds.
+  Mutations concurrent with a rebuild are replayed before its atomic swap so
+  the replacement graph cannot drop newly indexed vectors.
+- Remove the arbitrary global MessagePack decode ceiling from database-owned
+  storage and search snapshots. Validate BM25 reloads after memory-bounded
+  vector warmup so a failed load cannot be reported as success or overwrite a
+  valid large snapshot with an empty index.
 - Bind managed search continuation streams to their canonical database even
   when Bolt/Cypher omits `USE` and HTTP omits `database`, allowing signed qids
   to move between protocol adapters for the same authenticated or anonymous

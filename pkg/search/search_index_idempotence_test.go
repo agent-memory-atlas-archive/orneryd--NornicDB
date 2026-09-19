@@ -10,7 +10,6 @@ import (
 )
 
 func TestSearchService_IndexNodeSkipsUnchangedVectorReindex(t *testing.T) {
-	t.Setenv("NORNICDB_HNSW_LIVE_UPDATE_MAX_N", "0")
 	engine := storage.NewMemoryEngine()
 	svc := NewServiceWithDimensions(engine, 4)
 	svc.hnswMu.Lock()
@@ -28,7 +27,7 @@ func TestSearchService_IndexNodeSkipsUnchangedVectorReindex(t *testing.T) {
 	}
 	require.NoError(t, svc.IndexNode(node))
 	require.Equal(t, 1, svc.EmbeddingCount())
-	initialDeferred := svc.hnswDeferredMutations.Load()
+	initialHNSWSlots := hnswAllocatedSlots(svc.hnswIndex)
 
 	unchangedVector := &storage.Node{
 		ID:     "entity-1",
@@ -41,8 +40,8 @@ func TestSearchService_IndexNodeSkipsUnchangedVectorReindex(t *testing.T) {
 	}
 	require.NoError(t, svc.IndexNode(unchangedVector))
 	require.Equal(t, 1, svc.EmbeddingCount())
-	afterUnchangedDeferred := svc.hnswDeferredMutations.Load()
-	require.Equal(t, initialDeferred, afterUnchangedDeferred, "unchanged vector writes must not enqueue HNSW remove/add work")
+	afterUnchangedSlots := hnswAllocatedSlots(svc.hnswIndex)
+	require.Equal(t, initialHNSWSlots, afterUnchangedSlots, "unchanged vector writes must not mutate HNSW")
 
 	changedVector := &storage.Node{
 		ID:     "entity-1",
@@ -55,8 +54,14 @@ func TestSearchService_IndexNodeSkipsUnchangedVectorReindex(t *testing.T) {
 	}
 	require.NoError(t, svc.IndexNode(changedVector))
 	require.Equal(t, 1, svc.EmbeddingCount())
-	afterChangedDeferred := svc.hnswDeferredMutations.Load()
-	require.Greater(t, afterChangedDeferred, afterUnchangedDeferred, "changed vector writes must still update HNSW state")
+	afterChangedSlots := hnswAllocatedSlots(svc.hnswIndex)
+	require.Greater(t, afterChangedSlots, afterUnchangedSlots, "changed vector writes must still update HNSW state")
+}
+
+func hnswAllocatedSlots(index *HNSWIndex) int {
+	index.mu.RLock()
+	defer index.mu.RUnlock()
+	return len(index.nodeLevel)
 }
 
 func BenchmarkSearchServiceIndexNodeUnchangedVector_CopyScaleHNSW(b *testing.B) {

@@ -123,11 +123,24 @@ type HNSWIndex struct {
 	heapPool     sync.Pool
 	idsPool      sync.Pool
 	itemsPool    sync.Pool
+
+	// Construction scratch is protected by mu: HNSW mutations are serialized,
+	// so reusing these buffers avoids sync.Pool boxing and per-neighbor pruning
+	// allocations on the write path.
+	selectDistScratch []hnswDistNode
+	addBestScratch    []uint32
+	insertAllScratch  []uint32
+	insertBestScratch []uint32
 }
 
 type visitedGenState struct {
 	gen []uint16
 	cur uint16
+}
+
+type hnswDistNode struct {
+	id   uint32
+	dist float32
 }
 
 // NewHNSWIndex creates a new HNSW index with the given dimensions and config.
@@ -166,6 +179,10 @@ func NewHNSWIndex(dimensions int, config HNSWConfig) *HNSWIndex {
 	h.itemsPool.New = func() any {
 		return make([]hnswDistItem, 0, util.SafePreallocProduct(config.EfSearch, 2))
 	}
+	h.selectDistScratch = make([]hnswDistNode, 0, util.SafePreallocProduct(config.M, 2))
+	h.addBestScratch = make([]uint32, 0, config.M)
+	h.insertAllScratch = make([]uint32, 0, config.M+1)
+	h.insertBestScratch = make([]uint32, 0, config.M)
 	return h
 }
 
@@ -299,6 +316,7 @@ func (h *HNSWIndex) Add(id string, vec []float32) error {
 
 	ep := h.entryPoint
 	epLevel := int(h.nodeLevel[ep])
+	neighbors := h.addBestScratch[:0]
 
 	for l := epLevel; l > level; l-- {
 		ep = h.searchLayerSingle(normalized, ep, l)
@@ -306,7 +324,7 @@ func (h *HNSWIndex) Add(id string, vec []float32) error {
 
 	for l := min(level, epLevel); l >= 0; l-- {
 		candidates := h.searchLayer(normalized, ep, h.config.EfConstruction, l)
-		neighbors := h.selectNeighbors(normalized, candidates, h.config.M)
+		neighbors = h.selectNeighborsInto(normalized, candidates, h.config.M, neighbors[:0])
 		h.setNeighborsAtLevelLocked(internalID, l, neighbors)
 
 		for _, neighborID := range neighbors {
@@ -319,6 +337,7 @@ func (h *HNSWIndex) Add(id string, vec []float32) error {
 		if len(candidates) > 0 {
 			ep = candidates[0]
 		}
+		h.releaseCandidateIDs(candidates)
 	}
 
 	if level > h.maxLevel {
@@ -326,6 +345,7 @@ func (h *HNSWIndex) Add(id string, vec []float32) error {
 		h.hasEntryPoint = true
 		h.maxLevel = level
 	}
+	h.addBestScratch = neighbors[:0]
 
 	return nil
 }
@@ -416,12 +436,13 @@ func (h *HNSWIndex) addWithLevel0Candidates(id string, vec []float32, level0Cand
 
 	ep := h.entryPoint
 	epLevel := int(h.nodeLevel[ep])
+	neighbors := h.addBestScratch[:0]
 	for l := epLevel; l > level; l-- {
 		ep = h.searchLayerSingle(normalized, ep, l)
 	}
 	for l := min(level, epLevel); l > 0; l-- {
 		candidates := h.searchLayer(normalized, ep, h.config.EfConstruction, l)
-		neighbors := h.selectNeighbors(normalized, candidates, h.config.M)
+		neighbors = h.selectNeighborsInto(normalized, candidates, h.config.M, neighbors[:0])
 		h.setNeighborsAtLevelLocked(internalID, l, neighbors)
 		for _, neighborID := range neighbors {
 			if !validHNSWIndex(neighborID, len(h.nodeLevel)) || h.deleted[neighborID] {
@@ -432,9 +453,10 @@ func (h *HNSWIndex) addWithLevel0Candidates(id string, vec []float32, level0Cand
 		if len(candidates) > 0 {
 			ep = candidates[0]
 		}
+		h.releaseCandidateIDs(candidates)
 	}
 
-	neighbors := h.selectNeighbors(normalized, level0Candidates, h.config.M)
+	neighbors = h.selectNeighborsInto(normalized, level0Candidates, h.config.M, neighbors[:0])
 	h.setNeighborsAtLevelLocked(internalID, 0, neighbors)
 	for _, neighborID := range neighbors {
 		if !validHNSWIndex(neighborID, len(h.nodeLevel)) || h.deleted[neighborID] {
@@ -448,6 +470,7 @@ func (h *HNSWIndex) addWithLevel0Candidates(id string, vec []float32, level0Cand
 		h.hasEntryPoint = true
 		h.maxLevel = level
 	}
+	h.addBestScratch = neighbors[:0]
 
 	return nil
 }
@@ -471,6 +494,16 @@ func (h *HNSWIndex) internalID(id string) (uint32, bool) {
 // Performance: O(M * log(N)) where M is max connections, N is dataset size
 // For high-churn workloads, consider periodic rebuilds to restore graph quality.
 func (h *HNSWIndex) Update(id string, vec []float32) error {
+	// New vectors dominate managed-embedding ingestion. Avoid taking the
+	// exclusive removal lock when the ID is not present; Add performs the
+	// authoritative check again while holding its mutation lock.
+	h.mu.RLock()
+	internalID, exists := h.idToInternal[id]
+	exists = exists && validHNSWIndex(internalID, len(h.deleted)) && !h.deleted[internalID]
+	h.mu.RUnlock()
+	if !exists {
+		return h.Add(id, vec)
+	}
 	h.Remove(id)
 	return h.Add(id, vec)
 }
@@ -1205,13 +1238,24 @@ func (h *HNSWIndex) searchLayerHeap(query []float32, entryID uint32, ef int, lev
 		}
 	}
 
-	resultList := make([]uint32, results.Len())
+	resultList := h.idsPool.Get().([]uint32)
+	if cap(resultList) < results.Len() {
+		resultList = make([]uint32, results.Len())
+	} else {
+		resultList = resultList[:results.Len()]
+	}
 	for i := results.Len() - 1; i >= 0; i-- {
 		item := results.Pop()
 		resultList[i] = item.id
 	}
 
 	return resultList
+}
+
+func (h *HNSWIndex) releaseCandidateIDs(ids []uint32) {
+	if ids != nil {
+		h.idsPool.Put(ids[:0])
+	}
 }
 
 func (h *HNSWIndex) searchLayerHeapPooled(query []float32, entryID uint32, ef int, level int) []hnswDistItem {
@@ -1322,31 +1366,28 @@ func (h *HNSWIndex) searchLayerHeapPooledWithContext(ctx context.Context, query 
 	return buf, nil
 }
 
-func (h *HNSWIndex) selectNeighbors(query []float32, candidates []uint32, m int) []uint32 {
+func (h *HNSWIndex) selectNeighborsInto(query []float32, candidates []uint32, m int, out []uint32) []uint32 {
 	if m <= 0 || len(candidates) == 0 {
-		return nil
+		return out[:0]
 	}
 
-	type distNode struct {
-		id   uint32
-		dist float32
-	}
-	dists := make([]distNode, 0, min(len(candidates), m*2))
+	dists := h.selectDistScratch[:0]
 	for _, cid := range candidates {
 		if !validHNSWIndex(cid, len(h.nodeLevel)) || h.deleted[cid] {
 			continue
 		}
-		dists = append(dists, distNode{
+		dists = append(dists, hnswDistNode{
 			id:   cid,
 			dist: float32(1.0) - vector.DotProductSIMD(query, h.vectorAtLocked(cid)),
 		})
 	}
 
 	if len(dists) <= m {
-		out := make([]uint32, len(dists))
+		out = out[:0]
 		for i := range dists {
-			out[i] = dists[i].id
+			out = append(out, dists[i].id)
 		}
+		h.selectDistScratch = dists[:0]
 		return out
 	}
 
@@ -1357,11 +1398,12 @@ func (h *HNSWIndex) selectNeighbors(query []float32, candidates []uint32, m int)
 		return dists[i].dist < dists[j].dist
 	})
 
-	result := make([]uint32, m)
+	out = out[:0]
 	for i := 0; i < m; i++ {
-		result[i] = dists[i].id
+		out = append(out, dists[i].id)
 	}
-	return result
+	h.selectDistScratch = dists[:0]
+	return out
 }
 
 func (h *HNSWIndex) randomLevel() int {
@@ -1502,14 +1544,16 @@ func (h *HNSWIndex) insertNeighborAtLevelLocked(neighborID uint32, level int, ne
 	}
 
 	// Full: select best M among existing + new.
-	all := make([]uint32, 0, m+1)
+	all := h.insertAllScratch[:0]
 	all = append(all, h.neighborsArena[neighborsBase:neighborsBase+m]...)
 	all = append(all, newNeighborID)
-	best := h.selectNeighbors(h.vectorAtLocked(neighborID), all, m)
+	best := h.selectNeighborsInto(h.vectorAtLocked(neighborID), all, m, h.insertBestScratch[:0])
 	copy(h.neighborsArena[neighborsBase:neighborsBase+m], best)
 	if bestCount, ok := util.SafeIntToUint16(min(len(best), m)); ok {
 		h.neighborCountsArena[countsBase] = bestCount
 	}
+	h.insertAllScratch = all[:0]
+	h.insertBestScratch = best[:0]
 }
 
 // Heap types for HNSW search
