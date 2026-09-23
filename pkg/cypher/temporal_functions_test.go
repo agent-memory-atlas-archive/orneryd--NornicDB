@@ -48,6 +48,7 @@ func TestTemporalMapConstructorsUseSharedComponentSemantics(t *testing.T) {
 		{"time({hour: 12, minute: 34, second: 56, timezone: '+02:05:59'})", "12:34:56+02:05:59"},
 		{"localdatetime({year: 1984, ordinalDay: 202, hour: 12})", "1984-07-20T12:00"},
 		{"datetime({year: 1984, ordinalDay: 202, timezone: 'Europe/Stockholm'})", "1984-07-20T00:00+02:00[Europe/Stockholm]"},
+		{"datetime({date: date({year: 1984, month: 10, day: 11}), time: datetime({year: 1984, month: 10, day: 11, hour: 12, timezone: 'Europe/Stockholm'})})", "1984-10-11T12:00+01:00[Europe/Stockholm]"},
 		{"datetime.fromepoch(416779, 999999999)", "1970-01-05T19:46:19.999999999Z"},
 		{"datetime.fromepochmillis(237821673987)", "1977-07-15T13:34:33.987Z"},
 		{"duration({months: 5, days: 1.5})", "P5M1DT12H"},
@@ -191,6 +192,19 @@ func TestTemporalProjectionUsesTypedIntermediateValues(t *testing.T) {
 	}
 	if got := projected.String(); got != "1984-11-28" {
 		t.Fatalf("projected date = %q, want %q", got, "1984-11-28")
+	}
+	namedZoneResult, err := executor.Execute(context.Background(), `
+		WITH datetime({year: 1984, month: 10, day: 11, hour: 12, timezone: 'Europe/Stockholm'}) AS other
+		RETURN datetime(other) AS projected`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namedZone, ok := namedZoneResult.Rows[0][0].(CypherDateTime)
+	if !ok {
+		t.Fatalf("named-zone projection type = %T, want CypherDateTime", namedZoneResult.Rows[0][0])
+	}
+	if got := namedZone.String(); got != "1984-10-11T12:00+01:00[Europe/Stockholm]" {
+		t.Fatalf("named-zone projection = %q, want named zone retained", got)
 	}
 }
 

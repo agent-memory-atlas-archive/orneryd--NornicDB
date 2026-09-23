@@ -376,10 +376,14 @@ func projectTemporalValue(kind string, value interface{}) (interface{}, bool) {
 	case "datetime":
 		if hasDate && hasTime {
 			location := time.UTC
+			zoneID := ""
 			if zoned {
 				location = clock.Location()
 			}
-			return CypherDateTime{Time: time.Date(date.Year(), date.Month(), date.Day(), clock.Hour(), clock.Minute(), clock.Second(), clock.Nanosecond(), location)}, true
+			if typed, ok := value.(CypherDateTime); ok {
+				zoneID = typed.ZoneID
+			}
+			return CypherDateTime{Time: time.Date(date.Year(), date.Month(), date.Day(), clock.Hour(), clock.Minute(), clock.Second(), clock.Nanosecond(), location), ZoneID: zoneID}, true
 		}
 	}
 	return nil, false
