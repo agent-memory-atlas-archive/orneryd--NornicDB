@@ -2089,6 +2089,17 @@ func (e *StorageExecutor) tryAsyncCreateNodeBatch(ctx context.Context, cypher st
 			} else {
 				result.Columns[i] = item.expr
 			}
+			if isAggregateFuncName(item.expr, "count") {
+				inner := strings.TrimSpace(extractFuncInner(item.expr))
+				if inner == "*" {
+					row[i] = int64(1)
+				} else if value := e.evaluateExpressionWithContext(ctx, inner, createdNodes, nil); value != nil {
+					row[i] = int64(1)
+				} else {
+					row[i] = int64(0)
+				}
+				continue
+			}
 
 			for variable, node := range createdNodes {
 				if strings.HasPrefix(item.expr, variable) || item.expr == variable {

@@ -420,6 +420,30 @@ func TestMergeStandaloneRelationshipPath(t *testing.T) {
 	}
 }
 
+func TestMergeStandaloneRelationshipPathInTransaction(t *testing.T) {
+	base := newTestMemoryEngine(t)
+	transaction, err := base.BeginTransaction()
+	require.NoError(t, err)
+	defer transaction.Rollback()
+	txStore := &transactionStorageWrapper{
+		tx: transaction, underlying: base, separator: ":",
+		mutatedNodeIDs: make(map[string]struct{}),
+	}
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(txStore, "test"))
+	for run := 0; run < 2; run++ {
+		_, err := exec.Execute(context.Background(), "MERGE (a:SM {id: 10})-[:R]->(a)", nil)
+		require.NoError(t, err)
+	}
+	require.NoError(t, transaction.Commit())
+	store := storage.NewNamespacedEngine(base, "test")
+	nodes, err := store.AllNodes()
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+	edges, err := store.AllEdges()
+	require.NoError(t, err)
+	require.Len(t, edges, 1)
+}
+
 func TestMergeRelationship_Basic(t *testing.T) {
 	baseStore := newTestMemoryEngine(t)
 

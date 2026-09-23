@@ -15,6 +15,14 @@ func TestIssue507_CreateReturnCount(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"count"}, result.Columns)
 	require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows)
+	for _, query := range []string{
+		"CREATE (w:SB {t: 1}) RETURN count(w) AS c",
+		"CREATE (w:SB {t: 1}) RETURN count(*) AS c",
+	} {
+		result, err := executor.Execute(context.Background(), query, nil)
+		require.NoError(t, err)
+		require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows, query)
+	}
 }
 
 func TestIssue508_AggregatesPatternComprehension(t *testing.T) {
