@@ -2663,9 +2663,9 @@ func (e *StorageExecutor) pipelineApplyWith(ctx context.Context, rows []pipeline
 				var value interface{}
 				var ok bool
 				if projection.aggregateName == "" {
-					value, ok = e.evaluatePipelineAggregateExpression(group.rows, projection.aggregateExpr)
+					value, ok = e.evaluatePipelineAggregateExpressionWithContext(ctx, group.rows, projection.aggregateExpr)
 				} else {
-					value, ok = e.evaluatePipelineAggregate(group.rows, projection.aggregateName, projection.aggregateExpr, projection.distinct)
+					value, ok = e.evaluatePipelineAggregateWithContext(ctx, group.rows, projection.aggregateName, projection.aggregateExpr, projection.distinct)
 				}
 				if !ok {
 					return nil, false
@@ -2967,9 +2967,13 @@ func pipelineExpressionContainsAggregate(expr string) bool {
 }
 
 func (e *StorageExecutor) evaluatePipelineAggregateExpression(rows []pipelineRow, expr string) (interface{}, bool) {
+	return e.evaluatePipelineAggregateExpressionWithContext(context.Background(), rows, expr)
+}
+
+func (e *StorageExecutor) evaluatePipelineAggregateExpressionWithContext(ctx context.Context, rows []pipelineRow, expr string) (interface{}, bool) {
 	expr = strings.TrimSpace(expr)
 	if name, inner, distinct, ok := parsePipelineAggregate(expr); ok {
-		return e.evaluatePipelineAggregate(rows, name, inner, distinct)
+		return e.evaluatePipelineAggregateWithContext(ctx, rows, name, inner, distinct)
 	}
 	if inner, enclosed := stripEnclosingRowDelimiter(expr, '{', '}'); enclosed {
 		result := make(map[string]interface{})
@@ -2982,7 +2986,7 @@ func (e *StorageExecutor) evaluatePipelineAggregateExpression(rows []pipelineRow
 				return nil, false
 			}
 			key := normalizePropertyKey(strings.TrimSpace(pair[:separator]))
-			value, ok := e.evaluatePipelineAggregateExpression(rows, pair[separator+1:])
+			value, ok := e.evaluatePipelineAggregateExpressionWithContext(ctx, rows, pair[separator+1:])
 			if !ok {
 				return nil, false
 			}
@@ -2997,7 +3001,7 @@ func (e *StorageExecutor) evaluatePipelineAggregateExpression(rows []pipelineRow
 		if _, _, _, _, comprehension := parseListComprehension(inner); !comprehension {
 			result := make([]interface{}, 0)
 			for _, item := range splitTopLevelComma(inner) {
-				value, ok := e.evaluatePipelineAggregateExpression(rows, item)
+				value, ok := e.evaluatePipelineAggregateExpressionWithContext(ctx, rows, item)
 				if !ok {
 					return nil, false
 				}
@@ -3025,7 +3029,7 @@ func (e *StorageExecutor) evaluatePipelineAggregateExpression(rows []pipelineRow
 			if !ok {
 				return nil, false
 			}
-			value, ok := e.evaluatePipelineAggregate(rows, name, inner, distinct)
+			value, ok := e.evaluatePipelineAggregateWithContext(ctx, rows, name, inner, distinct)
 			if !ok {
 				return nil, false
 			}
@@ -3047,6 +3051,10 @@ func (e *StorageExecutor) evaluatePipelineAggregateExpression(rows []pipelineRow
 // evaluatePipelineAggregate applies an aggregate to one logical group. Null
 // inputs are ignored by every standard aggregate, including collect().
 func (e *StorageExecutor) evaluatePipelineAggregate(rows []pipelineRow, name, expr string, distinct bool) (interface{}, bool) {
+	return e.evaluatePipelineAggregateWithContext(context.Background(), rows, name, expr, distinct)
+}
+
+func (e *StorageExecutor) evaluatePipelineAggregateWithContext(ctx context.Context, rows []pipelineRow, name, expr string, distinct bool) (interface{}, bool) {
 	if name == "count" && expr == "*" {
 		return int64(len(rows)), true
 	}
@@ -3056,7 +3064,7 @@ func (e *StorageExecutor) evaluatePipelineAggregate(rows []pipelineRow, name, ex
 	values := make([]interface{}, 0, len(rows))
 	seen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
-		value, ok := e.evaluateRowExpression(expr, row)
+		value, ok := e.evaluateRowExpressionWithContext(ctx, expr, row)
 		if !ok {
 			return nil, false
 		}
@@ -3313,9 +3321,9 @@ func (e *StorageExecutor) pipelineApplyReturn(ctx context.Context, rows []pipeli
 				var value interface{}
 				var ok bool
 				if projection.aggregateName == "" {
-					value, ok = e.evaluatePipelineAggregateExpression(group.rows, projection.aggregateExpr)
+					value, ok = e.evaluatePipelineAggregateExpressionWithContext(ctx, group.rows, projection.aggregateExpr)
 				} else {
-					value, ok = e.evaluatePipelineAggregate(group.rows, projection.aggregateName, projection.aggregateExpr, projection.distinct)
+					value, ok = e.evaluatePipelineAggregateWithContext(ctx, group.rows, projection.aggregateName, projection.aggregateExpr, projection.distinct)
 				}
 				if !ok {
 					return nil, false

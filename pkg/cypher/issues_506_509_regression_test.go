@@ -1,0 +1,58 @@
+package cypher
+
+import (
+	"context"
+	"testing"
+
+	"github.com/orneryd/nornicdb/pkg/storage"
+	"github.com/stretchr/testify/require"
+)
+
+func TestIssue507_CreateReturnCount(t *testing.T) {
+	executor := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "issue507"))
+
+	result, err := executor.Execute(context.Background(), "CREATE (w:X) RETURN count(w) AS count", nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"count"}, result.Columns)
+	require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows)
+}
+
+func TestIssue508_AggregatesPatternComprehension(t *testing.T) {
+	executor := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "issue508"))
+	ctx := context.Background()
+
+	_, err := executor.Execute(ctx, "CREATE (a:A)-[:R]->(:B)", nil)
+	require.NoError(t, err)
+
+	result, err := executor.Execute(ctx, "MATCH (a:A) RETURN sum(size([(a)-[:R]->() | 1])) AS sum, max(size([(a)-[:R]->() | 1])) AS max", nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"sum", "max"}, result.Columns)
+	require.Equal(t, [][]interface{}{{int64(1), int64(1)}}, result.Rows)
+}
+
+func TestIssue509_MergeWholePathCreatesRelationship(t *testing.T) {
+	executor := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "issue509"))
+
+	result, err := executor.Execute(context.Background(), "MERGE (a:Start {id: 'a'})-[:R]->(b:End {id: 'b'}) RETURN count(*) AS count", nil)
+	require.NoError(t, err)
+	require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows)
+
+	result, err = executor.Execute(context.Background(), "MATCH (:Start {id: 'a'})-[r:R]->(:End {id: 'b'}) RETURN count(r) AS count", nil)
+	require.NoError(t, err)
+	require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows)
+}
+
+func TestIssue506_ExistsWithCountInExplicitTransaction(t *testing.T) {
+	executor := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "issue506"))
+	ctx := context.Background()
+
+	_, err := executor.Execute(ctx, "CREATE (a:A)-[:R]->(:B)", nil)
+	require.NoError(t, err)
+	_, err = executor.Execute(ctx, "BEGIN", nil)
+	require.NoError(t, err)
+	defer func() { _, _ = executor.Execute(ctx, "ROLLBACK", nil) }()
+
+	result, err := executor.Execute(ctx, "MATCH (a:A) WHERE EXISTS { MATCH (a)-[:R]->() } RETURN count(a) AS count", nil)
+	require.NoError(t, err)
+	require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows)
+}

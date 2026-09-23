@@ -300,6 +300,17 @@ func (e *StorageExecutor) executeCreate(ctx context.Context, cypher string) (*Ex
 			} else {
 				result.Columns[i] = item.expr
 			}
+			if isAggregateFuncName(item.expr, "count") {
+				inner := strings.TrimSpace(extractFuncInner(item.expr))
+				if inner == "*" {
+					row[i] = int64(1)
+				} else if value := e.evaluateExpressionWithContext(ctx, inner, createdNodes, createdEdges); value != nil {
+					row[i] = int64(1)
+				} else {
+					row[i] = int64(0)
+				}
+				continue
+			}
 
 			// Path variables first (RETURN p, nodes(p), relationships(p), length(p))
 			if varName := extractVariableNameFromReturnItem(item.expr); varName != "" {

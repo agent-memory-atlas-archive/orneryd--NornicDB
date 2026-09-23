@@ -1568,6 +1568,12 @@ func (tx *BadgerTransaction) StreamNodesByLabelProjected(label string, propertie
 	if err := tx.ensureLifecycleActiveLocked(); err != nil {
 		return err
 	}
+	invokeVisit := func(node *Node) error {
+		tx.mu.Unlock()
+		err := visit(node)
+		tx.mu.Lock()
+		return err
+	}
 
 	hasPending := len(tx.pendingNodes) > 0 || len(tx.deletedNodes) > 0
 	var seen map[NodeID]struct{}
@@ -1591,7 +1597,7 @@ func (tx *BadgerTransaction) StreamNodesByLabelProjected(label string, propertie
 			return nil
 		}
 		if !hasPending {
-			return visit(node)
+			return invokeVisit(node)
 		}
 		if _, deleted := tx.deletedNodes[node.ID]; deleted {
 			seen[node.ID] = struct{}{}
@@ -1600,7 +1606,7 @@ func (tx *BadgerTransaction) StreamNodesByLabelProjected(label string, propertie
 		if pending, exists := tx.pendingNodes[node.ID]; exists {
 			seen[node.ID] = struct{}{}
 			if matchesLabel(pending) {
-				return visit(projectCachedNodeForRead(pending, properties))
+				return invokeVisit(projectCachedNodeForRead(pending, properties))
 			}
 			return nil
 		}
@@ -1619,7 +1625,7 @@ func (tx *BadgerTransaction) StreamNodesByLabelProjected(label string, propertie
 				return err
 			}
 		}
-		return tx.streamPendingLabelNodesLocked(matchesLabel, seen, properties, visit)
+		return tx.streamPendingLabelNodesLocked(matchesLabel, seen, properties, invokeVisit)
 	}
 
 	var err error
@@ -1651,7 +1657,7 @@ func (tx *BadgerTransaction) StreamNodesByLabelProjected(label string, propertie
 		}
 		tx.snapshotProjectedLabelNodes[cacheKey] = completed
 	}
-	return tx.streamPendingLabelNodesLocked(matchesLabel, seen, properties, visit)
+	return tx.streamPendingLabelNodesLocked(matchesLabel, seen, properties, invokeVisit)
 }
 
 // A long-lived explicit transaction may execute many unrelated projections.

@@ -1544,7 +1544,7 @@ CYPHER_TCK_ZONEINFO := $(CURDIR)/pkg/cypher/temporal_zoneinfo.zip
 CYPHER_TCK_TAGS := noui,nolocalllm
 
 cypher-tck-inventory:
-	go run ./testing/cypher/tck/cmd/inventory -check testing/cypher/tck/testdata/inventory.json
+	go run -tags "$(CYPHER_TCK_TAGS)" ./testing/cypher/tck/cmd/inventory -check testing/cypher/tck/testdata/inventory.json
 
 cypher-tck: cypher-tck-inventory
 	ZONEINFO="$(CYPHER_TCK_ZONEINFO)" NORNICDB_RUN_FULL_TCK=1 go test -tags "$(CYPHER_TCK_TAGS)" ./testing/cypher/tck -run '^TestOfficialOpenCypherCorpusInBothTransactionModes$$' -count=1 -v
