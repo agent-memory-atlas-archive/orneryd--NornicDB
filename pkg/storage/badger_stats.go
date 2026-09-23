@@ -597,6 +597,7 @@ func (b *BadgerEngine) StreamNodes(ctx context.Context, fn func(node *Node) erro
 	if err := b.ensureOpen(); err != nil {
 		return err
 	}
+	nowNanos := DecayScoringTime()
 
 	return b.withView(func(txn *badger.Txn) error {
 		prefix := []byte{prefixNode}
@@ -625,6 +626,9 @@ func (b *BadgerEngine) StreamNodes(ctx context.Context, fn func(node *Node) erro
 			})
 			if err != nil {
 				continue // Skip invalid nodes
+			}
+			if b.filterNodeByDecay(node, nowNanos) {
+				continue
 			}
 			if err := fn(node); err != nil {
 				if err == ErrIterationStopped {
@@ -685,6 +689,7 @@ func (b *BadgerEngine) StreamNodesByPrefix(ctx context.Context, prefix string, f
 	if err := b.ensureOpen(); err != nil {
 		return err
 	}
+	nowNanos := DecayScoringTime()
 
 	return b.withView(func(txn *badger.Txn) error {
 		seekPrefix := append([]byte{prefixNode}, []byte(prefix)...)
@@ -711,6 +716,9 @@ func (b *BadgerEngine) StreamNodesByPrefix(ctx context.Context, prefix string, f
 				return decErr
 			})
 			if err != nil {
+				continue
+			}
+			if b.filterNodeByDecay(node, nowNanos) {
 				continue
 			}
 			if err := fn(node); err != nil {
@@ -792,6 +800,7 @@ func (b *BadgerEngine) StreamEdges(ctx context.Context, fn func(edge *Edge) erro
 	if err := b.ensureOpen(); err != nil {
 		return err
 	}
+	nowNanos := DecayScoringTime()
 
 	return b.withView(func(txn *badger.Txn) error {
 		prefix := []byte{prefixEdge}
@@ -820,6 +829,9 @@ func (b *BadgerEngine) StreamEdges(ctx context.Context, fn func(edge *Edge) erro
 			})
 			if err != nil {
 				continue // Skip invalid edges
+			}
+			if b.filterEdgeByDecay(edge, nowNanos) {
+				continue
 			}
 			if err := fn(edge); err != nil {
 				if err == ErrIterationStopped {
