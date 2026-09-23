@@ -79,7 +79,28 @@ func SplitByMatch(s string) []string {
 
 // SplitByCreate splits by "CREATE " keyword. Convenience wrapper for hot path.
 func SplitByCreate(s string) []string {
-	return SplitByKeyword(s, "CREATE")
+	if s == "" {
+		return []string{s}
+	}
+
+	opts := defaultKeywordScanOpts()
+	opts.SkipParens = false
+	opts.SkipBrackets = false
+	var result []string
+	lastEnd := 0
+	for searchFrom := 0; searchFrom < len(s); {
+		index := keywordIndexFrom(s, "CREATE", searchFrom, opts)
+		if index < 0 || index+len("CREATE") >= len(s) || !unicode.IsSpace(rune(s[index+len("CREATE")])) {
+			break
+		}
+		result = append(result, s[lastEnd:index])
+		lastEnd = index + len("CREATE")
+		for lastEnd < len(s) && unicode.IsSpace(rune(s[lastEnd])) {
+			lastEnd++
+		}
+		searchFrom = lastEnd
+	}
+	return append(result, s[lastEnd:])
 }
 
 // isWordChar returns true if c is a word character (alphanumeric or underscore)

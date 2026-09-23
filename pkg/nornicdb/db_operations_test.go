@@ -123,7 +123,7 @@ func TestDB_CreateIndex(t *testing.T) {
 }
 
 func TestDB_Backup(t *testing.T) {
-	t.Run("backup in-memory database as JSON", func(t *testing.T) {
+	t.Run("backup in-memory database", func(t *testing.T) {
 		db, err := Open("", nil)
 		require.NoError(t, err)
 		defer db.Close()
@@ -133,15 +133,14 @@ func TestDB_Backup(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create backup
-		backupPath := filepath.Join(t.TempDir(), "backup.json")
+		backupPath := filepath.Join(t.TempDir(), "backup.bin")
 		err = db.Backup(context.Background(), backupPath)
 		require.NoError(t, err)
 
 		// Verify backup exists and has content
-		data, err := os.ReadFile(backupPath)
+		info, err := os.Stat(backupPath)
 		require.NoError(t, err)
-		assert.Contains(t, string(data), "TestNode")
-		assert.Contains(t, string(data), "test")
+		assert.Greater(t, info.Size(), int64(0))
 	})
 
 	t.Run("backup persistent database", func(t *testing.T) {
@@ -180,10 +179,9 @@ func TestDB_Backup(t *testing.T) {
 		require.NoError(t, err)
 		defer db.Close()
 
-		// Writing backup to a directory path should fail in os.WriteFile.
+		// Writing backup to a directory path should fail.
 		err = db.Backup(context.Background(), t.TempDir())
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "failed to write backup")
 	})
 
 	t.Run("backup returns wrapped node read error", func(t *testing.T) {

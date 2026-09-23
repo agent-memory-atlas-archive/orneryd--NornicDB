@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orneryd/nornicdb/pkg/cypher"
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
@@ -124,8 +125,8 @@ func TestDecodePackStreamValue_DateTimeStructures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode utc-patched datetime failed: %v", err)
 	}
-	if _, ok := v.(time.Time); !ok {
-		t.Fatalf("expected time.Time for utc-patched datetime, got %T", v)
+	if _, ok := v.(cypher.CypherDateTime); !ok {
+		t.Fatalf("expected CypherDateTime for utc-patched datetime, got %T", v)
 	}
 
 	// Legacy DateTime: struct(3) sig=0x46 [seconds, nanos, offsetSeconds]
@@ -134,7 +135,7 @@ func TestDecodePackStreamValue_DateTimeStructures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode legacy datetime failed: %v", err)
 	}
-	if _, ok := v.(time.Time); !ok {
-		t.Fatalf("expected time.Time for legacy datetime, got %T", v)
+	if _, ok := v.(cypher.CypherDateTime); !ok {
+		t.Fatalf("expected CypherDateTime for legacy datetime, got %T", v)
 	}
 }

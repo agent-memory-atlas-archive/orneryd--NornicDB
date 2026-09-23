@@ -80,14 +80,12 @@ func (m *MemoryEngine) DeleteByPrefix(prefix string) (nodesDeleted int64, edgesD
 	return m.BadgerEngine.DeleteByPrefix(prefix)
 }
 
-// Backup is intentionally unsupported for in-memory engines so the DB API
-// retains its portable JSON fallback for non-persistent storage.
-func (m *MemoryEngine) Backup(string) error {
-	return ErrNotImplemented
+// Backup delegates to the embedded Badger engine's consistent streaming backup.
+func (m *MemoryEngine) Backup(path string) error {
+	return m.BadgerEngine.Backup(path)
 }
 
-// Restore is intentionally unsupported for in-memory engines; the DB API
-// restores its portable JSON fallback instead.
-func (m *MemoryEngine) Restore(string) error {
-	return ErrNotImplemented
+// Restore delegates to the embedded Badger engine's streaming restore.
+func (m *MemoryEngine) Restore(path string) error {
+	return m.BadgerEngine.Restore(path)
 }

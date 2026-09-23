@@ -821,6 +821,39 @@ func (e *StorageExecutor) splitCreatePatterns(pattern string) []string {
 // remainder is any content after the target node (for chained patterns)
 func (e *StorageExecutor) parseCreateRelPatternWithVars(pattern string) (string, string, string, bool, string, error) {
 	pattern = strings.TrimSpace(pattern)
+	findNodeEnd := func(input string, start int) int {
+		depth := 0
+		var quote byte
+		for index := start; index < len(input); index++ {
+			current := input[index]
+			if quote != 0 {
+				if current == '\\' && index+1 < len(input) {
+					index++
+					continue
+				}
+				if current == quote {
+					if index+1 < len(input) && input[index+1] == quote {
+						index++
+						continue
+					}
+					quote = 0
+				}
+				continue
+			}
+			switch current {
+			case '\'', '"':
+				quote = current
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					return index
+				}
+			}
+		}
+		return -1
+	}
 
 	// Find the first node: (varA)
 	if !strings.HasPrefix(pattern, "(") {
@@ -828,19 +861,7 @@ func (e *StorageExecutor) parseCreateRelPatternWithVars(pattern string) (string,
 	}
 
 	// Find end of first node
-	depth := 0
-	firstNodeEnd := -1
-	for i, c := range pattern {
-		if c == '(' {
-			depth++
-		} else if c == ')' {
-			depth--
-			if depth == 0 {
-				firstNodeEnd = i
-				break
-			}
-		}
-	}
+	firstNodeEnd := findNodeEnd(pattern, 0)
 	if firstNodeEnd < 0 {
 		return "", "", "", false, "", localizedError(localization.CypherMutationsRelationshipPatternUnmatchedParen(), nil)
 	}
@@ -863,7 +884,7 @@ func (e *StorageExecutor) parseCreateRelPatternWithVars(pattern string) (string,
 	}
 
 	// Find matching ] considering nested brackets in properties
-	depth = 1
+	depth := 1
 	relEnd := -1
 	inQuote := false
 	quoteChar := rune(0)
@@ -910,20 +931,7 @@ func (e *StorageExecutor) parseCreateRelPatternWithVars(pattern string) (string,
 	}
 
 	// Find end of second node
-	depth = 1
-	secondNodeEnd := -1
-	for i := secondNodeStart; i < len(afterRel); i++ {
-		c := afterRel[i]
-		if c == '(' {
-			depth++
-		} else if c == ')' {
-			depth--
-			if depth == 0 {
-				secondNodeEnd = i
-				break
-			}
-		}
-	}
+	secondNodeEnd := findNodeEnd(afterRel, secondNodeStart-1)
 	if secondNodeEnd < 0 {
 		return "", "", "", false, "", localizedError(localization.CypherMutationsRelationshipPatternSecondUnmatched(), nil)
 	}

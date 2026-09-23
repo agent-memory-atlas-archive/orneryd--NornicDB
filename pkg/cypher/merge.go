@@ -2136,22 +2136,6 @@ func (e *StorageExecutor) executeMergeRelationshipWithContext(ctx context.Contex
 	if err != nil {
 		return nil, err
 	}
-	startContent, _, endContent, _, _, err := e.parseCreateRelPatternWithVars(pattern)
-	if err != nil {
-		return nil, err
-	}
-	for _, endpoint := range []string{startContent, endContent} {
-		nodePattern := e.parseNodePattern(ctx, "("+endpoint+")")
-		if nodePattern.variable == "" || nodeContext[nodePattern.variable] != nil {
-			continue
-		}
-		node, variable, mergeErr := e.executeMergeNodeSegment(ctx, "MERGE ("+endpoint+")")
-		if mergeErr != nil {
-			return nil, mergeErr
-		}
-		nodeContext[variable] = node
-		result.Stats.NodesCreated++
-	}
 
 	setSearchStart := 0
 	if patternIdx := strings.Index(cypher, pattern); patternIdx >= 0 {

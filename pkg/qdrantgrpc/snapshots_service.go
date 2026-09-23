@@ -249,13 +249,13 @@ func (s *SnapshotsService) CreateFull(ctx context.Context, req *qpb.CreateFullSn
 	snapshotName := fmt.Sprintf("full-%d.snapshot", timestamp.UnixNano())
 	snapshotPath := filepath.Join(fullSnapshotDir, snapshotName)
 
-	// Try to use BadgerEngine.Backup if available
+	// Try to use BadgerEngine.Backup if available.
 	if badger, ok := s.baseStorage.(interface{ Backup(string) error }); ok {
 		if err := badger.Backup(snapshotPath); err != nil {
 			return nil, localizedStatus(ctx, s.config.Localizer, codes.Internal, localization.QdrantCreateBackupFailed(err))
 		}
 	} else {
-		// Fallback: export all nodes and edges as a snapshot
+		// Fallback: export all nodes and edges as a snapshot.
 		nodes, err := s.baseStorage.AllNodes()
 		if err != nil {
 			return nil, localizedStatus(ctx, s.config.Localizer, codes.Internal, localization.QdrantGetNodesFailed(err))
