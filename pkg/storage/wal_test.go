@@ -2999,6 +2999,7 @@ func TestWALEngine_HelperDelegatesAndFallbacks(t *testing.T) {
 	t.Run("embedding delegates and iterate fallback", func(t *testing.T) {
 		engine := NewMemoryEngine()
 		t.Cleanup(func() { _ = engine.Close() })
+		engine.SetEmbeddingsEnabled(true)
 		walEngine := newWALEngine(t, engine)
 
 		_, err := engine.CreateNode(&Node{ID: "test:embed", Labels: []string{"Doc"}, Properties: map[string]any{"text": "embed me"}})
