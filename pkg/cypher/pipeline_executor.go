@@ -1571,20 +1571,24 @@ func (e *StorageExecutor) pipelineApplyInitialTraversalMatch(ctx context.Context
 		materializedPattern := e.materializePipelinePropertyExpressions(pattern, row)
 		materializedWhere := e.materializePipelinePredicateExpressions(whereClause, row)
 		physicalWhere := pipelineTraversalPushdownPredicate(materializedWhere, row, variables)
+		rowHint := hint
+		if physicalWhere != materializedWhere || pipelinePatternJoinsOuterBinding(row, variables) {
+			rowHint = pipelineMatchPhysicalHint{limit: -1, earlyLimit: -1}
+		}
 		var result *ExecuteResult
 		var handled bool
 		var err error
-		if hint.limit > 0 && hint.orderExpr != "" {
-			result, handled, err = e.tryExecuteTraversalStartSeedOrderLimit(ctx, materializedPattern, physicalWhere, returnItems, pathVariable, hint.orderExpr, hint.limit)
+		if rowHint.limit > 0 && rowHint.orderExpr != "" {
+			result, handled, err = e.tryExecuteTraversalStartSeedOrderLimit(ctx, materializedPattern, physicalWhere, returnItems, pathVariable, rowHint.orderExpr, rowHint.limit)
 			if err == nil && !handled {
-				result, handled, err = e.tryExecuteTraversalEndSeedOrderLimit(ctx, materializedPattern, physicalWhere, returnItems, pathVariable, hint.orderExpr, hint.limit)
+				result, handled, err = e.tryExecuteTraversalEndSeedOrderLimit(ctx, materializedPattern, physicalWhere, returnItems, pathVariable, rowHint.orderExpr, rowHint.limit)
 			}
 		}
 		if err != nil {
 			return nil, true, err
 		}
 		if !handled {
-			result, err = e.executeMatchWithRelationshipsWithPath(ctx, materializedPattern, physicalWhere, returnItems, nil, pathVariable, hint.earlyLimit)
+			result, err = e.executeMatchWithRelationshipsWithPath(ctx, materializedPattern, physicalWhere, returnItems, nil, pathVariable, rowHint.earlyLimit)
 			if err != nil {
 				return nil, true, err
 			}
@@ -1646,6 +1650,15 @@ func pipelineTraversalPushdownPredicate(whereClause string, row pipelineRow, loc
 		}
 	}
 	return strings.Join(pushable, " AND ")
+}
+
+func pipelinePatternJoinsOuterBinding(row pipelineRow, variables []string) bool {
+	for _, variable := range variables {
+		if _, bound := row[variable]; bound {
+			return true
+		}
+	}
+	return false
 }
 
 func pipelineBindingValuesEqual(left, right interface{}) bool {
