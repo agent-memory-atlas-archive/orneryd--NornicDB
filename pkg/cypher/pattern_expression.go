@@ -178,5 +178,35 @@ func (e *StorageExecutor) evaluateRowExpressionWithContext(ctx context.Context, 
 			return int64(len(items)), true
 		}
 	}
-	return e.evaluateRowExpression(expr, values)
+	value, resolved := e.evaluateRowExpression(expr, values)
+	if !resolved {
+		arithmeticExpr := strings.TrimSpace(expr)
+		for {
+			inner, enclosed := stripEnclosingExpressionParentheses(arithmeticExpr)
+			if !enclosed {
+				break
+			}
+			arithmeticExpr = inner
+		}
+		if left, right, operator, arithmetic := splitRowArithmeticTier(arithmeticExpr, "*/%"); arithmetic && (operator == '/' || operator == '%') {
+			leftValue, leftOK := e.evaluateRowExpression(left, values)
+			rightValue, rightOK := e.evaluateRowExpression(right, values)
+			if divisor, numeric := toFloat64(rightValue); leftOK && leftValue != nil && rightOK && numeric && divisor == 0 {
+				recordExpressionFailure(ctx, newSemanticError("Neo.ClientError.Statement.ArithmeticError", "DivisionByZero", "/ by zero"))
+			}
+		}
+	}
+	if function, arguments, functionCall := parseFunctionCallWS(strings.TrimSpace(expr)); functionCall && strings.EqualFold(function, "substring") {
+		parts := splitTopLevelComma(arguments)
+		if len(parts) == 2 || len(parts) == 3 {
+			for _, argument := range parts[1:] {
+				position, valid := e.evaluateRowExpression(argument, values)
+				if numeric, ok := toInt(position); valid && ok && numeric < 0 {
+					recordExpressionFailure(ctx, newSemanticError("Neo.DatabaseError.Statement.ExecutionFailed", "InvalidSubstringIndex", "Cannot handle negative start index nor negative length"))
+					break
+				}
+			}
+		}
+	}
+	return value, resolved
 }

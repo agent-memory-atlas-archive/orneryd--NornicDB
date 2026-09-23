@@ -292,3 +292,30 @@ func TestBoltFailedRunIgnoresCommitUntilResetAndRollsBack(t *testing.T) {
 	require.Equal(t, [][]any{{int64(0)}}, runBoltQueryAndCollectRecords(t, fresh,
 		"MATCH (n:TxFailedRunProbe {id: 'must-rollback'}) RETURN count(n)"))
 }
+
+func TestBoltReturnRuntimeFailureKeepsConnectionAfterReset(t *testing.T) {
+	for _, testCase := range []struct {
+		query string
+		code  string
+	}{
+		{"RETURN 1 / 0", "Neo.ClientError.Statement.ArithmeticError"},
+		{"RETURN 1 % 0", "Neo.ClientError.Statement.ArithmeticError"},
+		{"RETURN substring('abc', -1)", "Neo.DatabaseError.Statement.ExecutionFailed"},
+	} {
+		t.Run(testCase.query, func(t *testing.T) {
+			base := storage.NewMemoryEngine()
+			t.Cleanup(func() { require.NoError(t, base.Close()) })
+			executor := newFailingRunTransactionalExecutor(storage.NewNamespacedEngine(base, "nornic"))
+			port := startControlledTransactionServer(t, executor)
+			conn := openBoltTestConn(t, port)
+			beginExplicitTransaction(t, conn, nil)
+			require.NoError(t, SendRun(t, conn, testCase.query, nil, nil))
+			code, _, err := AssertFailure(t, conn)
+			require.NoError(t, err)
+			require.Equal(t, testCase.code, code)
+			require.NoError(t, SendReset(t, conn))
+			require.NoError(t, ReadSuccess(t, conn))
+			require.Equal(t, [][]any{{int64(1)}}, runBoltQueryAndCollectRecords(t, conn, "RETURN 1"))
+		})
+	}
+}

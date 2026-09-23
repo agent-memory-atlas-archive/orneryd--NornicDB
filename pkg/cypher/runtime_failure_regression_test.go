@@ -2,6 +2,7 @@ package cypher
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/orneryd/nornicdb/pkg/storage"
@@ -28,6 +29,29 @@ func TestRuntimeExpressionFailuresReturnErrors(t *testing.T) {
 	}
 }
 
+func TestReturnRuntimeFailureClassification(t *testing.T) {
+	for _, testCase := range []struct {
+		query string
+		code  string
+		text  string
+	}{
+		{"RETURN 1 / 0", "Neo.ClientError.Statement.ArithmeticError", "/ by zero"},
+		{"RETURN (1 / 0)", "Neo.ClientError.Statement.ArithmeticError", "/ by zero"},
+		{"RETURN 1 % 0", "Neo.ClientError.Statement.ArithmeticError", "/ by zero"},
+		{"RETURN substring('abc', -1)", "Neo.DatabaseError.Statement.ExecutionFailed", "Cannot handle negative start index nor negative length"},
+		{"RETURN substring('abc', 0, -1)", "Neo.DatabaseError.Statement.ExecutionFailed", "Cannot handle negative start index nor negative length"},
+	} {
+		t.Run(testCase.query, func(t *testing.T) {
+			exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
+			_, err := exec.Execute(context.Background(), testCase.query, nil)
+			var semantic *SemanticError
+			require.True(t, errors.As(err, &semantic), "error: %v", err)
+			require.Equal(t, testCase.code, semantic.Code)
+			require.ErrorContains(t, err, testCase.text)
+		})
+	}
+}
+
 func TestRuntimeExpressionFailuresRollbackAllWrites(t *testing.T) {
 	for _, query := range []string{
 		"MATCH (p:P) SET p.a = 1, p.b = 1 / 0 RETURN p.a AS a",
@@ -50,7 +74,7 @@ func TestRuntimeExpressionFailuresRollbackAllWrites(t *testing.T) {
 }
 
 func TestRuntimeExpressionFailureExplicitTransaction(t *testing.T) {
-	for _, query := range []string{"CREATE (:W {v: 1 / 0})", "RETURN true + 1 AS x", "RETURN date('bad') AS x"} {
+	for _, query := range []string{"CREATE (:W {v: 1 / 0})", "RETURN 1 / 0 AS x", "RETURN substring('abc', -1) AS x", "RETURN true + 1 AS x", "RETURN date('bad') AS x"} {
 		t.Run(query, func(t *testing.T) {
 			engine := storage.NewNamespacedEngine(newTestMemoryEngine(t), "test")
 			exec := NewStorageExecutor(engine)
