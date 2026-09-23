@@ -371,7 +371,7 @@ configure_neo4j_password() {
   if [[ "$(whoami)" != "${owner}" ]]; then
     prefix=("sudo" "-u" "${owner}")
   fi
-  "${prefix[@]}" "${NEO4J_HOME}/bin/neo4j-admin" dbms set-initial-password "${NEO4J_PASSWORD}" \
+  ${prefix[@]+"${prefix[@]}"} "${NEO4J_HOME}/bin/neo4j-admin" dbms set-initial-password "${NEO4J_PASSWORD}" \
     >/dev/null 2>&1 || true
 }
 
@@ -414,7 +414,7 @@ run_neo4j() {
   # Don't abort the script on nonzero exit — we poll for the Bolt port and
   # surface a useful error ourselves.
   set +e
-  "${NEO4J_RUN_PREFIX[@]}" "${NEO4J_HOME}/bin/neo4j" start >"${REPORT_DIR}/neo4j.start.log" 2>&1
+  ${NEO4J_RUN_PREFIX[@]+"${NEO4J_RUN_PREFIX[@]}"} "${NEO4J_HOME}/bin/neo4j" start >"${REPORT_DIR}/neo4j.start.log" 2>&1
   local start_rc=$?
   set -e
   if (( start_rc != 0 )); then
@@ -463,7 +463,7 @@ run_neo4j() {
   log "stopping Neo4j gracefully (neo4j stop, flushing stores)"
   local stop_rc
   set +e
-  "${NEO4J_RUN_PREFIX[@]}" "${NEO4J_HOME}/bin/neo4j" stop >"${REPORT_DIR}/neo4j.stop.log" 2>&1
+  ${NEO4J_RUN_PREFIX[@]+"${NEO4J_RUN_PREFIX[@]}"} "${NEO4J_HOME}/bin/neo4j" stop >"${REPORT_DIR}/neo4j.stop.log" 2>&1
   stop_rc=$?
   set -e
   if (( stop_rc != 0 )); then

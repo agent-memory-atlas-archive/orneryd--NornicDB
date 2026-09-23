@@ -387,8 +387,13 @@ func main() {
 	report.FinishedAt = time.Now()
 	if len(allLatencies) > 0 {
 		report.OverallMeanMs = mean(allLatencies)
-		if report.TotalBenchMs > 0 {
-			report.OverallOpsPerSec = float64(totalOps) / (report.TotalBenchMs / 1000.0)
+		// Derive overall throughput from the timed-iteration latencies only,
+		// not from TotalBenchMs. TotalBenchMs includes session setup, warmup
+		// calls, fingerprinting, and correctness checks — none of which appear
+		// in the per-query ops/sec numbers. Using mean latency keeps the
+		// overall number consistent with per-query throughput.
+		if report.OverallMeanMs > 0 {
+			report.OverallOpsPerSec = 1000.0 / report.OverallMeanMs
 		}
 	}
 
