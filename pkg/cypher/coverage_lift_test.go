@@ -349,7 +349,7 @@ func TestCoverageLiftOperatorsAndRelationshipVectorLimitZero(t *testing.T) {
 	assert.Equal(t, "Ada", exec.evaluateSetExpression("\"Ada\""))
 	assert.Equal(t, true, exec.evaluateSetExpression("true"))
 	assert.Equal(t, []interface{}{int64(1), "two", false}, exec.evaluateSetExpression("[1, 'two', false]"))
-	assert.IsType(t, time.Time{}, exec.evaluateSetExpression("datetime()"))
+	assert.IsType(t, CypherDateTime{}, exec.evaluateSetExpression("datetime()"))
 	assert.NotEmpty(t, exec.evaluateSetExpression("randomUUID()"))
 	assert.Equal(t, "42", exec.evaluateSetExpression("toString(42)"))
 	assert.Equal(t, "ell", exec.evaluateSetExpression("substring('hello', 1, 3)"))
