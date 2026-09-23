@@ -286,7 +286,8 @@ func TestSchemaDefinitionPersistenceHelpers(t *testing.T) {
 		require.Len(t, def.CompositeIndexes, 1)
 		require.Len(t, def.FulltextIndexes, 1)
 		require.Len(t, def.VectorIndexes, 1)
-		require.Len(t, def.RangeIndexes, 1)
+		require.Len(t, def.RangeIndexes, 2)
+		require.Equal(t, "user_email", def.RangeIndexes[1].OwningConstraint)
 
 		restored := NewSchemaManager()
 		require.NoError(t, restored.ReplaceFromDefinition(def))
@@ -348,7 +349,8 @@ func TestSchemaDefinitionPersistenceHelpers(t *testing.T) {
 		require.Equal(t, "a_vector", def.VectorIndexes[0].Name)
 		require.Equal(t, "z_vector", def.VectorIndexes[1].Name)
 		require.Equal(t, "a_range", def.RangeIndexes[0].Name)
-		require.Equal(t, "z_range", def.RangeIndexes[1].Name)
+		require.Equal(t, "a_unique", def.RangeIndexes[1].Name)
+		require.Equal(t, "z_range", def.RangeIndexes[2].Name)
 
 		def.Constraints[0].Properties[0] = "mutated"
 		def.PropertyIndexes[0].Properties[0] = "mutated"

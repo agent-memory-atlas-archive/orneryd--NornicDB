@@ -164,8 +164,21 @@ func TestSchemaInitialization(t *testing.T) {
 	}
 
 	indexes := store.GetSchema().GetIndexes()
-	if len(indexes) != 3 {
-		t.Errorf("Expected 3 indexes, got %d", len(indexes))
+	if len(indexes) != 4 {
+		t.Errorf("Expected 4 indexes including the constraint-owned index, got %d", len(indexes))
+	}
+	foundOwned := false
+	for _, index := range indexes {
+		entry := index.(map[string]interface{})
+		if entry["name"] == "node_id_unique" {
+			foundOwned = true
+			if entry["type"] != "RANGE" || entry["owningConstraint"] != "node_id_unique" {
+				t.Errorf("Unexpected owned index metadata: %v", entry)
+			}
+		}
+	}
+	if !foundOwned {
+		t.Error("Expected a range index owned by node_id_unique")
 	}
 
 	// Test that constraint works

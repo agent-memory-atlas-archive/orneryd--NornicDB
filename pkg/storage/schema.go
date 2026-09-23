@@ -262,10 +262,11 @@ func (sm *SchemaManager) addConstraintLocked(c Constraint, silentOnDuplicate boo
 		}
 	}
 
-	if c.EffectiveEntityType() == ConstraintEntityRelationship &&
-		(c.Type == ConstraintUnique || c.Type == ConstraintRelationshipKey) &&
-		c.OwnedIndex == "" {
-		c.OwnedIndex = c.Name + "_index"
+	if c.OwnedIndex == "" && (c.Type == ConstraintUnique || c.Type == ConstraintNodeKey || c.Type == ConstraintRelationshipKey) {
+		c.OwnedIndex = c.Name
+		if c.EffectiveEntityType() == ConstraintEntityRelationship {
+			c.OwnedIndex += "_index"
+		}
 	}
 
 	sm.constraints[c.Name] = c
@@ -530,30 +531,22 @@ func (sm *SchemaManager) AddUniqueConstraint(name, label, property string, ifNot
 		}
 		return localizedError(localization.StorageSchemaConstraintAlreadyExists(name), nil)
 	}
-
-	// Add to uniqueConstraints (for value tracking during CheckUniqueConstraint)
-	sm.uniqueConstraints[key] = &UniqueConstraint{
-		Name:     name,
-		Label:    label,
-		Property: property,
-		values:   make(map[interface{}]NodeID),
-	}
-
-	// Also add to constraints map (for lookup by GetConstraintsForLabels in transactions)
+	snapshot := sm.exportDefinitionLocked()
 	constraint := Constraint{
 		Name:       name,
 		Label:      label,
 		Properties: []string{property},
 		Type:       ConstraintUnique,
 	}
-	sm.constraints[name] = constraint
+	if err := sm.addConstraintLocked(constraint, silent); err != nil {
+		return err
+	}
 
 	// Persist schema if configured. If persistence fails, roll back the in-memory change.
 	if sm.persist != nil {
 		def := sm.exportDefinitionLocked()
 		if err := sm.persist(def); err != nil {
-			delete(sm.uniqueConstraints, key)
-			delete(sm.constraints, name)
+			sm.replaceFromDefinitionLocked(snapshot)
 			return err
 		}
 	}

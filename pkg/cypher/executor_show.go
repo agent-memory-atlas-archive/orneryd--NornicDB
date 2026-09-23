@@ -129,6 +129,9 @@ func (e *StorageExecutor) executeShowIndexes(ctx context.Context, cypher string)
 
 			name := idxMap["name"]
 			idxType := idxMap["type"]
+			if idxType == "PROPERTY" || idxType == "COMPOSITE" {
+				idxType = "RANGE"
+			}
 			if indexTypeFilter != "" && !strings.EqualFold(fmt.Sprintf("%v", idxType), indexTypeFilter) {
 				continue
 			}
@@ -175,10 +178,10 @@ func (e *StorageExecutor) executeShowIndexes(ctx context.Context, cypher string)
 		}
 	}
 
-	return &ExecuteResult{
+	return e.applyShowSchemaTail(ctx, cypher, &ExecuteResult{
 		Columns: []string{"id", "name", "state", "populationPercent", "type", "entityType", "labelsOrTypes", "properties", "indexProvider", "owningConstraint", "lastRead", "readCount"},
 		Rows:    rows,
-	}, nil
+	})
 }
 
 // executeShowConstraints handles SHOW CONSTRAINTS command
@@ -245,10 +248,67 @@ func (e *StorageExecutor) executeShowConstraints(ctx context.Context, cypher str
 		}
 	}
 
-	return &ExecuteResult{
+	return e.applyShowSchemaTail(ctx, cypher, &ExecuteResult{
 		Columns: []string{"id", "name", "type", "entityType", "labelsOrTypes", "properties", "ownedIndex", "propertyType", "direction", "maxCount", "sourceLabel", "targetLabel", "policyMode"},
 		Rows:    rows,
-	}, nil
+	})
+}
+
+func (e *StorageExecutor) applyShowSchemaTail(ctx context.Context, cypher string, result *ExecuteResult) (*ExecuteResult, error) {
+	query := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(cypher), ";"))
+	if findKeywordIndexInContext(query, "YIELD") < 0 {
+		firstTail := len(query)
+		for _, keyword := range []string{"WHERE", "RETURN", "ORDER BY", "SKIP", "LIMIT"} {
+			if index := findKeywordIndexInContext(query, keyword); index >= 0 && index < firstTail {
+				firstTail = index
+			}
+		}
+		if firstTail == len(query) {
+			return result, nil
+		}
+		query = query[:firstTail] + "YIELD * " + query[firstTail:]
+	}
+	yield := parseYieldClause(query)
+	if yield == nil {
+		return nil, localizedError(localization.CypherAdminInvalidSyntax("SHOW schema YIELD"), nil)
+	}
+	if !yield.hasReturn {
+		return e.applyYieldFilter(ctx, result, yield)
+	}
+	projection := *yield
+	projection.hasReturn = false
+	projection.orderBy = ""
+	projection.skip = -1
+	projection.limit = -1
+	filtered, err := e.applyYieldFilter(ctx, result, &projection)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]pipelineRow, 0, len(filtered.Rows))
+	for _, values := range filtered.Rows {
+		row := make(pipelineRow, len(filtered.Columns))
+		for index, column := range filtered.Columns {
+			if index < len(values) {
+				row[column] = values[index]
+			}
+		}
+		rows = append(rows, row)
+	}
+	clause := "RETURN " + yield.returnExpr
+	if yield.orderBy != "" {
+		clause += " ORDER BY " + yield.orderBy
+	}
+	if yield.skip >= 0 {
+		clause += fmt.Sprintf(" SKIP %d", yield.skip)
+	}
+	if yield.limit >= 0 {
+		clause += fmt.Sprintf(" LIMIT %d", yield.limit)
+	}
+	projected, ok := e.pipelineApplyReturn(ctx, rows, clause)
+	if !ok {
+		return nil, localizedError(localization.CypherAdminInvalidSyntax("SHOW schema RETURN"), nil)
+	}
+	return projected, nil
 }
 
 func (e *StorageExecutor) executeShowConstraintContracts(ctx context.Context) (*ExecuteResult, error) {
