@@ -74,6 +74,10 @@ func (e *StorageExecutor) traversalOptionalWhereMatches(ctx context.Context, pre
 		values[variable] = value
 	}
 	predicate = substituteWithWhereLabelTests(predicate, values)
+	if value, evaluated := e.evaluateRowExpressionWithContext(ctx, predicate, pipelineRow(values)); evaluated {
+		passes, ok := value.(bool)
+		return ok && passes
+	}
 	passes, ok := e.evaluateExpressionWithContext(ctx, predicate, row.nodes, row.rels).(bool)
 	return ok && passes
 }
@@ -472,13 +476,20 @@ func (e *StorageExecutor) projectTraversalOptionalRows(ctx context.Context, rows
 			return nil, err
 		}
 		result.Rows = aggRows
-	} else {
-		// Compile each projection item once; per row only the compiled
-		// closures run (see optional_match_traversal_compile.go).
-		projectors := make([]compiledTraversalProjection, len(items))
-		for i, item := range items {
-			projectors[i] = e.compileTraversalProjection(ctx, item.expr)
-		}
+		e.applyTraversalReturnModifiers(result, returnClause)
+		return result, nil
+	}
+
+	// Compile each projection item once; per row only the compiled closures
+	// run. Keep the complete pre-projection row beside the projected row so
+	// ORDER BY can evaluate any in-scope expression without exposing hidden
+	// columns or re-running graph traversal.
+	projectors := make([]compiledTraversalProjection, len(items))
+	for i, item := range items {
+		projectors[i] = e.compileTraversalProjection(ctx, item.expr)
+	}
+	orderTerms := parseOrderByTerms(returnClause)
+	if len(orderTerms) == 0 {
 		result.Rows = make([][]interface{}, 0, len(rows))
 		for _, row := range rows {
 			outRow := make([]interface{}, len(items))
@@ -487,9 +498,43 @@ func (e *StorageExecutor) projectTraversalOptionalRows(ctx context.Context, rows
 			}
 			result.Rows = append(result.Rows, outRow)
 		}
+		e.applyTraversalReturnModifiers(result, returnClause)
+		return result, nil
 	}
-
-	e.applyTraversalReturnModifiers(result, returnClause)
+	projectedRows := make([]pipelineRow, 0, len(rows))
+	orderScopes := make([]pipelineRow, 0, len(rows))
+	for _, row := range rows {
+		projected := make(pipelineRow, len(items))
+		scope := pipelineRowFromTraversalOptionalRow(row)
+		for i, item := range items {
+			value := projectors[i](row)
+			projected[result.Columns[i]] = value
+			scope[item.expr] = value
+			scope[result.Columns[i]] = value
+		}
+		projectedRows = append(projectedRows, projected)
+		orderScopes = append(orderScopes, scope)
+	}
+	if !e.orderPipelineRowsWithScopes(projectedRows, orderScopes, orderTerms) {
+		return nil, localizedError(localization.CypherMatchingOrderByParseFailed(), nil)
+	}
+	skip := 0
+	if value, ok := parseIntModifier(returnClause, "SKIP"); ok {
+		skip = value
+	}
+	limit := -1
+	if value, ok := parseIntModifier(returnClause, "LIMIT"); ok {
+		limit = value
+	}
+	projectedRows = applyPipelineWindow(projectedRows, skip, limit)
+	result.Rows = make([][]interface{}, 0, len(projectedRows))
+	for _, projected := range projectedRows {
+		outRow := make([]interface{}, len(result.Columns))
+		for index, column := range result.Columns {
+			outRow[index] = projected[column]
+		}
+		result.Rows = append(result.Rows, outRow)
+	}
 	return result, nil
 }
 

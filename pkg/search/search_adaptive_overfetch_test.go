@@ -211,6 +211,46 @@ func TestAdaptiveVectorSearchUsesIVFPQRerankDepthIndependentOfResultLimit(t *tes
 	require.GreaterOrEqual(t, resolveVectorAdaptiveOverfetch(deeper, pipeline).initialLimit, 4)
 }
 
+func TestCompressedVectorSearchPlansRescoreFloorForSmallRequest(t *testing.T) {
+	index := &IVFPQIndex{profile: IVFPQProfile{RerankTopK: 2_000}}
+	pipeline := NewVectorSearchPipeline(NewIVFPQCandidateGen(index, 1), &IdentityExactScorer{})
+	opts := DefaultSearchOptions()
+	opts.Limit = 10
+	opts.CandidateTarget = 10
+	opts.MaxCandidateLimit = 0
+
+	config := resolveVectorAdaptiveOverfetch(opts, pipeline)
+
+	require.Equal(t, 10, config.target)
+	require.Equal(t, 2_000, config.initialLimit)
+	require.Equal(t, 2_000, config.maxLimit)
+}
+
+func TestCompressedVectorSearchRescoresFloorBeforeTrimmingResults(t *testing.T) {
+	index := &IVFPQIndex{
+		profile:      IVFPQProfile{Dimensions: 1, NProbe: 1, RerankTopK: 5},
+		centroids:    [][]float32{{1}},
+		centroidNorm: [][]float32{{1}},
+		codebooks: []ivfpqCodebook{
+			{SubDim: 1, Codeword: [][]float32{{0}, {1}}},
+		},
+		lists: []ivfpqList{
+			{IDs: []string{"doc-1", "doc-2", "doc-3", "doc-4", "doc-5"}, CodeSize: 1, Codes: []byte{1, 1, 1, 1, 1}},
+		},
+	}
+	service := NewServiceWithDimensions(storage.NewMemoryEngine(), 1)
+	pipeline := NewVectorSearchPipeline(NewIVFPQCandidateGen(index, 1), &IdentityExactScorer{})
+	opts := adaptiveOverfetchTestOptions(1)
+	opts.MaxCandidateLimit = 0
+
+	results, stats, err := service.adaptiveVectorSearch(context.Background(), pipeline, []float32{1}, opts, nil, nil)
+
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, 5, stats.rawCandidates)
+	require.Zero(t, stats.retries)
+}
+
 func TestAdaptiveBM25SearchWidensAfterFiltering(t *testing.T) {
 	index := &recordingBM25Index{results: []indexResult{
 		{ID: "skip", Score: 1.0},

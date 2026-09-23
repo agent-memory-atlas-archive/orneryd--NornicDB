@@ -36,9 +36,6 @@ func BenchmarkTextAnalyzerStemmerBatch(b *testing.B) {
 			return token
 		},
 		StemTokens: func(tokens []string) []string {
-			for i := range tokens {
-				tokens[i] = tokens[i]
-			}
 			return tokens
 		},
 	})

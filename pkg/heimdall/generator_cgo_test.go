@@ -1,4 +1,4 @@
-//go:build cgo && (darwin || linux) && !windows
+//go:build cgo && !nolocalllm && (darwin || linux) && !windows
 
 package heimdall
 

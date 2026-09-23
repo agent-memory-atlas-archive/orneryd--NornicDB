@@ -52,3 +52,78 @@ func TestOptionalMatchReturnsUndirectedSelfRelationshipOnce(t *testing.T) {
 	require.Len(t, result.Rows, 1)
 	require.NotNil(t, result.Rows[0][0])
 }
+
+func TestUnwindCorrelatesSingleNodeOptionalMatchPerInputRow(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    string
+		columns  []string
+		expected [][]interface{}
+	}{
+		{
+			name:     "inline property expression",
+			query:    "UNWIND [1, 2, 3] AS k OPTIONAL MATCH (t:OM {k: k}) RETURN k, t.k AS tk",
+			columns:  []string{"k", "tk"},
+			expected: [][]interface{}{{int64(1), int64(1)}, {int64(2), int64(2)}, {int64(3), nil}},
+		},
+		{
+			name:     "where predicate",
+			query:    "UNWIND [1, 2, 3] AS k OPTIONAL MATCH (t:OM) WHERE t.k = k RETURN k, t.k AS tk",
+			columns:  []string{"k", "tk"},
+			expected: [][]interface{}{{int64(1), int64(1)}, {int64(2), int64(2)}, {int64(3), nil}},
+		},
+		{
+			name:     "null projection",
+			query:    "UNWIND [1, 2, 3] AS k OPTIONAL MATCH (t:OM {k: k}) RETURN k, t IS NULL AS missing",
+			columns:  []string{"k", "missing"},
+			expected: [][]interface{}{{int64(1), false}, {int64(2), false}, {int64(3), true}},
+		},
+		{
+			name:     "null anti join",
+			query:    "UNWIND [1, 2, 3] AS k OPTIONAL MATCH (t:OM {k: k}) WITH k, t WHERE t IS NULL RETURN k",
+			columns:  []string{"k"},
+			expected: [][]interface{}{{int64(3)}},
+		},
+		{
+			name:     "grouped optional count",
+			query:    "UNWIND [1, 2, 3] AS k OPTIONAL MATCH (t:OM {k: k}) WITH k, count(t) AS c RETURN k, c",
+			columns:  []string{"k", "c"},
+			expected: [][]interface{}{{int64(1), int64(1)}, {int64(2), int64(1)}, {int64(3), int64(0)}},
+		},
+		{
+			name:     "standalone optional miss",
+			query:    "OPTIONAL MATCH (t:OM {k: 3}) RETURN t IS NULL AS missing",
+			columns:  []string{"missing"},
+			expected: [][]interface{}{{true}},
+		},
+	}
+
+	for _, mode := range []struct {
+		name     string
+		explicit bool
+	}{
+		{name: "autocommit"},
+		{name: "explicit transaction", explicit: true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "optional_unwind_correlation"))
+			ctx := context.Background()
+			_, err := exec.Execute(ctx, "CREATE (:OM {k: 1}), (:OM {k: 2})", nil)
+			require.NoError(t, err)
+			if mode.explicit {
+				_, err = exec.Execute(ctx, "BEGIN", nil)
+				require.NoError(t, err)
+				defer func() { _, _ = exec.Execute(ctx, "ROLLBACK", nil) }()
+			}
+
+			for _, test := range tests {
+				t.Run(test.name, func(t *testing.T) {
+					result, err := exec.Execute(ctx, test.query, nil)
+					require.NoError(t, err)
+					require.Equal(t, test.columns, result.Columns)
+					require.Equal(t, test.expected, result.Rows)
+				})
+			}
+		})
+	}
+}

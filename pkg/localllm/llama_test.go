@@ -1,3 +1,5 @@
+//go:build !nolocalllm
+
 package localllm
 
 import (

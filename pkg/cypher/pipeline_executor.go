@@ -654,7 +654,14 @@ func (e *StorageExecutor) tryStreamPipelineFilteredNodeCount(
 		return nil, false, nil
 	}
 
-	whereFilter := e.compileNodeWhereFilter(ctx, nodePattern.variable, whereClause)
+	whereFilter, compiledWhere := e.getCompiledSimpleWhere(ctx, nodePattern.variable, whereClause)
+	if !compiledWhere {
+		predicateRow := map[string]interface{}{nodePattern.variable: nil}
+		whereFilter = func(node *storage.Node) bool {
+			predicateRow[nodePattern.variable] = node
+			return e.evaluateWithWhereCondition(ctx, whereClause, predicateRow)
+		}
+	}
 	projectedProperties := pipelineNodePredicateProperties(nodePattern.variable, whereClause, nodePattern.properties)
 	hideSystemNodes := shouldHideSystemNodes(store)
 	viewport, hasViewport := TemporalViewportFromContext(ctx)

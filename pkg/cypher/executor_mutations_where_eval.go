@@ -233,7 +233,7 @@ func (e *StorageExecutor) compileSimpleWhere(ctx context.Context, variable, wher
 			return nil, false
 		}
 		prop := strings.TrimSpace(left[len(varPrefix):])
-		if prop == "" || strings.ContainsAny(prop, " \t\r\n") {
+		if !isValidIdentifier(prop) {
 			return nil, false
 		}
 		expectedRaw := resolveValue(right)
@@ -281,7 +281,7 @@ func (e *StorageExecutor) compileSimpleWhere(ctx context.Context, variable, wher
 		right := strings.TrimSpace(whereClause[inIdx+4:])
 		if strings.HasPrefix(left, varPrefix) {
 			prop := strings.TrimSpace(left[len(varPrefix):])
-			if prop != "" && !strings.ContainsAny(prop, " \t\r\n") {
+			if isValidIdentifier(prop) {
 				var listVal interface{}
 				if isValidIdentifier(right) && len(e.fabricRecordBindings) > 0 {
 					listVal = e.fabricRecordBindings[right]
@@ -308,7 +308,7 @@ func (e *StorageExecutor) compileSimpleWhere(ctx context.Context, variable, wher
 			return nil, false
 		}
 		prop := strings.TrimSpace(left[len(varPrefix):])
-		if prop == "" || strings.ContainsAny(prop, " \t\r\n") {
+		if !isValidIdentifier(prop) {
 			return nil, false
 		}
 		return func(node *storage.Node) bool {
@@ -323,7 +323,7 @@ func (e *StorageExecutor) compileSimpleWhere(ctx context.Context, variable, wher
 			return nil, false
 		}
 		prop := strings.TrimSpace(left[len(varPrefix):])
-		if prop == "" || strings.ContainsAny(prop, " \t\r\n") {
+		if !isValidIdentifier(prop) {
 			return nil, false
 		}
 		return func(node *storage.Node) bool {
@@ -379,7 +379,7 @@ func (e *StorageExecutor) compileSimpleWhere(ctx context.Context, variable, wher
 			return nil, false
 		}
 		prop := strings.TrimSpace(left[len(varPrefix):])
-		if prop == "" || strings.ContainsAny(prop, " \t\r\n") {
+		if !isValidIdentifier(prop) {
 			return nil, false
 		}
 		expected := resolveValue(right)

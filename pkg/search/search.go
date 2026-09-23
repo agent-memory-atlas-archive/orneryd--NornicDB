@@ -4728,6 +4728,15 @@ func resolveVectorAdaptiveOverfetch(opts *SearchOptions, pipeline *VectorSearchP
 		effective.MaxCandidateLimit = generator.index.profile.RerankTopK
 	}
 	config := resolveAdaptiveOverfetch(&effective)
+	if compressed && generator.index != nil {
+		rescoreFloor := generator.index.profile.RerankTopK
+		if rescoreFloor > config.maxLimit {
+			config.maxLimit = rescoreFloor
+		}
+		if rescoreFloor > config.initialLimit {
+			config.initialLimit = rescoreFloor
+		}
+	}
 	if planner, ok := pipeline.candidateGen.(approximateCandidateDepthPlanner); ok {
 		preferred := planner.preferredCandidateDepth(config.target, config.maxLimit)
 		if preferred > config.initialLimit {

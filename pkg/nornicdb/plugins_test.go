@@ -23,7 +23,12 @@ func buildTestPluginSO(t *testing.T, dir, baseName, source string) string {
 	soPath := filepath.Join(dir, baseName+".so")
 	require.NoError(t, os.WriteFile(srcPath, []byte(source), 0o600))
 
-	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", soPath, srcPath)
+	args := []string{"build"}
+	if testPluginBuildTags != "" {
+		args = append(args, "-tags", testPluginBuildTags)
+	}
+	args = append(args, "-buildmode=plugin", "-o", soPath, srcPath)
+	cmd := exec.Command("go", args...)
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "go build plugin failed: %s", string(out))

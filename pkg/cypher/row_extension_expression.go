@@ -229,7 +229,7 @@ func (e *StorageExecutor) evaluateRowExtensionFunction(function, argument string
 			parts[index] = fmt.Sprint(item)
 		}
 		return strings.Join(parts, separator), true, true
-	case "apoc.coll.flatten", "apoc.coll.toset", "apoc.coll.sum", "apoc.coll.avg", "apoc.coll.min", "apoc.coll.max":
+	case "apoc.coll.flatten", "apoc.coll.toset", "apoc.coll.sum", "apoc.coll.avg", "apoc.coll.min", "apoc.coll.max", "apoc.coll.reverse":
 		value, ok := one()
 		if !ok {
 			return nil, true, false
@@ -246,6 +246,8 @@ func (e *StorageExecutor) evaluateRowExtensionFunction(function, argument string
 			return apocCollAvg(value), true, true
 		case "apoc.coll.min":
 			return apocCollMin(value), true, true
+		case "apoc.coll.reverse":
+			return apocCollReverse(value), true, true
 		default:
 			return apocCollMax(value), true, true
 		}
