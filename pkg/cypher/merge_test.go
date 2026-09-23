@@ -6,6 +6,7 @@ package cypher
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -377,6 +378,47 @@ func TestMergeChain_StandaloneSetThenRelationshipMerge(t *testing.T) {
 // ========================================
 // MERGE Relationship Tests
 // ========================================
+
+func TestMergeStandaloneRelationshipPath(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"bare", "MERGE (a:SM)-[:R]->(b:SN)"},
+		{"properties", "MERGE (a:SM {name: 'x'})-[:R]->(b:SN {name: 'y'})"},
+		{"partial properties", "MERGE (a:SM {id: 7})-[:R]->(b:SN)"},
+		{"self loop", "MERGE (a:SM {id: 10})-[:R]->(a)"},
+		{"anonymous", "MERGE (:SM {id: 1})-[:R {w: 1}]->(:SN {id: 1})"},
+		{"on create", "MERGE (a:SM {id: 5})-[:R]->(b:SN {id: 5}) ON CREATE SET a.c = 1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := storage.NewNamespacedEngine(newTestMemoryEngine(t), "test")
+			exec := NewStorageExecutor(store)
+			for run := 0; run < 2; run++ {
+				_, err := exec.Execute(context.Background(), tc.query, nil)
+				require.NoError(t, err)
+			}
+			nodes, err := store.AllNodes()
+			require.NoError(t, err)
+			expectedNodes := 2
+			if tc.name == "self loop" {
+				expectedNodes = 1
+			}
+			require.Len(t, nodes, expectedNodes)
+			edges, err := store.AllEdges()
+			require.NoError(t, err)
+			require.Len(t, edges, 1)
+			if tc.name == "on create" {
+				for _, node := range nodes {
+					if slices.Contains(node.Labels, "SM") {
+						require.Equal(t, int64(1), node.Properties["c"])
+					}
+				}
+			}
+		})
+	}
+}
 
 func TestMergeRelationship_Basic(t *testing.T) {
 	baseStore := newTestMemoryEngine(t)

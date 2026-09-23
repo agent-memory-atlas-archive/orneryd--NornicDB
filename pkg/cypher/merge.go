@@ -585,6 +585,9 @@ func (e *StorageExecutor) executeMerge(ctx context.Context, cypher string) (*Exe
 
 	// Extract MERGE pattern (e.g., "(n:Label {prop: value})")
 	mergePattern := strings.TrimSpace(cypher[mergeIdx+5 : patternEnd])
+	if strings.Contains(mergePattern, "->") || strings.Contains(mergePattern, "<-") || strings.Contains(mergePattern, "]-") {
+		return e.executeMergeWithContext(ctx, cypher, make(map[string]*storage.Node), make(map[string]*storage.Edge))
+	}
 
 	// Parse the pattern to extract labels and properties for matching
 	// Note: Parameters ($param) should already be substituted by substituteParams()
@@ -2162,6 +2165,9 @@ func (e *StorageExecutor) executeMergeRelationshipWithContext(ctx context.Contex
 		if parsedPattern.startVariable != "" {
 			nodeContext[parsedPattern.startVariable] = startNode
 		}
+	}
+	if endNode == nil && parsedPattern.endVariable != "" {
+		endNode = nodeContext[parsedPattern.endVariable]
 	}
 	if endNode == nil {
 		var created bool
