@@ -156,6 +156,30 @@ func TestRecoverBadgerFromSnapshotAndWAL_HandlesEmptyRecoveryInputs(t *testing.T
 	require.Empty(t, nodes)
 }
 
+func TestRecoverBadgerFromSnapshotAndWAL_RejectsEmptyReplayOfExistingStore(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := storage.NewBadgerEngine(dataDir)
+	require.NoError(t, err)
+	_, err = store.CreateNode(&storage.Node{
+		ID: storage.NodeID("nornic:preserved"), Labels: []string{"Doc"},
+		Properties: map[string]interface{}{"name": "preserved"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
+	recovered, backupDir, err := recoverBadgerFromSnapshotAndWAL(dataDir, storage.BadgerOptions{DataDir: dataDir})
+	if recovered != nil {
+		t.Cleanup(func() { _ = recovered.Close() })
+	}
+	if backupDir != "" {
+		t.Cleanup(func() { _ = os.RemoveAll(backupDir) })
+	}
+	require.Error(t, err)
+	require.Nil(t, recovered)
+	require.NotEmpty(t, backupDir)
+	require.FileExists(t, filepath.Join(backupDir, "MANIFEST"))
+}
+
 func TestRecoverBadgerFromSnapshotAndWAL_SnapshotAndWALReplay(t *testing.T) {
 	dataDir := t.TempDir()
 	walDir := filepath.Join(dataDir, "wal")

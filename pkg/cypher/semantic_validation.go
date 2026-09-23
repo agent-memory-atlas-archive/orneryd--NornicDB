@@ -8,6 +8,12 @@ func (e *StorageExecutor) validateSemanticScopes(cypher string) error {
 	if e.semanticValidationCache.contains(cypher) {
 		return nil
 	}
+	if err := validateStaticQuantifierTypes(cypher); err != nil {
+		return err
+	}
+	if err := validateStaticSizeArguments(cypher); err != nil {
+		return err
+	}
 	if err := e.validateStaticPaginationExpressions(cypher); err != nil {
 		return err
 	}

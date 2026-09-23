@@ -1456,7 +1456,7 @@ func (db *DB) Restore(ctx context.Context, path string) error {
 				}
 			}
 			db.mu.Unlock()
-			db.restartSearchAfterRestore(ctx)
+			db.restartSearchAfterRestore()
 			return nil
 		}
 	}
@@ -1521,7 +1521,7 @@ legacyJSONRestore:
 	}
 	db.mu.Unlock()
 
-	db.restartSearchAfterRestore(ctx)
+	db.restartSearchAfterRestore()
 	return nil
 }
 
@@ -1541,17 +1541,21 @@ func isJSONBackupFile(path string) (bool, error) {
 	return len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '['), nil
 }
 
-func (db *DB) restartSearchAfterRestore(ctx context.Context) {
+func (db *DB) restartSearchAfterRestore() {
 	// Restart search indexing after releasing the DB write lock; starting the
 	// background search build while Restore still holds db.mu deadlocks via
 	// startBackgroundTask's read lock.
 	dbName := db.defaultDatabaseName()
-	db.ResetSearchService(dbName)
+	db.DropSearchServiceState(dbName)
 	if svc, err := db.getOrCreateSearchService(dbName, db.storage); err == nil && svc != nil {
 		db.searchServicesMu.RLock()
 		entry := db.searchServices[dbName]
 		db.searchServicesMu.RUnlock()
 		if entry != nil {
+			ctx := db.buildCtx
+			if ctx == nil {
+				ctx = context.Background()
+			}
 			db.startSearchIndexBuild(entry, ctx)
 		}
 	} else if err != nil {

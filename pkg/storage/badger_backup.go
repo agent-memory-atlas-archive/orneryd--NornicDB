@@ -72,13 +72,27 @@ func (b *BadgerEngine) Restore(path string) error {
 	}
 	defer file.Close()
 
+	if err := db.DropAll(); err != nil {
+		return localizedError(localization.StorageClientBackupFailed(err), err)
+	}
 	if err := db.Load(bufio.NewReaderSize(file, 16*1024), 1000); err != nil {
 		return localizedError(localization.StorageClientBackupFailed(err), err)
 	}
+	b.idDict = newIDDictionary()
+	b.propKeyDict = newPropertyKeyDictionary()
 	if err := b.idDict.loadFromBadger(db); err != nil {
 		return localizedError(localization.StorageClientBackupFailed(err), err)
 	}
 	if err := b.propKeyDict.loadFromBadger(db); err != nil {
+		return localizedError(localization.StorageClientBackupFailed(err), err)
+	}
+	b.mvccByNamespaceMu.Lock()
+	b.mvccByNamespace = make(map[string]*namespaceMVCCState)
+	b.mvccByNamespaceMu.Unlock()
+	if err := b.initializeMVCCSequence(); err != nil {
+		return localizedError(localization.StorageClientBackupFailed(err), err)
+	}
+	if err := b.loadPersistedSchemas(); err != nil {
 		return localizedError(localization.StorageClientBackupFailed(err), err)
 	}
 

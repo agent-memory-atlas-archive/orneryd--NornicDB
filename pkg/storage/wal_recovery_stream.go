@@ -111,6 +111,15 @@ func newRecoverySnapshotVisitor(engine Engine, batchSize int) *recoverySnapshotV
 }
 
 func (v *recoverySnapshotVisitor) VisitNode(node *Node) error {
+	if len(v.nodes) > 0 {
+		previous, _, _ := ParseDatabasePrefix(string(v.nodes[0].ID))
+		current, _, _ := ParseDatabasePrefix(string(node.ID))
+		if previous != current {
+			if err := v.flushNodes(); err != nil {
+				return err
+			}
+		}
+	}
 	v.nodes = append(v.nodes, node)
 	if len(v.nodes) < v.batchSize {
 		return nil
@@ -121,6 +130,15 @@ func (v *recoverySnapshotVisitor) VisitNode(node *Node) error {
 func (v *recoverySnapshotVisitor) VisitEdge(edge *Edge) error {
 	if err := v.flushNodes(); err != nil {
 		return err
+	}
+	if len(v.edges) > 0 {
+		previous, _, _ := ParseDatabasePrefix(string(v.edges[0].ID))
+		current, _, _ := ParseDatabasePrefix(string(edge.ID))
+		if previous != current {
+			if err := v.flushEdges(); err != nil {
+				return err
+			}
+		}
 	}
 	v.edges = append(v.edges, edge)
 	if len(v.edges) < v.batchSize {

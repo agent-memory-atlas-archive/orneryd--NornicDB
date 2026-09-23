@@ -174,6 +174,8 @@ func recoverBadgerFromSnapshotAndWAL(dataDir string, badgerOpts storage.BadgerOp
 		}
 		return nil, "", recoveryUnavailable(status, err)
 	}
+	_, priorStoreErr := os.Stat(filepath.Join(dataDir, "MANIFEST"))
+	priorStore := priorStoreErr == nil
 
 	snapshotDir := filepath.Join(dataDir, "snapshots")
 	snapPath, snapErr := latestSnapshotPath(snapshotDir)
@@ -238,11 +240,11 @@ func recoverBadgerFromSnapshotAndWAL(dataDir string, badgerOpts storage.BadgerOp
 		_ = newStore.Close()
 		return nil, backupDir, finishRecoveryFailure(status, backupDir, err)
 	}
-
-	// Best-effort: surface replay health in logs (callers can decide how to report).
-	if replay.Failed > 0 {
-		fmt.Printf("⚠️  Auto-recover replay completed with errors: %s\n", replay.Summary())
+	if replay.Failed > 0 || (priorStore && streamStatus.SnapshotNodes == 0 && streamStatus.SnapshotEdges == 0 && replay.Applied == 0) {
+		_ = newStore.Close()
+		return nil, backupDir, finishRecoveryFailure(status, backupDir, fmt.Errorf("recovery cannot replace an existing store with incomplete or empty replay: %s", replay.Summary()))
 	}
+
 	status.Phase = RecoveryPhaseComplete
 	status.CompletedAt = time.Now().UTC()
 	if err := writeRecoveryManifest(backupDir, status); err != nil {

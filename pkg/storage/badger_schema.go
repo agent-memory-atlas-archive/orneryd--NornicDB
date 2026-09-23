@@ -74,15 +74,6 @@ func (b *BadgerEngine) loadPersistedSchemas() error {
 		return err
 	}
 
-	// Phase 2: install into engine map.
-	if len(loadedSchemas) > 0 {
-		b.schemasMu.Lock()
-		for _, ls := range loadedSchemas {
-			b.schemas[ls.namespace] = ls.schema
-		}
-		b.schemasMu.Unlock()
-	}
-
 	// Rebuild derived unique-constraint value caches from stored nodes.
 	// This keeps CreateNode() fast (in-memory uniqueness checks) and ensures constraints
 	// enforce correctly immediately after restart.
@@ -91,6 +82,13 @@ func (b *BadgerEngine) loadPersistedSchemas() error {
 			return err
 		}
 	}
+	loadedMap := make(map[string]*SchemaManager, len(loadedSchemas))
+	for _, ls := range loadedSchemas {
+		loadedMap[ls.namespace] = ls.schema
+	}
+	b.schemasMu.Lock()
+	b.schemas = loadedMap
+	b.schemasMu.Unlock()
 
 	return nil
 }

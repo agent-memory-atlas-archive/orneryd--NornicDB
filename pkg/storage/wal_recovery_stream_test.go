@@ -44,6 +44,29 @@ func TestRecoverIntoEngineStreamsSnapshotAndWAL(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRecoverIntoEngineStreamsMixedNamespaces(t *testing.T) {
+	source := NewMemoryEngine()
+	for _, namespace := range []string{"nornic", "system"} {
+		_, err := source.CreateNode(&Node{
+			ID: NodeID(namespace + ":node"), Labels: []string{"Doc"},
+			Properties: map[string]interface{}{"name": namespace},
+		})
+		require.NoError(t, err)
+	}
+	snapshotPath := filepath.Join(t.TempDir(), "mixed.nds")
+	require.NoError(t, SaveStreamingSnapshot(context.Background(), source, snapshotPath, SnapshotOptions{}))
+	destination, err := NewBadgerEngine(t.TempDir())
+	require.NoError(t, err)
+	defer destination.Close()
+	_, status, err := RecoverIntoEngine(destination, t.TempDir(), snapshotPath)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), status.SnapshotNodes)
+	for _, namespace := range []string{"nornic", "system"} {
+		_, err := destination.GetNode(NodeID(namespace + ":node"))
+		require.NoError(t, err)
+	}
+}
+
 func TestVisitWALEntriesAfterFromDirPreservesOrder(t *testing.T) {
 	cleanup := config.WithWALEnabled()
 	defer cleanup()

@@ -143,6 +143,72 @@ func TestBadgerEngine_RestoreNativeStream(t *testing.T) {
 	require.Len(t, edges, 1)
 }
 
+func TestBadgerEngine_RestoreReloadsSchema(t *testing.T) {
+	source, err := NewBadgerEngine(t.TempDir())
+	require.NoError(t, err)
+	defer source.Close()
+
+	sourceSchema := source.GetSchemaForNamespace("nornic")
+	require.NoError(t, sourceSchema.AddUniqueConstraint("doc_key", "Doc", "key"))
+	_, err = source.CreateNode(&Node{
+		ID: NodeID("nornic:doc1"), Labels: []string{"Doc"},
+		Properties: map[string]interface{}{"key": "k1"},
+	})
+	require.NoError(t, err)
+
+	backupPath := filepath.Join(t.TempDir(), "schema.backup")
+	require.NoError(t, source.Backup(backupPath))
+
+	targetDir := t.TempDir()
+	target, err := NewBadgerEngine(targetDir)
+	require.NoError(t, err)
+	require.NoError(t, target.Restore(backupPath))
+	require.Len(t, target.GetSchemaForNamespace("nornic").ExportDefinition().Constraints, 1)
+	_, err = target.CreateNode(&Node{
+		ID: NodeID("nornic:doc2"), Labels: []string{"Doc"},
+		Properties: map[string]interface{}{"key": "k1"},
+	})
+	require.Error(t, err)
+	require.NoError(t, target.Close())
+
+	reopened, err := NewBadgerEngine(targetDir)
+	require.NoError(t, err)
+	defer reopened.Close()
+	require.Len(t, reopened.GetSchemaForNamespace("nornic").ExportDefinition().Constraints, 1)
+}
+
+func TestBadgerEngine_RestoreReplacesTargetSystemRecords(t *testing.T) {
+	source, err := NewBadgerEngine(t.TempDir())
+	require.NoError(t, err)
+	defer source.Close()
+	_, err = source.CreateNode(&Node{
+		ID: NodeID("system:source"), Properties: map[string]interface{}{"source_key": "source"},
+	})
+	require.NoError(t, err)
+	backupPath := filepath.Join(t.TempDir(), "system.backup")
+	require.NoError(t, source.Backup(backupPath))
+
+	targetDir := t.TempDir()
+	target, err := NewBadgerEngine(targetDir)
+	require.NoError(t, err)
+	_, err = target.CreateNode(&Node{
+		ID: NodeID("system:target"), Properties: map[string]interface{}{"target_key": "target"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, target.Restore(backupPath))
+	_, err = target.GetNode(NodeID("system:target"))
+	require.ErrorIs(t, err, ErrNotFound)
+	require.NoError(t, target.Close())
+
+	reopened, err := NewBadgerEngine(targetDir)
+	require.NoError(t, err)
+	defer reopened.Close()
+	_, err = reopened.GetNode(NodeID("system:source"))
+	require.NoError(t, err)
+	_, err = reopened.GetNode(NodeID("system:target"))
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
 func generateUniqueTestID() string {
 	id := atomic.AddInt64(&testIDCounter, 1)
 	return prefixTestID(fmt.Sprintf("test-backup-%d-%d", os.Getpid(), id))

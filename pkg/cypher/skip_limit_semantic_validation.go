@@ -66,6 +66,9 @@ func (e *StorageExecutor) validateStaticPaginationExpressions(cypher string) err
 }
 
 func (e *StorageExecutor) validateRuntimePaginationExpressions(ctx context.Context, cypher string) error {
+	if !strings.Contains(cypher, "$") {
+		return nil
+	}
 	params := getParamsFromContext(ctx)
 	if len(params) == 0 {
 		return nil
