@@ -469,6 +469,11 @@ embedding_worker:
   # Env: NORNICDB_EMBED_CHUNK_SIZE
   chunk_size: 512
 
+  # Optional managed embedding eligibility (distinct from whether labels appear in embedding text).
+  # Env: NORNICDB_EMBEDDING_LABELS_INCLUDE / NORNICDB_EMBEDDING_LABELS_EXCLUDE
+  # eligible_labels: [Document, Chunk] # Empty means all labels
+  # excluded_labels: [AuditLog, Job]   # Exclusions win over eligibility
+
 # =============================================================================
 # COMPLIANCE / RETENTION
 # Docs: https://github.com/orneryd/NornicDB/blob/main/docs/user-guides/retention-policies.md

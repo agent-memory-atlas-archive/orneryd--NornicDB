@@ -216,6 +216,8 @@ index path, while `auto` preserves the existing file-backed build behavior.
 | `db.nornic.embedding.properties.include`     | `NORNICDB_EMBEDDING_PROPERTIES_INCLUDE`     |
 | `db.nornic.embedding.properties.exclude`     | `NORNICDB_EMBEDDING_PROPERTIES_EXCLUDE`     |
 | `db.nornic.embedding.include.labels`         | `NORNICDB_EMBEDDING_INCLUDE_LABELS`         |
+| `db.nornic.embedding.labels.include`         | `NORNICDB_EMBEDDING_LABELS_INCLUDE`         |
+| `db.nornic.embedding.labels.exclude`         | `NORNICDB_EMBEDDING_LABELS_EXCLUDE`         |
 | `db.nornic.embedding.gpu.layers`             | `NORNICDB_EMBEDDING_GPU_LAYERS`             |
 | `db.nornic.embedding.warmup.interval`        | `NORNICDB_EMBEDDING_WARMUP_INTERVAL`        |
 | `db.nornic.search.min.similarity`            | `NORNICDB_SEARCH_MIN_SIMILARITY`            |
@@ -647,6 +649,8 @@ embedding_worker:
 | `NORNICDB_EMBEDDING_PROPERTIES_INCLUDE` | (empty) | Comma-separated list of property keys to use. If set, **only** these keys (and optionally labels) are embedded. Example: `content` or `content,title,description`. |
 | `NORNICDB_EMBEDDING_PROPERTIES_EXCLUDE` | (empty) | Comma-separated list of property keys to exclude from embedding text. Example: `internal_id,raw_html`.                                                             |
 | `NORNICDB_EMBEDDING_INCLUDE_LABELS`     | `true`  | Set to `false` to omit node labels from the embedding text (e.g. when embedding only a single field).                                                              |
+
+Node eligibility is configured separately with `NORNICDB_EMBEDDING_LABELS_INCLUDE` and `NORNICDB_EMBEDDING_LABELS_EXCLUDE` (comma-separated, both empty by default). The YAML keys are `embedding_worker.eligible_labels` and `embedding_worker.excluded_labels`. See [Which nodes are automatically embedded](../features/vector-embeddings.md#which-nodes-are-automatically-embedded) for precedence, restart, and existing-vector behavior.
 
 **Behavior:**
 

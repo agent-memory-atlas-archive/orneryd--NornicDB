@@ -73,6 +73,71 @@ func TestAdminPutRestartSettingReportsPendingRestart(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, response.Code)
 }
 
+func TestAdminEmbeddingLabelPoliciesApplyPerDatabaseAfterRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	before, authenticator, database := openPersistentDBConfigTestServer(t, dataDir)
+	require.NoError(t, before.dbManager.CreateDatabase("images"))
+	token := getAuthToken(t, authenticator, "admin")
+	for _, testCase := range []struct {
+		name, include, exclude string
+	}{
+		{"nornic", "Document, Chunk", "AuditLog, Job"},
+		{"images", "Image", "Job"},
+	} {
+		response := makeRequest(t, before, http.MethodPut, "/admin/databases/"+testCase.name+"/config",
+			map[string]any{"overrides": map[string]string{
+				"db.nornic.embedding.labels.include": testCase.include,
+				"db.nornic.embedding.labels.exclude": testCase.exclude,
+			}}, "Bearer "+token)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
+		require.Equal(t, true, body["pendingRestart"])
+		require.Equal(t, false, body["rebuildTriggered"])
+		require.Equal(t, "", body["effective"].(map[string]any)["db.nornic.embedding.labels.include"])
+	}
+	require.NoError(t, before.Stop(context.Background()))
+	require.NoError(t, database.Close())
+
+	after, _, reopened := openPersistentDBConfigTestServer(t, dataDir)
+	t.Cleanup(func() {
+		_ = after.Stop(context.Background())
+		_ = reopened.Close()
+	})
+	var engine *storage.BadgerEngine
+	for current := reopened.GetBaseStorageForManager(); current != nil; {
+		if badger, ok := current.(*storage.BadgerEngine); ok {
+			engine = badger
+			break
+		}
+		wrapper, ok := current.(interface{ GetInnerEngine() storage.Engine })
+		if !ok {
+			break
+		}
+		current = wrapper.GetInnerEngine()
+	}
+	require.NotNil(t, engine)
+	engine.SetEmbeddingsEnabled(true)
+	for _, testCase := range []struct {
+		database, id string
+		labels       []string
+	}{
+		{"nornic", "doc", []string{"Document"}},
+		{"nornic", "log", []string{"Document", "AuditLog"}},
+		{"nornic", "image", []string{"Image"}},
+		{"images", "image", []string{"Image"}},
+		{"images", "doc", []string{"Document"}},
+	} {
+		engineForDB, err := after.dbManager.GetStorage(testCase.database)
+		require.NoError(t, err)
+		_, err = engineForDB.CreateNode(&storage.Node{ID: storage.NodeID(testCase.id), Labels: testCase.labels, Properties: map[string]any{"text": "value"}})
+		require.NoError(t, err)
+	}
+	require.Equal(t, 2, engine.PendingEmbeddingsCount())
+	engine.RefreshPendingEmbeddingsIndex()
+	require.Equal(t, 2, engine.PendingEmbeddingsCount())
+}
+
 func TestAdminPutDynamicSearchCacheDoesNotRebuild(t *testing.T) {
 	server, authenticator := setupTestServer(t)
 	token := getAuthToken(t, authenticator, "admin")

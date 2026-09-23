@@ -1003,6 +1003,7 @@ func Open(dataDir string, config *Config) (*DB, error) {
 	// down to the engine once at startup.
 	if be := unwrapToBadgerEngine(db.baseStorage); be != nil {
 		be.SetEmbeddingsEnabled(config.Memory.EmbeddingEnabled)
+		be.SetEmbeddingLabelPolicy("", config.EmbeddingWorker.EligibleLabels, config.EmbeddingWorker.ExcludedLabels)
 	}
 
 	// Initialize knowledge-layer decay: wire scorer into BadgerEngine read paths.
@@ -2498,5 +2499,12 @@ func unwrapToBadgerEngine(eng storage.Engine) *storage.BadgerEngine {
 		default:
 			return nil
 		}
+	}
+}
+
+// SetEmbeddingLabelPolicy configures managed-embedding admission for one database.
+func (db *DB) SetEmbeddingLabelPolicy(dbName string, eligible, excluded []string) {
+	if badger := unwrapToBadgerEngine(db.baseStorage); badger != nil {
+		badger.SetEmbeddingLabelPolicy(dbName, eligible, excluded)
 	}
 }

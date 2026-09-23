@@ -574,6 +574,41 @@ func TestEmbedWorkerPersistence(t *testing.T) {
 	})
 }
 
+func TestEmbedWorkerSkipsExcludedNodeLabels(t *testing.T) {
+	base, err := storage.NewBadgerEngine(t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = base.Close() })
+	base.SetEmbeddingsEnabled(true)
+	base.SetEmbeddingLabelPolicy("test", []string{"Document"}, []string{"AuditLog"})
+	engine := storage.NewNamespacedEngine(base, "test")
+	for _, testCase := range []struct {
+		id     string
+		labels []string
+	}{
+		{"document", []string{"Document"}},
+		{"audit", []string{"Document", "AuditLog"}},
+		{"job", []string{"Job"}},
+	} {
+		_, err := engine.CreateNode(&storage.Node{ID: storage.NodeID(testCase.id), Labels: testCase.labels, Properties: map[string]any{"content": testCase.id}})
+		require.NoError(t, err)
+	}
+	base.RefreshPendingEmbeddingsIndex()
+	require.Equal(t, 1, base.PendingEmbeddingsCount())
+	provider := newMockEmbedder()
+	worker := NewEmbedWorker(provider, engine, &EmbedWorkerConfig{NumWorkers: 0, MaxRetries: 1, ChunkSize: 512})
+	defer worker.Close()
+	require.True(t, worker.processNextBatch())
+	require.False(t, worker.processNextBatch())
+	require.Equal(t, 1, provider.GetEmbedCount())
+	require.Equal(t, 1, worker.Stats().Processed)
+	require.Equal(t, 0, base.PendingEmbeddingsCount())
+	for _, id := range []storage.NodeID{"audit", "job"} {
+		node, err := engine.GetNode(id)
+		require.NoError(t, err)
+		require.Empty(t, node.ChunkEmbeddings)
+	}
+}
+
 // TestEmbedWorkerFindNodeWithoutEmbedding tests the node discovery logic
 func TestEmbedWorkerFindNodeWithoutEmbedding(t *testing.T) {
 	t.Run("finds_node_without_embedding", func(t *testing.T) {

@@ -913,6 +913,8 @@ embedding_worker:
   properties_include: [content, title]
   properties_exclude: [internal_id]
   include_labels: false
+  eligible_labels: [Document, Chunk]
+  excluded_labels: [AuditLog]
 `), 0o600)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -932,6 +934,20 @@ embedding_worker:
 	if cfg.EmbeddingWorker.IncludeLabels {
 		t.Error("expected include_labels false from YAML")
 	}
+	require.Equal(t, []string{"Document", "Chunk"}, cfg.EmbeddingWorker.EligibleLabels)
+	require.Equal(t, []string{"AuditLog"}, cfg.EmbeddingWorker.ExcludedLabels)
+}
+
+func TestEmbeddingLabelFilterEnvironmentOverridesYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("embedding_worker:\n  eligible_labels: [Image]\n  excluded_labels: [Log]\n  include_labels: false\n"), 0o600))
+	t.Setenv("NORNICDB_EMBEDDING_LABELS_INCLUDE", " Document, Chunk ")
+	t.Setenv("NORNICDB_EMBEDDING_LABELS_EXCLUDE", "AuditLog, Job")
+	cfg, err := LoadFromFile(path)
+	require.NoError(t, err)
+	require.Equal(t, []string{"Document", "Chunk"}, cfg.EmbeddingWorker.EligibleLabels)
+	require.Equal(t, []string{"AuditLog", "Job"}, cfg.EmbeddingWorker.ExcludedLabels)
+	require.False(t, cfg.EmbeddingWorker.IncludeLabels)
 }
 
 func TestLoadFromFile_MVCCLifecycle(t *testing.T) {

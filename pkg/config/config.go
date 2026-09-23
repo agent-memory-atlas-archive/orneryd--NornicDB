@@ -583,6 +583,10 @@ type EmbeddingWorkerConfig struct {
 	PropertiesExclude []string
 	// IncludeLabels: if true (default), node labels are prepended to the embedding text.
 	IncludeLabels bool
+	// EligibleLabels limits managed embedding to nodes with at least one listed label (empty = all).
+	EligibleLabels []string
+	// ExcludedLabels prevents managed embedding of nodes with any listed label.
+	ExcludedLabels []string
 }
 
 // MemoryConfig holds NornicDB memory decay settings and runtime memory management.
@@ -1623,6 +1627,8 @@ type YAMLConfig struct {
 		PropertiesInclude []string `yaml:"properties_include"`
 		PropertiesExclude []string `yaml:"properties_exclude"`
 		IncludeLabels     *bool    `yaml:"include_labels"`
+		EligibleLabels    []string `yaml:"eligible_labels"`
+		ExcludedLabels    []string `yaml:"excluded_labels"`
 	} `yaml:"embedding_worker"`
 
 	// K-means clustering
@@ -2682,6 +2688,12 @@ func applyEnvVars(config *Config) error {
 	if v := getEnvStringSlice("NORNICDB_EMBEDDING_PROPERTIES_EXCLUDE", nil); len(v) > 0 {
 		config.EmbeddingWorker.PropertiesExclude = v
 	}
+	if v := getEnv("NORNICDB_EMBEDDING_LABELS_INCLUDE", ""); v != "" {
+		config.EmbeddingWorker.EligibleLabels = getEnvStringSlice("NORNICDB_EMBEDDING_LABELS_INCLUDE", nil)
+	}
+	if v := getEnv("NORNICDB_EMBEDDING_LABELS_EXCLUDE", ""); v != "" {
+		config.EmbeddingWorker.ExcludedLabels = getEnvStringSlice("NORNICDB_EMBEDDING_LABELS_EXCLUDE", nil)
+	}
 	if v := getEnv("NORNICDB_EMBEDDING_INCLUDE_LABELS", ""); v != "" {
 		config.EmbeddingWorker.IncludeLabels = getEnvBool("NORNICDB_EMBEDDING_INCLUDE_LABELS", config.EmbeddingWorker.IncludeLabels)
 	}
@@ -3576,6 +3588,12 @@ func LoadFromFile(configPath string) (*Config, error) {
 	}
 	if len(yamlCfg.EmbeddingWorker.PropertiesExclude) > 0 {
 		config.EmbeddingWorker.PropertiesExclude = yamlCfg.EmbeddingWorker.PropertiesExclude
+	}
+	if len(yamlCfg.EmbeddingWorker.EligibleLabels) > 0 {
+		config.EmbeddingWorker.EligibleLabels = yamlCfg.EmbeddingWorker.EligibleLabels
+	}
+	if len(yamlCfg.EmbeddingWorker.ExcludedLabels) > 0 {
+		config.EmbeddingWorker.ExcludedLabels = yamlCfg.EmbeddingWorker.ExcludedLabels
 	}
 	if yamlCfg.EmbeddingWorker.IncludeLabels != nil {
 		config.EmbeddingWorker.IncludeLabels = *yamlCfg.EmbeddingWorker.IncludeLabels

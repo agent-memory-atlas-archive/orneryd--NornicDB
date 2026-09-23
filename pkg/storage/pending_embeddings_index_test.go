@@ -658,6 +658,41 @@ func TestBadgerEngine_PendingEmbeddingsIndex(t *testing.T) {
 	})
 }
 
+func TestPendingEmbeddingsRespectDatabaseLabelPolicy(t *testing.T) {
+	engine := newTestBadgerEngineForPending(t)
+	engine.SetEmbeddingLabelPolicy("a", []string{"Document", "Chunk"}, []string{"AuditLog"})
+	engine.SetEmbeddingLabelPolicy("b", []string{"Image"}, nil)
+	for _, tc := range []struct {
+		id     string
+		labels []string
+	}{
+		{"a:doc", []string{"Document"}},
+		{"a:chunk", []string{"Chunk"}},
+		{"a:log", []string{"Document", "AuditLog"}},
+		{"a:job", []string{"Job"}},
+		{"a:bare", nil},
+		{"b:image", []string{"Image"}},
+		{"b:doc", []string{"Document"}},
+	} {
+		_, err := engine.CreateNode(&Node{ID: NodeID(tc.id), Labels: tc.labels, Properties: map[string]interface{}{"text": "value"}})
+		require.NoError(t, err)
+	}
+	require.Equal(t, 3, engine.PendingEmbeddingsCount())
+	engine.RefreshPendingEmbeddingsIndex()
+	require.Equal(t, 3, engine.PendingEmbeddingsCount())
+	engine.SetEmbeddingLabelPolicy("a", []string{"Document"}, []string{"AuditLog", "Job"})
+	engine.RefreshPendingEmbeddingsIndex()
+	require.Equal(t, 2, engine.PendingEmbeddingsCount())
+	engine.AddToPendingEmbeddings("a:chunk")
+	require.Equal(t, 2, engine.PendingEmbeddingsCount())
+	engine.SetEmbeddingLabelPolicy("", []string{"Document"}, []string{"Job"})
+	_, err := engine.CreateNode(&Node{ID: "new:job", Labels: []string{"Document", "Job"}, Properties: map[string]interface{}{"text": "value"}})
+	require.NoError(t, err)
+	_, err = engine.CreateNode(&Node{ID: "new:doc", Labels: []string{"Document"}, Properties: map[string]interface{}{"text": "value"}})
+	require.NoError(t, err)
+	require.Equal(t, 3, engine.PendingEmbeddingsCount())
+}
+
 // newTestBadgerEngineForPending creates a BadgerEngine for pending embeddings tests
 func newTestBadgerEngineForPending(t *testing.T) *BadgerEngine {
 	t.Helper()

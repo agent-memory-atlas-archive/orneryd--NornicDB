@@ -209,6 +209,8 @@ func effectiveFromGlobal(c *config.Config, m map[string]string) {
 	setEffective("NORNICDB_EMBEDDING_PROPERTIES_INCLUDE", strings.Join(c.EmbeddingWorker.PropertiesInclude, ","))
 	setEffective("NORNICDB_EMBEDDING_PROPERTIES_EXCLUDE", strings.Join(c.EmbeddingWorker.PropertiesExclude, ","))
 	setEffective("NORNICDB_EMBEDDING_INCLUDE_LABELS", boolStr(c.EmbeddingWorker.IncludeLabels))
+	setEffective("NORNICDB_EMBEDDING_LABELS_INCLUDE", strings.Join(c.EmbeddingWorker.EligibleLabels, ","))
+	setEffective("NORNICDB_EMBEDDING_LABELS_EXCLUDE", strings.Join(c.EmbeddingWorker.ExcludedLabels, ","))
 	setEffective("NORNICDB_EMBEDDING_GPU_LAYERS", strconv.Itoa(c.Memory.EmbeddingGPULayers))
 	setEffective("NORNICDB_EMBEDDING_WARMUP_INTERVAL", c.Memory.EmbeddingWarmupInterval.String())
 	// Search

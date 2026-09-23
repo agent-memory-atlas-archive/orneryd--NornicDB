@@ -23,6 +23,23 @@ func TestResolve_GlobalOnly(t *testing.T) {
 	assert.NotEmpty(t, r.Effective["db.nornic.embedding.dimensions"])
 }
 
+func TestResolveEmbeddingLabelFilterOverrides(t *testing.T) {
+	global := config.LoadDefaults()
+	global.EmbeddingWorker.EligibleLabels = []string{"Document", "Chunk"}
+	global.EmbeddingWorker.ExcludedLabels = []string{"Job"}
+	left := Resolve(global, map[string]string{
+		"db.nornic.embedding.labels.include": "Image",
+		"db.nornic.embedding.labels.exclude": "AuditLog",
+	})
+	right := Resolve(global, nil)
+	require.Equal(t, "Image", left.Effective["db.nornic.embedding.labels.include"])
+	require.Equal(t, "AuditLog", left.Effective["db.nornic.embedding.labels.exclude"])
+	require.Equal(t, "Document,Chunk", right.Effective["db.nornic.embedding.labels.include"])
+	require.Equal(t, "Job", right.Effective["db.nornic.embedding.labels.exclude"])
+	require.True(t, IsAllowedKey("NORNICDB_EMBEDDING_LABELS_INCLUDE"))
+	require.True(t, IsAllowedKey("NORNICDB_EMBEDDING_LABELS_EXCLUDE"))
+}
+
 func TestResolve_Overrides(t *testing.T) {
 	t.Setenv("NORNICDB_SEARCH_BM25_ENGINE", "v2")
 	global := config.LoadDefaults()

@@ -341,7 +341,7 @@ func (b *BadgerEngine) FindNodeNeedingEmbedding() *Node {
 			}
 
 			// If node no longer needs embedding, remove it from the pending index.
-			if (len(node.ChunkEmbeddings) > 0 && len(node.ChunkEmbeddings[0]) > 0) || !NodeNeedsEmbedding(node) {
+			if !b.shouldIndexPendingEmbed(node) {
 				_ = txn.Delete(pendingEmbedKey(nodeID))
 				removedNoLongerNeeds++
 				continue
@@ -377,6 +377,22 @@ func (b *BadgerEngine) MarkNodeEmbedded(nodeID NodeID) {
 // Call this when creating a node that needs embedding.
 func (b *BadgerEngine) AddToPendingEmbeddings(nodeID NodeID) {
 	_ = b.withUpdate(func(txn *badger.Txn) error {
+		item, err := txn.Get(nodeKey(nodeID))
+		if err == nil {
+			var node *Node
+			if err = item.Value(func(value []byte) error {
+				var decodeErr error
+				node, decodeErr = b.decodeNode(namespaceForNodeID(nodeID), value)
+				return decodeErr
+			}); err != nil {
+				return err
+			}
+			if !b.embeddingLabelsAllowed(node) {
+				return nil
+			}
+		} else if err != badger.ErrKeyNotFound {
+			return err
+		}
 		return txn.Set(pendingEmbedKey(nodeID), []byte{})
 	})
 }
@@ -414,13 +430,13 @@ func (b *BadgerEngine) RefreshPendingEmbeddingsIndex() int {
 
 	// First pass: Clean up stale entries in the pending index
 	// Remove entries for nodes that don't exist or already have embeddings
-	_ = b.withUpdate(func(txn *badger.Txn) error {
+	cleanupErr := b.withUpdate(func(txn *badger.Txn) error {
 		pendingPrefix := []byte{prefixPendingEmbed}
 		it := txn.NewIterator(badgerIterOptsKeyOnly(pendingPrefix))
 		defer it.Close()
 
 		for it.Rewind(); it.Valid(); it.Next() {
-			key := it.Item().Key()
+			key := it.Item().KeyCopy(nil)
 			// Extract nodeID from key (skip prefix byte)
 			if len(key) <= 1 {
 				continue
@@ -485,14 +501,17 @@ func (b *BadgerEngine) RefreshPendingEmbeddingsIndex() int {
 				continue
 			}
 
-			// Remove from index if node already has embedding or doesn't need one
-			if (len(node.ChunkEmbeddings) > 0 && len(node.ChunkEmbeddings[0]) > 0) || !NodeNeedsEmbedding(node) {
+			// Remove from index if node no longer qualifies for managed embedding.
+			if !b.shouldIndexPendingEmbed(node) {
 				txn.Delete(key)
 				removed++
 			}
 		}
 		return nil
 	})
+	if cleanupErr != nil {
+		b.log.Warn("refresh pending embeddings: cleanup failed", slog.Any("error", cleanupErr))
+	}
 
 	// Second pass: Add missing nodes to the index
 	_ = b.withUpdate(func(txn *badger.Txn) error {
@@ -526,7 +545,7 @@ func (b *BadgerEngine) RefreshPendingEmbeddingsIndex() int {
 				}
 
 				// Check if needs embedding and not already in index
-				if (len(node.ChunkEmbeddings) == 0 || len(node.ChunkEmbeddings[0]) == 0) && NodeNeedsEmbedding(node) {
+				if b.shouldIndexPendingEmbed(node) {
 					// Check if already in pending index
 					_, err := txn.Get(pendingEmbedKey(node.ID))
 					if err == badger.ErrKeyNotFound {

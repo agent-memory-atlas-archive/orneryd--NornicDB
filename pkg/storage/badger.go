@@ -318,7 +318,8 @@ type BadgerEngine struct {
 	// embeddingsEnabled gates the pending-embed index write on node creates.
 	// When false, new nodes skip the pendingEmbed marker since no embed worker
 	// will consume it — saves one Badger Set per user node on hot-path writes.
-	embeddingsEnabled atomic.Bool
+	embeddingsEnabled      atomic.Bool
+	embeddingLabelPolicies atomic.Pointer[embeddingLabelPolicies]
 
 	// log is the structured *slog.Logger for storage subsystem emissions.
 	// Tagged at construction with component=storage, engine=badger.

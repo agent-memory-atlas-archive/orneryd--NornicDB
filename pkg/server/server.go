@@ -1803,6 +1803,15 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 		} else {
 			s.dbConfigStore = dbConfigStore
 			for _, info := range dbManager.ListDatabases() {
+				if info == nil || info.Name == "system" || dbManager.IsCompositeDatabase(info.Name) {
+					continue
+				}
+				resolved := dbconfig.Resolve(globalConfig, dbConfigStore.GetOverrides(info.Name))
+				db.SetEmbeddingLabelPolicy(info.Name,
+					parseEmbeddingLabelList(resolved.Effective["db.nornic.embedding.labels.include"]),
+					parseEmbeddingLabelList(resolved.Effective["db.nornic.embedding.labels.exclude"]))
+			}
+			for _, info := range dbManager.ListDatabases() {
 				if info == nil {
 					continue
 				}

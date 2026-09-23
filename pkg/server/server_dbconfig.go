@@ -294,6 +294,16 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return cloned
 }
 
+func parseEmbeddingLabelList(value string) []string {
+	var labels []string
+	for _, part := range strings.Split(value, ",") {
+		if label := strings.TrimSpace(part); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return labels
+}
+
 func redactDatabaseSettings(values map[string]string) map[string]string {
 	redacted := cloneStringMap(values)
 	for key := range redacted {

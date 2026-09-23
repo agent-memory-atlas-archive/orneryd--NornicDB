@@ -125,6 +125,19 @@ export NORNICDB_EMBEDDING_INCLUDE_LABELS=false
 
 If `properties_include` is set, only those keys are used (and exclude still applies). If only `properties_exclude` is set, all properties except those keys are used. See [Configuration Guide](../operations/configuration.md#embedding-text-which-properties-are-used) for full details.
 
+### Which nodes are automatically embedded
+
+Managed embedding admits all user nodes by default. To limit the pending queue by node label, configure:
+
+```bash
+export NORNICDB_EMBEDDING_LABELS_INCLUDE=Document,Chunk
+export NORNICDB_EMBEDDING_LABELS_EXCLUDE=AuditLog,Job
+```
+
+The YAML equivalents under `embedding_worker` are `eligible_labels: [Document, Chunk]` and `excluded_labels: [AuditLog, Job]`. At least one eligible label must match when the include list is nonempty; any excluded label blocks the node even if another label is eligible. An empty include list allows all labels, including unlabeled nodes. Filtering applies to new writes, explicit requeues, and startup pending-index refresh. Filtered nodes do not enter the provider queue or contribute to pending/processed counts.
+
+Per-database overrides use `db.nornic.embedding.labels.include` and `db.nornic.embedding.labels.exclude` via `PUT /admin/databases/{db}/config`. They override the global lists independently and require a process restart to take effect; `pendingRestart` reports this state. Changing the filter removes disallowed *pending* markers on startup refresh, but does not remove vectors already stored on nodes. Rebuild or clear those embeddings explicitly if the existing vector index must reflect the new policy. `NORNICDB_EMBEDDING_INCLUDE_LABELS` is unrelated: it only controls whether labels appear in the text sent to the provider.
+
 ## Automatic Embedding
 
 ### On Node Creation
