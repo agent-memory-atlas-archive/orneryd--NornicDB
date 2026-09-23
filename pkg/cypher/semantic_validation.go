@@ -5,6 +5,9 @@ import "strings"
 // validateSemanticScopes is the shared compile-time semantic chokepoint used
 // by top-level statements and internally executed query branches.
 func (e *StorageExecutor) validateSemanticScopes(cypher string) error {
+	if e.semanticValidationCache.contains(cypher) {
+		return nil
+	}
 	if err := e.validateStaticPaginationExpressions(cypher); err != nil {
 		return err
 	}
@@ -76,7 +79,11 @@ func (e *StorageExecutor) validateSemanticScopes(cypher string) error {
 	if err := e.validateMatchSemanticScopes(cypher); err != nil {
 		return err
 	}
-	return e.validateSetSemanticScopes(cypher)
+	if err := e.validateSetSemanticScopes(cypher); err != nil {
+		return err
+	}
+	e.semanticValidationCache.add(cypher)
+	return nil
 }
 
 func validateWithProjectionSemantics(cypher string) error {

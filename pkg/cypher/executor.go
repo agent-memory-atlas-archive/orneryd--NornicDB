@@ -308,6 +308,7 @@ type StorageExecutor struct {
 	queryCacheMaxEntries         int
 	queryCacheTTL                time.Duration
 	planCache                    *QueryPlanCache // Parsed query plan cache
+	semanticValidationCache      *semanticValidationCache
 	matchSemanticValidationCache *semanticValidationCache
 	mergeSemanticValidationCache *semanticValidationCache
 	// fabricPlanCache caches planned Fabric fragment trees (query + sessionDB).
@@ -505,6 +506,7 @@ func (e *StorageExecutor) cloneWithStorage(override storage.Engine) *StorageExec
 		queryCacheMaxEntries:           e.queryCacheMaxEntries,
 		queryCacheTTL:                  e.queryCacheTTL,
 		planCache:                      e.planCache,
+		semanticValidationCache:        e.semanticValidationCache,
 		matchSemanticValidationCache:   e.matchSemanticValidationCache,
 		mergeSemanticValidationCache:   e.mergeSemanticValidationCache,
 		fabricPlanCache:                e.fabricPlanCache,
@@ -689,6 +691,7 @@ func newStorageExecutor(store storage.Engine, runtimeCfg *config.Config, maxEntr
 		queryCacheMaxEntries:           maxEntries,
 		queryCacheTTL:                  queryCacheTTL,
 		planCache:                      NewQueryPlanCache(500), // Cache 500 parsed query plans
+		semanticValidationCache:        newSemanticValidationCache(500),
 		matchSemanticValidationCache:   newSemanticValidationCache(500),
 		mergeSemanticValidationCache:   newSemanticValidationCache(500),
 		fabricPlanCache:                fabric.NewPlanCache(500), // Cache 500 Fabric fragment plans
