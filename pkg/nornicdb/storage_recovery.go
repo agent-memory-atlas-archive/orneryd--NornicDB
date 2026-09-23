@@ -86,11 +86,29 @@ func looksLikeCorruption(err error) bool {
 		strings.Contains(s, "value log")
 }
 
+const nativeRestoreMarker = "native-restore.marker"
+
+func hasPostRestoreSnapshot(dataDir string) bool {
+	marker, err := os.Stat(filepath.Join(dataDir, nativeRestoreMarker))
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	snapshot, err := latestSnapshotPath(filepath.Join(dataDir, "snapshots"))
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(snapshot)
+	return err == nil && info.ModTime().After(marker.ModTime())
+}
+
 // hasRecoverableArtifacts returns true if the data directory appears to contain recovery inputs:
 // snapshots and/or a WAL (active wal.log or sealed segments).
 //
 // This is used to avoid "recovering" into an empty database when there is nothing to replay.
 func hasRecoverableArtifacts(dataDir string) bool {
+	if !hasPostRestoreSnapshot(dataDir) {
+		return false
+	}
 	// Snapshots.
 	if _, err := latestSnapshotPath(filepath.Join(dataDir, "snapshots")); err == nil {
 		return true
@@ -173,6 +191,9 @@ func recoverBadgerFromSnapshotAndWAL(dataDir string, badgerOpts storage.BadgerOp
 			err = fmt.Errorf("data path is not a directory")
 		}
 		return nil, "", recoveryUnavailable(status, err)
+	}
+	if !hasPostRestoreSnapshot(dataDir) {
+		return nil, "", recoveryUnavailable(status, fmt.Errorf("native restore has no post-restore snapshot; refusing stale WAL recovery"))
 	}
 	_, priorStoreErr := os.Stat(filepath.Join(dataDir, "MANIFEST"))
 	priorStore := priorStoreErr == nil

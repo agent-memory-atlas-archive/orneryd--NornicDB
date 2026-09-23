@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -1444,6 +1445,13 @@ func (db *DB) Restore(ctx context.Context, path string) error {
 				}
 				db.mu.Unlock()
 				return localizedError(localization.NornicDBCoreBackupParseFailed(err), err)
+			}
+			if db.config != nil && db.config.Database.DataDir != "" {
+				marker := filepath.Join(db.config.Database.DataDir, nativeRestoreMarker)
+				if err := security.WriteRootedFile(marker, []byte(time.Now().UTC().Format(time.RFC3339Nano)), 0o600); err != nil {
+					db.mu.Unlock()
+					return fmt.Errorf("record native restore recovery boundary: %w", err)
+				}
 			}
 			if err := db.rebuildTemporalIndexesNoLock(ctx); err != nil {
 				db.mu.Unlock()

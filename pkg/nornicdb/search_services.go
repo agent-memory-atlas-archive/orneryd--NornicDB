@@ -136,6 +136,7 @@ type DatabaseSearchStatus struct {
 	Initialized     bool    `json:"initialized"`
 	Strategy        string  `json:"strategy,omitempty"`
 	Phase           string  `json:"phase,omitempty"`
+	Error           string  `json:"error,omitempty"`
 	ProcessedNodes  int64   `json:"processed_nodes,omitempty"`
 	TotalNodes      int64   `json:"total_nodes,omitempty"`
 	RateNodesPerSec float64 `json:"rate_nodes_per_sec,omitempty"`
@@ -572,6 +573,16 @@ func (db *DB) GetDatabaseSearchStatus(dbName string) DatabaseSearchStatus {
 		}
 	}
 	p := entry.svc.GetBuildProgress()
+	phase := p.Phase
+	buildError := ""
+	if !p.Ready && !p.Building {
+		entry.buildErrMu.RLock()
+		if entry.buildErr != nil {
+			phase = "failed"
+			buildError = entry.buildErr.Error()
+		}
+		entry.buildErrMu.RUnlock()
+	}
 	// The lazy-trigger signal flips on once the service is created but the
 	// build hasn't started. After Service.EnsureWarm fires the WarmFunc on
 	// the first inbound read, building=true and lazyTrigger flips off
@@ -584,7 +595,8 @@ func (db *DB) GetDatabaseSearchStatus(dbName string) DatabaseSearchStatus {
 		Building:          p.Building,
 		Initialized:       true,
 		Strategy:          entry.svc.CurrentStrategy(),
-		Phase:             p.Phase,
+		Phase:             phase,
+		Error:             buildError,
 		ProcessedNodes:    p.ProcessedNodes,
 		TotalNodes:        p.TotalNodes,
 		RateNodesPerSec:   p.RateNodesPerSec,
@@ -629,6 +641,9 @@ func (db *DB) startSearchIndexBuild(entry *dbSearchService, ctx context.Context)
 	entry.buildOnce.Do(func() {
 		if !db.startBackgroundTask(func() {
 			err := entry.svc.BuildIndexes(ctx)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("search index build failed for database %s: %v", entry.dbName, err)
+			}
 			entry.buildErrMu.Lock()
 			entry.buildErr = err
 			if err == nil {

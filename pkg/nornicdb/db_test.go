@@ -2124,6 +2124,53 @@ func TestRestore(t *testing.T) {
 	})
 }
 
+func TestRestoreNativeRebuildsLiveSchemaAndSearch(t *testing.T) {
+	config := DefaultConfig()
+	config.Database.AsyncWritesEnabled = false
+	config.Memory.EmbeddingDimensions = 3
+	source, err := Open(t.TempDir(), config)
+	require.NoError(t, err)
+	require.NoError(t, source.storage.GetSchema().AddUniqueConstraint("doc_key", "Doc", "key"))
+	require.NoError(t, source.storage.GetSchema().AddPropertyIndex("doc_key_index", "Doc", []string{"key"}))
+	_, err = source.storage.CreateNode(&storage.Node{
+		ID: "doc", Labels: []string{"Doc"},
+		Properties:      map[string]interface{}{"key": "k1", "content": "restored"},
+		ChunkEmbeddings: [][]float32{{1, 0, 0}},
+	})
+	require.NoError(t, err)
+	backupPath := filepath.Join(t.TempDir(), "native.backup")
+	require.NoError(t, source.Backup(context.Background(), backupPath))
+	require.NoError(t, source.Close())
+
+	targetDir := t.TempDir()
+	target, err := Open(targetDir, config)
+	require.NoError(t, err)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	require.NoError(t, target.Restore(requestCtx, backupPath))
+	cancelRequest()
+	require.FileExists(t, filepath.Join(targetDir, nativeRestoreMarker))
+	require.Len(t, target.storage.GetSchema().ExportDefinition().Constraints, 1)
+	require.Len(t, target.storage.GetSchema().ExportDefinition().PropertyIndexes, 1)
+	_, err = target.storage.CreateNode(&storage.Node{
+		ID: "duplicate", Labels: []string{"Doc"}, Properties: map[string]interface{}{"key": "k1"},
+	})
+	require.Error(t, err)
+	buildCtx, cancelBuild := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelBuild()
+	require.NoError(t, target.ensureSearchIndexesBuilt(buildCtx, target.defaultDatabaseName()))
+	service, err := target.GetOrCreateSearchService(target.defaultDatabaseName(), target.storage)
+	require.NoError(t, err)
+	require.True(t, service.GetBuildProgress().Ready)
+	require.Equal(t, 1, service.EmbeddingCount())
+	require.NoError(t, target.Close())
+
+	reopened, err := Open(targetDir, config)
+	require.NoError(t, err)
+	defer reopened.Close()
+	require.Len(t, reopened.storage.GetSchema().ExportDefinition().Constraints, 1)
+	require.Len(t, reopened.storage.GetSchema().ExportDefinition().PropertyIndexes, 1)
+}
+
 func TestDB_TemporalMaintenance(t *testing.T) {
 	ctx := context.Background()
 

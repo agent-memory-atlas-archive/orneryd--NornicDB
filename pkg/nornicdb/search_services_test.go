@@ -348,6 +348,24 @@ func TestSearchServices_DropSearchServiceState_RemovesPersistedArtifacts(t *test
 	require.True(t, os.IsNotExist(statErr), "expected persisted search directory to be removed")
 }
 
+func TestSearchStatusReportsFailedBuild(t *testing.T) {
+	db, err := Open("", DefaultConfig())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	dbName := db.defaultDatabaseName()
+	_, err = db.GetOrCreateSearchService(dbName, db.storage)
+	require.NoError(t, err)
+	db.searchServicesMu.RLock()
+	entry := db.searchServices[dbName]
+	db.searchServicesMu.RUnlock()
+	entry.buildErrMu.Lock()
+	entry.buildErr = errors.New("index rebuild failed")
+	entry.buildErrMu.Unlock()
+	status := db.GetDatabaseSearchStatus(dbName)
+	require.Equal(t, "failed", status.Phase)
+	require.Equal(t, "index rebuild failed", status.Error)
+}
+
 func TestSearchServices_ClusteringRunnerInitializesKnownNamespaces(t *testing.T) {
 	cleanup := featureflags.WithGPUClusteringEnabled()
 	t.Cleanup(cleanup)

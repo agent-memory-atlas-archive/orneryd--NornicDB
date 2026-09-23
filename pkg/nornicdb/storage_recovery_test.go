@@ -141,6 +141,31 @@ func TestStorageRecoveryHelpers_HeuristicsAndArtifacts(t *testing.T) {
 	})
 }
 
+func TestRecoverableArtifactsRequirePostRestoreSnapshot(t *testing.T) {
+	dataDir := t.TempDir()
+	snapshotDir := filepath.Join(dataDir, "snapshots")
+	require.NoError(t, os.MkdirAll(snapshotDir, 0o755))
+	oldSnapshot := filepath.Join(snapshotDir, "snapshot-old.json")
+	require.NoError(t, os.WriteFile(oldSnapshot, []byte("{}"), 0o600))
+	past := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(oldSnapshot, past, past))
+	require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "wal"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "wal", "wal.log"), []byte("old wal"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "native-restore.marker"), []byte("restored"), 0o600))
+	require.False(t, hasRecoverableArtifacts(dataDir))
+	recovered, backupDir, err := recoverBadgerFromSnapshotAndWAL(dataDir, storage.BadgerOptions{DataDir: dataDir})
+	require.ErrorContains(t, err, "refusing stale WAL recovery")
+	require.Nil(t, recovered)
+	require.Empty(t, backupDir)
+	require.FileExists(t, oldSnapshot)
+
+	newSnapshot := filepath.Join(snapshotDir, "snapshot-new.json")
+	require.NoError(t, os.WriteFile(newSnapshot, []byte("{}"), 0o600))
+	future := time.Now().Add(time.Second)
+	require.NoError(t, os.Chtimes(newSnapshot, future, future))
+	require.True(t, hasRecoverableArtifacts(dataDir))
+}
+
 func TestRecoverBadgerFromSnapshotAndWAL_HandlesEmptyRecoveryInputs(t *testing.T) {
 	dataDir := t.TempDir()
 	opts := storage.BadgerOptions{DataDir: dataDir}
