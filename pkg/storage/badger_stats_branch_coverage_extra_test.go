@@ -11,6 +11,7 @@ import (
 
 func TestBadgerStats_RefreshPendingAndFindNodeBranchCoverage(t *testing.T) {
 	engine := newTestEngine(t)
+	engine.SetEmbeddingsEnabled(true)
 
 	_, err := engine.CreateNode(&Node{ID: "test:add", Labels: []string{"Doc"}, Properties: map[string]any{"title": "needs embedding"}})
 	require.NoError(t, err)
@@ -18,6 +19,7 @@ func TestBadgerStats_RefreshPendingAndFindNodeBranchCoverage(t *testing.T) {
 	require.NoError(t, err)
 	_, err = engine.CreateNode(&Node{ID: "test:internal", Labels: []string{"_Internal"}, Properties: map[string]any{"title": "skip"}})
 	require.NoError(t, err)
+	engine.MarkNodeEmbedded("test:add")
 
 	require.NoError(t, engine.withUpdate(func(txn *badger.Txn) error {
 		// First-pass pending index cleanup branches.
