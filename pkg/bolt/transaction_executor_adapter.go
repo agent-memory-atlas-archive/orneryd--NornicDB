@@ -21,7 +21,11 @@ func (a *transactionalBoltQueryExecutorAdapter) Execute(
 	query string,
 	params map[string]any,
 ) (*QueryResult, error) {
-	return a.boltQueryExecutorAdapter.Execute(ctx, query, params)
+	result, err := a.boltQueryExecutorAdapter.Execute(ctx, query, params)
+	if err != nil && !a.executor.HasActiveTransaction() {
+		a.inTx = false
+	}
+	return result, err
 }
 
 // HasPendingTransactionWrites reports storage truth for commit cache handling.
