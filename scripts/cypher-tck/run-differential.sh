@@ -22,4 +22,4 @@ if [[ -z "${published_address}" ]]; then
 fi
 
 NORNICDB_NEO4J_REFERENCE_URI="bolt://${published_address}" \
-  go test ./testing/cypher/tck -run '^TestFixedDifferentialCorpusMatchesPinnedNeo4j$' -count=1 -v
+  go test -tags 'noui,nolocalllm' ./testing/cypher/tck -run '^TestFixedDifferentialCorpusMatchesPinnedNeo4j$' -count=1 -v
