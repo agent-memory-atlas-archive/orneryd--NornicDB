@@ -101,6 +101,12 @@ func (e *StorageExecutor) evaluateRowExpression(expr string, values map[string]i
 			}
 			return value
 		}, expr); handled {
+			if value == nil && strings.EqualFold(function, "date") && strings.TrimSpace(argument) != "" {
+				input, resolved := e.evaluateRowExpression(argument, values)
+				if resolved && input != nil {
+					return nil, false
+				}
+			}
 			return value, true
 		}
 		if value, matched, resolved := e.evaluateRowMathFunction(function, argument, values); matched {
@@ -350,6 +356,8 @@ func (e *StorageExecutor) evaluateRowExpression(expr string, values map[string]i
 			default:
 				if object, isMap := toStringAnyMap(value); isMap {
 					labels = toStringSlice(object["labels"])
+				} else {
+					return nil, false
 				}
 			}
 			result := make([]interface{}, len(labels))
@@ -537,9 +545,11 @@ func (e *StorageExecutor) evaluateRowExpression(expr string, values map[string]i
 					return leftText + rightText, true
 				}
 			}
-			return e.add(leftValue, rightValue), true
+			value := e.add(leftValue, rightValue)
+			return value, value != nil || leftValue == nil || rightValue == nil
 		}
-		return e.subtract(leftValue, rightValue), true
+		value := e.subtract(leftValue, rightValue)
+		return value, value != nil || leftValue == nil || rightValue == nil
 	}
 
 	if left, right, operator, ok := splitRowArithmeticTier(expr, "*/%"); ok {
@@ -550,11 +560,14 @@ func (e *StorageExecutor) evaluateRowExpression(expr string, values map[string]i
 		}
 		switch operator {
 		case '*':
-			return e.multiply(leftValue, rightValue), true
+			value := e.multiply(leftValue, rightValue)
+			return value, value != nil || leftValue == nil || rightValue == nil
 		case '/':
-			return e.divide(leftValue, rightValue), true
+			value := e.divide(leftValue, rightValue)
+			return value, value != nil || leftValue == nil || rightValue == nil
 		default:
-			return e.modulo(leftValue, rightValue), true
+			value := e.modulo(leftValue, rightValue)
+			return value, value != nil || leftValue == nil || rightValue == nil
 		}
 	}
 

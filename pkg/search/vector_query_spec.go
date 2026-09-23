@@ -234,6 +234,7 @@ func (s *Service) vectorQueryNodesIndexedWithOptions(ctx context.Context, queryE
 	if resolved.CandidateTarget <= 0 {
 		resolved.CandidateTarget = spec.Limit
 	}
+	resolved.MaxOverfetchRatio = math.MaxFloat64
 	minSimilarity := -1.0
 	resolved.MinSimilarity = &minSimilarity
 	normalizedQuery := vector.Normalize(queryEmbedding)

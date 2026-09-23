@@ -439,6 +439,23 @@ func (e *StorageExecutor) parsePropertyValue(ctx context.Context, valueStr strin
 			return normalizePropValue(evaluated)
 		}
 	}
+	if leftExpr, rightExpr, divided := splitByOperatorWithOptions(valueStr, "/", true, false); divided {
+		for _, operand := range []string{leftExpr, rightExpr} {
+			operand = strings.TrimSpace(operand)
+			if strings.EqualFold(operand, "null") {
+				return nil
+			}
+			if value, resolved := resolveDirectParamRef(ctx, operand); resolved && value == nil {
+				return nil
+			}
+		}
+		if evaluated := e.evaluateExpressionWithContext(ctx, valueStr, nil, nil); evaluated != nil {
+			return normalizePropValue(evaluated)
+		}
+		if getExpressionFailure(ctx) != nil {
+			return nil
+		}
+	}
 
 	// Handle function calls like kalman.init(), toUpper('test'), etc.
 	// A function call has the pattern: name(...) or name.sub.name(...)

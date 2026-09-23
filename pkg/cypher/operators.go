@@ -558,6 +558,9 @@ func (e *StorageExecutor) evaluateArithmeticExpr(ctx context.Context, expr strin
 	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "/", true, false); ok {
 		left := e.evaluateExpressionWithContext(ctx, leftExpr, nodes, rels)
 		right := e.evaluateExpressionWithContext(ctx, rightExpr, nodes, rels)
+		if divisor, numeric := toFloat64(right); numeric && divisor == 0 && left != nil {
+			recordExpressionFailure(ctx, newSemanticError("Neo.ClientError.Statement.ArithmeticError", "DivisionByZero", "/ by zero"))
+		}
 		return e.divide(left, right)
 	}
 
@@ -565,6 +568,9 @@ func (e *StorageExecutor) evaluateArithmeticExpr(ctx context.Context, expr strin
 	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "%", true, false); ok {
 		left := e.evaluateExpressionWithContext(ctx, leftExpr, nodes, rels)
 		right := e.evaluateExpressionWithContext(ctx, rightExpr, nodes, rels)
+		if divisor, numeric := toFloat64(right); numeric && divisor == 0 && left != nil {
+			recordExpressionFailure(ctx, newSemanticError("Neo.ClientError.Statement.ArithmeticError", "DivisionByZero", "/ by zero"))
+		}
 		return e.modulo(left, right)
 	}
 

@@ -195,7 +195,12 @@ func isShowConstraintContractsCommand(cypher string) bool {
 }
 
 // executeWithoutTransaction executes query without transaction wrapping (original path).
-func (e *StorageExecutor) executeWithoutTransaction(ctx context.Context, cypher string, upperQuery string) (*ExecuteResult, error) {
+func (e *StorageExecutor) executeWithoutTransaction(ctx context.Context, cypher string, upperQuery string) (result *ExecuteResult, err error) {
+	defer func() {
+		if recorded := getExpressionFailure(ctx); recorded != nil && err == nil {
+			result, err = nil, recorded
+		}
+	}()
 	// A top-level UNION composes complete single queries. Route it before any
 	// handler can consume the leading MATCH, RETURN, or UNWIND branch. The
 	// inexpensive substring guard keeps non-UNION queries off the structural
@@ -629,11 +634,13 @@ func (e *StorageExecutor) executeReturn(ctx context.Context, cypher string) (*Ex
 
 		result, defined := e.evaluateRowExpressionWithContext(ctx, part, row)
 		if !defined {
-			return nil, newSemanticError(
+			err := newSemanticError(
 				"Neo.ClientError.Statement.SyntaxError",
 				"UnexpectedSyntax",
 				"could not parse RETURN expression: "+part,
 			)
+			recordExpressionFailure(ctx, err)
+			return nil, err
 		}
 		values = append(values, result)
 	}
@@ -744,6 +751,9 @@ func (e *StorageExecutor) validateSyntaxNornic(cypher string) error {
 	if !hasValidStartKeyword(cypher) {
 		return localizedError(localization.CypherTransactionsSyntaxStartInvalid(), nil)
 	}
+	if err := validateLeadingNodePatternTransition(cypher); err != nil {
+		return err
+	}
 
 	parenCount := 0
 	bracketCount := 0
@@ -759,6 +769,15 @@ func (e *StorageExecutor) validateSyntaxNornic(cypher string) error {
 				inString = false
 			}
 			continue
+		}
+		if c == '.' && i+1 < len(cypher) && cypher[i+1] == '.' && bracketCount == 0 {
+			return newSemanticError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax", "syntax error: malformed expression")
+		}
+		if c == '+' {
+			next := skipSpaces(cypher, i+1)
+			if next < len(cypher) && cypher[next] == '*' {
+				return newSemanticError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax", "syntax error: malformed expression")
+			}
 		}
 
 		switch c {
@@ -803,6 +822,39 @@ func (e *StorageExecutor) validateSyntaxNornic(cypher string) error {
 
 	e.markCachedValidSyntax(cypher)
 	return nil
+}
+
+func validateLeadingNodePatternTransition(cypher string) error {
+	query := strings.TrimSpace(cypher)
+	keyword := ""
+	if matchKeywordAt(query, 0, "MATCH") {
+		keyword = "MATCH"
+	} else if matchKeywordAt(query, 0, "CREATE") {
+		keyword = "CREATE"
+	} else {
+		return nil
+	}
+	open := skipSpaces(query, len(keyword))
+	if open >= len(query) || query[open] != '(' {
+		return nil
+	}
+	close := findMatchingParen(query, open)
+	if close < 0 {
+		return nil
+	}
+	remaining := strings.TrimSpace(query[close+1:])
+	if remaining == "" || remaining[0] == ',' || remaining[0] == '-' || remaining[0] == '<' || remaining[0] == ';' {
+		return nil
+	}
+	for _, allowed := range []string{"WHERE", "USING", "RETURN", "WITH", "MATCH", "OPTIONAL", "CREATE", "MERGE", "SET", "REMOVE", "DELETE", "UNWIND", "CALL", "FOREACH", "ORDER", "SKIP", "LIMIT", "UNION"} {
+		if matchKeywordAt(remaining, 0, allowed) {
+			return nil
+		}
+	}
+	if matchKeywordAt(remaining, 0, "DETACH") && matchKeywordAt(strings.TrimSpace(remaining[len("DETACH"):]), 0, "DELETE") {
+		return nil
+	}
+	return newSemanticError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax", "syntax error: unexpected text after node pattern")
 }
 
 var validSyntaxStarts = [...]string{

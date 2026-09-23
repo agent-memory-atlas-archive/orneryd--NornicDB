@@ -1152,6 +1152,14 @@ skipArrayIndexing:
 	if value, handled := e.evaluateTemporalConstructor(func(argument string) interface{} {
 		return e.evaluateExpressionWithContextFull(ctx, argument, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
 	}, expr); handled {
+		if value == nil {
+			if function, argument, ok := parseFunctionCallWS(expr); ok && strings.EqualFold(function, "date") && strings.TrimSpace(argument) != "" {
+				input := e.evaluateExpressionWithContextFull(ctx, argument, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
+				if input != nil {
+					recordExpressionFailure(ctx, newSemanticError("Neo.ClientError.Statement.TypeError", "InvalidArgument", "invalid date value"))
+				}
+			}
+		}
 		return value
 	}
 

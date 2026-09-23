@@ -770,7 +770,7 @@ By default, `NORNICDB_VECTOR_CPU_BRUTE_MAX_N=0`, so CPU brute-force is opt-in an
 | `NORNICDB_VECTOR_HNSW_EF_CONSTRUCTION`         | (preset) | Candidate list size during index build. Overrides preset.                                                                                                                   |
 | `NORNICDB_VECTOR_HNSW_EF_SEARCH`               | (preset) | Candidate list size during search; higher = better recall, slower. Overrides preset.                                                                                        |
 | `NORNICDB_VECTOR_HNSW_BEAM_FACTOR`             | `4`      | Multiplies requested candidate depth to set the HNSW traversal beam. Higher values improve recall and distinct-node depth for chunked documents at additional query cost.   |
-| `NORNICDB_VECTOR_PQ_SEGMENTS`                  | `16`     | Compressed mode only. Number of PQ segments (`dimensions` must be divisible by this).                                                                                       |
+| `NORNICDB_VECTOR_PQ_SEGMENTS`                  | (auto)   | Compressed mode only. Defaults to approximately `dimensions / 8` (up to 128), choosing a divisor of the embedding dimension; 1024 dimensions use 128 segments. Explicit values must divide the dimension. |
 | `NORNICDB_VECTOR_PQ_BITS`                      | `8`      | Compressed mode only. Bits per PQ code (currently clamped to 4-8).                                                                                                          |
 | `NORNICDB_VECTOR_IVFPQ_NPROBE`                 | (auto)   | Compressed mode only. IVF lists probed per query; defaults to max(16, one eighth of the lists). An explicit value overrides the adaptive default.                           |
 | `NORNICDB_VECTOR_IVFPQ_RERANK_TOPK`            | `2000`   | Compressed mode only. Minimum approximate candidates sent to exact rerank; larger requested depths are preserved.                                                           |
@@ -827,7 +827,6 @@ This mode is integrated end-to-end: build, persist, startup load/rebuild, search
 
 ```bash
 export NORNICDB_VECTOR_ANN_QUALITY=compressed
-export NORNICDB_VECTOR_PQ_SEGMENTS=16
 export NORNICDB_VECTOR_PQ_BITS=8
 export NORNICDB_VECTOR_IVFPQ_RERANK_TOPK=2000
 export NORNICDB_VECTOR_IVFPQ_TRAINING_SAMPLE_MAX=200000

@@ -140,6 +140,9 @@ func (e *StorageExecutor) evaluateRowExtensionFunction(function, argument string
 		if !textOK || !startOK {
 			return nil, true, false
 		}
+		if start < 0 {
+			return nil, true, false
+		}
 		switch name {
 		case "left":
 			return cyphertext.Left(text, start), true, true

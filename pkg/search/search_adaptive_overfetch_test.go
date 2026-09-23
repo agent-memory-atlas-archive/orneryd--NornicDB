@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/orneryd/nornicdb/pkg/storage"
@@ -345,6 +346,40 @@ func TestVectorQueryNodesIndexedUsesAdaptiveWidening(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []int{2, 4}, generator.limits)
 	require.Equal(t, []string{"doc-1", "doc-2"}, vectorQueryHitIDs(hits))
+}
+
+func TestVectorQueryNodesIndexedWidensBeyondChunkRatioUntilDistinctNodesFill(t *testing.T) {
+	service := NewServiceWithDimensions(storage.NewMemoryEngine(), 2)
+	for _, node := range []*storage.Node{
+		{ID: "doc-1", Labels: []string{"Doc"}, ChunkEmbeddings: [][]float32{{1, 0}}},
+		{ID: "doc-2", Labels: []string{"Doc"}, ChunkEmbeddings: [][]float32{{0.9, 0.1}}},
+	} {
+		require.NoError(t, service.IndexNode(node))
+	}
+	candidates := make([]Candidate, 0, 13)
+	for chunk := 0; chunk < 12; chunk++ {
+		candidates = append(candidates, Candidate{ID: fmt.Sprintf("doc-1-chunk-%d", chunk), Score: 1})
+	}
+	candidates = append(candidates, Candidate{ID: "doc-2-chunk-0", Score: 0.9})
+	generator := &recordingCandidateGenerator{candidates: candidates}
+	service.pipelineMu.Lock()
+	service.vectorPipeline = NewVectorSearchPipeline(generator, &IdentityExactScorer{})
+	service.pipelineMu.Unlock()
+
+	opts := adaptiveOverfetchTestOptions(2)
+	opts.MaxCandidateLimit = 0
+	hits, err := service.vectorQueryNodesIndexedWithOptions(context.Background(), []float32{1, 0}, VectorQuerySpec{Label: "Doc", Similarity: "cosine", Limit: 2}, "default", opts)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"doc-1", "doc-2"}, vectorQueryHitIDs(hits))
+	require.Greater(t, generator.limits[len(generator.limits)-1], 8)
+
+	generator.limits = nil
+	opts.MaxCandidateLimit = 8
+	hits, err = service.vectorQueryNodesIndexedWithOptions(context.Background(), []float32{1, 0}, VectorQuerySpec{Label: "Doc", Similarity: "cosine", Limit: 2}, "default", opts)
+	require.NoError(t, err)
+	require.Equal(t, []string{"doc-1"}, vectorQueryHitIDs(hits))
+	require.Equal(t, 8, generator.limits[len(generator.limits)-1])
 }
 
 func adaptiveOverfetchTestOptions(target int) *SearchOptions {

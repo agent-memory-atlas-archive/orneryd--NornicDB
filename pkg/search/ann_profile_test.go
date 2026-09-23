@@ -31,6 +31,30 @@ func TestResolveCompressedANNProfile_ActiveWithValidSettings(t *testing.T) {
 	}
 }
 
+func TestResolveCompressedANNProfileSegmentsScaleWithDimensions(t *testing.T) {
+	t.Setenv("NORNICDB_VECTOR_ANN_QUALITY", "compressed")
+	t.Setenv("NORNICDB_VECTOR_PQ_SEGMENTS", "")
+	for _, tc := range []struct {
+		dimensions int
+		segments   int
+	}{
+		{128, 8},
+		{384, 48},
+		{1024, 128},
+		{1536, 128},
+		{1200, 120},
+	} {
+		profile := ResolveCompressedANNProfile(50000, tc.dimensions, true)
+		if !profile.Active || profile.PQSegments != tc.segments {
+			t.Errorf("dimensions=%d: expected %d active segments, got %+v", tc.dimensions, tc.segments, profile)
+		}
+	}
+	t.Setenv("NORNICDB_VECTOR_PQ_SEGMENTS", "16")
+	if got := ResolveCompressedANNProfile(50000, 1024, true).PQSegments; got != 16 {
+		t.Fatalf("expected explicit 16-segment override, got %d", got)
+	}
+}
+
 func TestResolveCompressedANNProfileScalesDefaultProbeCountWithPartitionCount(t *testing.T) {
 	t.Setenv("NORNICDB_VECTOR_ANN_QUALITY", "compressed")
 	t.Setenv("NORNICDB_VECTOR_IVF_LISTS", "512")

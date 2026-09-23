@@ -77,6 +77,11 @@ func ResolveCompressedANNProfile(vectorCount, dimensions int, vectorStoreReady b
 	defaultSegments := 16
 	if dimensions > 0 && dimensions <= 128 {
 		defaultSegments = 8
+	} else if dimensions > 128 {
+		defaultSegments = clampInt(dimensions/8, 1, 128)
+		for dimensions%defaultSegments != 0 {
+			defaultSegments--
+		}
 	}
 	profile.PQSegments = clampInt(envutil.GetInt("NORNICDB_VECTOR_PQ_SEGMENTS", defaultSegments), 1, 128)
 	profile.PQBits = clampInt(envutil.GetInt("NORNICDB_VECTOR_PQ_BITS", 8), 4, 8)

@@ -1554,7 +1554,15 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 
 	// If in explicit transaction, execute within it
 	if e.txContext != nil && e.txContext.active {
-		return e.executeInTransaction(ctx, cypher, upperQuery)
+		if ctx.Value(expressionFailureKey{}) == nil {
+			ctx = context.WithValue(ctx, expressionFailureKey{}, &expressionFailure{})
+		}
+		result, err := e.executeInTransaction(ctx, cypher, upperQuery)
+		if failure := getExpressionFailure(ctx); failure != nil {
+			_, _ = e.handleRollback()
+			return nil, failure
+		}
+		return result, err
 	}
 
 	// System commands (CREATE/DROP DATABASE, SHOW DATABASES, etc.) must not use the async engine
@@ -1572,6 +1580,9 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 	// Auto-commit single query - use async path for performance
 	// This uses AsyncEngine's write-behind cache instead of synchronous disk I/O
 	// For strict ACID, users should use explicit BEGIN/COMMIT transactions
+	if ctx.Value(expressionFailureKey{}) == nil {
+		ctx = context.WithValue(ctx, expressionFailureKey{}, &expressionFailure{})
+	}
 	result, err = e.executeImplicitAsync(ctx, cypher, upperQuery)
 
 	// Apply result limit if set

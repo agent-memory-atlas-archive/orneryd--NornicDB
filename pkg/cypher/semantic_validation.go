@@ -53,6 +53,11 @@ func (e *StorageExecutor) validateSemanticScopes(cypher string) error {
 	}
 	if clauses, ok := splitPipelineClauses(cypher); ok {
 		for _, clause := range clauses {
+			if whereIndex := topLevelKeywordIndex(clause.text, "WHERE"); whereIndex >= 0 &&
+				!hasSubqueryPattern(clause.text, existsSubqueryRe) &&
+				hasUnexpectedIdentifierAfterNumber(clause.text[whereIndex+len("WHERE"):]) {
+				return newSemanticError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax", "syntax error: unexpected identifier in WHERE")
+			}
 			if clause.kind == pipelineClauseReturn {
 				body := strings.TrimSpace(clause.text[len("RETURN"):])
 				if err := validateReturnAggregationSemantics(body); err != nil {
@@ -64,8 +69,17 @@ func (e *StorageExecutor) validateSemanticScopes(cypher string) error {
 						end = index
 					}
 				}
+				if index := topLevelKeywordIndex(body, "UNION"); index >= 0 && index < end {
+					end = index
+				}
 				for _, item := range splitTopLevelComma(strings.TrimSpace(body[:end])) {
 					expression, _ := parseProjectionExprAlias(strings.TrimSpace(item))
+					if aliasIndex := topLevelKeywordIndex(item, "AS"); aliasIndex >= 0 {
+						alias := strings.TrimSpace(item[aliasIndex+len("AS"):])
+						if simpleSemanticIdentifier(alias) == "" && !(len(alias) >= 2 && alias[0] == '`' && alias[len(alias)-1] == '`') {
+							return newSemanticError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax", "syntax error: invalid RETURN alias")
+						}
+					}
 					if err := validateGraphFunctionSemanticTypes(expression, nil); err != nil {
 						return err
 					}
@@ -90,6 +104,43 @@ func (e *StorageExecutor) validateSemanticScopes(cypher string) error {
 	}
 	e.semanticValidationCache.add(cypher)
 	return nil
+}
+
+func hasUnexpectedIdentifierAfterNumber(expression string) bool {
+	quote := byte(0)
+	for index := 0; index < len(expression); index++ {
+		if quote != 0 {
+			if expression[index] == '\\' {
+				index++
+			} else if expression[index] == quote {
+				quote = 0
+			}
+			continue
+		}
+		if expression[index] == '\'' || expression[index] == '"' || expression[index] == '`' {
+			quote = expression[index]
+			continue
+		}
+		if expression[index] < '0' || expression[index] > '9' || (index > 0 && isIdentCharByte(expression[index-1])) {
+			continue
+		}
+		end := index + 1
+		for end < len(expression) && (expression[end] >= '0' && expression[end] <= '9' || expression[end] == '.') {
+			end++
+		}
+		next := skipSpaces(expression, end)
+		if next > end {
+			if name, _, ok := scanIdentifierToken(expression, next); ok {
+				switch strings.ToUpper(name) {
+				case "AND", "OR", "XOR", "IN", "IS", "THEN", "ELSE", "END", "AS", "STARTS", "ENDS", "CONTAINS", "ORDER", "SKIP", "LIMIT", "UNION":
+				default:
+					return true
+				}
+			}
+		}
+		index = end - 1
+	}
+	return false
 }
 
 func validateWithProjectionSemantics(cypher string) error {
