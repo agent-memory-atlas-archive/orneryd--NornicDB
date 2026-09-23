@@ -91,13 +91,15 @@ const (
 )
 
 type mergeRelationshipPattern struct {
-	pathVariable  string
-	startVariable string
-	endVariable   string
-	relVariable   string
-	relType       string
-	properties    map[string]interface{}
-	direction     mergeRelationshipDirection
+	pathVariable     string
+	startVariable    string
+	endVariable      string
+	startNodePattern nodePatternInfo
+	endNodePattern   nodePatternInfo
+	relVariable      string
+	relType          string
+	properties       map[string]interface{}
+	direction        mergeRelationshipDirection
 }
 
 // parseMergeRelationshipPattern converts every supported relationship direction
@@ -144,8 +146,12 @@ func (e *StorageExecutor) parseMergeRelationshipPattern(
 		}
 	}
 
-	parsed.startVariable = e.parseNodePattern(ctx, "("+startContent+")").variable
-	parsed.endVariable = e.parseNodePattern(ctx, "("+endContent+")").variable
+	parsed.startNodePattern = e.parseNodePattern(ctx, "("+startContent+")")
+	parsed.endNodePattern = e.parseNodePattern(ctx, "("+endContent+")")
+	parsed.startVariable = parsed.startNodePattern.variable
+	parsed.endVariable = parsed.endNodePattern.variable
+	parsed.startNodePattern.properties = e.resolveMergePropsWithContext(ctx, parsed.startNodePattern.properties, nodeContext, relContext)
+	parsed.endNodePattern.properties = e.resolveMergePropsWithContext(ctx, parsed.endNodePattern.properties, nodeContext, relContext)
 	parsed.relVariable, parsed.relType, remainder, err = parseCreateRelationshipContent(relationshipContent)
 	if err != nil {
 		return nil, err

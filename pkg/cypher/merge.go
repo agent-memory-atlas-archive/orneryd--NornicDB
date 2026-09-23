@@ -2148,16 +2148,41 @@ func (e *StorageExecutor) executeMergeRelationshipWithContext(ctx context.Contex
 	endNode := nodeContext[parsedPattern.endVariable]
 
 	if startNode == nil {
-		return nil, localizedError(localization.CypherMergeStartVariableNotBound(parsedPattern.startVariable, getKeys(nodeContext)), nil)
+		var created bool
+		startNode, created, err = e.resolveMergeRelationshipEndpoint(store, parsedPattern.startNodePattern)
+		if err != nil {
+			return nil, err
+		}
+		if startNode == nil {
+			return nil, localizedError(localization.CypherMergeStartVariableNotBound(parsedPattern.startVariable, getKeys(nodeContext)), nil)
+		}
+		if created {
+			result.Stats.NodesCreated++
+		}
+		if parsedPattern.startVariable != "" {
+			nodeContext[parsedPattern.startVariable] = startNode
+		}
 	}
 	if endNode == nil {
-		return nil, localizedError(localization.CypherMergeEndVariableNotBound(parsedPattern.endVariable, getKeys(nodeContext)), nil)
+		var created bool
+		endNode, created, err = e.resolveMergeRelationshipEndpoint(store, parsedPattern.endNodePattern)
+		if err != nil {
+			return nil, err
+		}
+		if endNode == nil {
+			return nil, localizedError(localization.CypherMergeEndVariableNotBound(parsedPattern.endVariable, getKeys(nodeContext)), nil)
+		}
+		if created {
+			result.Stats.NodesCreated++
+		}
+		if parsedPattern.endVariable != "" {
+			nodeContext[parsedPattern.endVariable] = endNode
+		}
 	}
 	mergeStartNode, mergeEndNode := startNode, endNode
 	if parsedPattern.direction == mergeRelationshipIncoming {
 		mergeStartNode, mergeEndNode = endNode, startNode
 	}
-
 	// Cypher relationship properties inside the MERGE pattern are identity
 	// fields. Scan the bounded endpoint pair so same-type relationships with
 	// different property identities remain distinct.
@@ -2280,6 +2305,42 @@ func (e *StorageExecutor) executeMergeRelationshipWithContext(ctx context.Contex
 	}
 
 	return result, nil
+}
+
+func (e *StorageExecutor) resolveMergeRelationshipEndpoint(store storage.Engine, pattern nodePatternInfo) (*storage.Node, bool, error) {
+	if len(pattern.labels) == 0 && len(pattern.properties) == 0 {
+		return nil, false, nil
+	}
+
+	node, err := e.findMergeNode(store, pattern.labels, pattern.properties)
+	if err != nil || node != nil {
+		return node, false, err
+	}
+
+	node = &storage.Node{
+		ID:         storage.NodeID(e.generateID()),
+		Labels:     pattern.labels,
+		Properties: pattern.properties,
+	}
+	actualID, err := store.CreateNode(node)
+	if err != nil {
+		if !mergeCreateConflict(err) {
+			return nil, false, localizedError(localization.CypherMergeCreateNodeFailed(err), err)
+		}
+		recovered, findErr := e.findMergeNode(store, pattern.labels, pattern.properties)
+		if findErr != nil {
+			return nil, false, findErr
+		}
+		if recovered == nil {
+			return nil, false, localizedError(localization.CypherMergeCreateNodeFailed(err), err)
+		}
+		return recovered, false, nil
+	}
+
+	node.ID = actualID
+	e.notifyNodeMutated(string(node.ID))
+	e.cacheMergeNode(pattern.labels, pattern.properties, node)
+	return node, true, nil
 }
 
 func (e *StorageExecutor) applySetToRelationshipWithContext(ctx context.Context, edge *storage.Edge, varName string, setClause string, nodeContext map[string]*storage.Node, relContext map[string]*storage.Edge) int {
