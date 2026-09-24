@@ -878,6 +878,22 @@ func (ae *AsyncEngine) syncNodeLabelIndexLocked(node *Node) {
 	ae.addNodeToLabelIndexLocked(node)
 }
 
+// syncNodeLabelIndexForEmbeddingLocked maintains the cache-side label index
+// for an embedding-only update (GH-448). Write-backs never change labels, so
+// the common case only re-adds the node's current labels (idempotent, no
+// bucket scan); a full re-sync runs only when a caller replaces a cached
+// object whose labels differ.
+func (ae *AsyncEngine) syncNodeLabelIndexForEmbeddingLocked(node, prev *Node) {
+	if node == nil {
+		return
+	}
+	if prev != nil && !labelsEqual(prev.Labels, node.Labels) {
+		ae.syncNodeLabelIndexLocked(node)
+		return
+	}
+	ae.addNodeToLabelIndexLocked(node)
+}
+
 // CreateNode adds to cache and returns immediately.
 func (ae *AsyncEngine) CreateNode(node *Node) (NodeID, error) {
 	if node == nil {
@@ -989,10 +1005,14 @@ func (ae *AsyncEngine) UpdateNodeEmbedding(node *Node) (err error) {
 	}
 
 	// Exists in cache (including nodes created/updated but not yet flushed).
-	if _, ok := ae.nodeCache[node.ID]; ok {
+	if prev, ok := ae.nodeCache[node.ID]; ok {
 		// Important: do NOT mark this as an update here. If the node is a pending create
 		// (not yet flushed), it must still count as a create for NodeCount/EdgeCount.
 		ae.nodeCache[node.ID] = node
+		// GH-448: staged nodes shadow engine-side label-index rows in the scan
+		// merge paths, so the cache-side label index must learn about them
+		// here or committed nodes vanish from label scans until flush.
+		ae.syncNodeLabelIndexForEmbeddingLocked(node, prev)
 		ae.pendingWrites++
 		return nil
 	}
@@ -1002,7 +1022,9 @@ func (ae *AsyncEngine) UpdateNodeEmbedding(node *Node) (err error) {
 		// This is an update to an existing node (at minimum, it will exist after the in-flight write).
 		// Mark as update so NodeCount doesn't temporarily treat it as a pending create.
 		ae.updateNodes[node.ID] = true
+		prev := ae.nodeCache[node.ID]
 		ae.nodeCache[node.ID] = node
+		ae.syncNodeLabelIndexForEmbeddingLocked(node, prev)
 		ae.pendingWrites++
 		return nil
 	}
@@ -1015,7 +1037,9 @@ func (ae *AsyncEngine) UpdateNodeEmbedding(node *Node) (err error) {
 	// Node exists in the underlying engine, so this is an update.
 	// Mark as update so NodeCount doesn't temporarily treat it as a pending create.
 	ae.updateNodes[node.ID] = true
+	prev := ae.nodeCache[node.ID]
 	ae.nodeCache[node.ID] = node
+	ae.syncNodeLabelIndexForEmbeddingLocked(node, prev)
 	ae.pendingWrites++
 	return nil
 }
