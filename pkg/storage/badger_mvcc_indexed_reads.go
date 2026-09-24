@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"strings"
 
 	"github.com/dgraph-io/badger/v4"
@@ -231,6 +232,16 @@ func (b *BadgerEngine) streamNodesByLabelFromPhysicalSnapshot(
 	properties []string,
 	visit func(*Node) error,
 ) error {
+	return b.streamNodesByLabelFromPhysicalSnapshotAfter(label, view, properties, "", visit)
+}
+
+func (b *BadgerEngine) streamNodesByLabelFromPhysicalSnapshotAfter(
+	label string,
+	view func(func(*badger.Txn) error) error,
+	properties []string,
+	afterNodeID NodeID,
+	visit func(*Node) error,
+) error {
 	if visit == nil {
 		return ErrInvalidData
 	}
@@ -241,7 +252,20 @@ func (b *BadgerEngine) streamNodesByLabelFromPhysicalSnapshot(
 		prefix := labelIndexPrefix(normalizedLabel)
 		it := txn.NewIterator(badgerIterOptsKeyOnly(prefix))
 		defer it.Close()
-		for it.Rewind(); it.Valid(); it.Next() {
+		if afterNodeID == "" {
+			it.Rewind()
+		} else {
+			nodeNum, ok := b.idDict.lookupNodeNumID(afterNodeID)
+			if !ok {
+				return ErrNotFound
+			}
+			cursor := labelIndexKey(normalizedLabel, nodeNum)
+			it.Seek(cursor)
+			if it.ValidForPrefix(prefix) && bytes.Equal(it.Item().Key(), cursor) {
+				it.Next()
+			}
+		}
+		for ; it.ValidForPrefix(prefix); it.Next() {
 			indexKey := it.Item().Key()
 			nodeNum, ok := extractNodeNumIDFromLabelIndex(indexKey, len(normalizedLabel))
 			if !ok {

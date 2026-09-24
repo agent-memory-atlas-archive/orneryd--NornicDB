@@ -2,6 +2,7 @@ package storage
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -137,6 +138,74 @@ func TestTxReads_StreamNodesByLabelProjected_StopsWithoutMaterializingRemainder(
 	require.ErrorIs(t, err, ErrIterationStopped)
 	require.Equal(t, 1, visited)
 	require.Empty(t, tx.snapshotProjectedLabelNodes, "an incomplete stream must not be cached")
+}
+
+func TestTxReads_StreamNodesByLabelProjected_ReplaysBoundedPrefixAndResumes(t *testing.T) {
+	engine := txReadFixture(t)
+	tx, err := engine.BeginTransaction()
+	require.NoError(t, err)
+	require.NoError(t, tx.SetNamespace("test"))
+	t.Cleanup(func() { _ = tx.Rollback() })
+
+	visited := 0
+	err = tx.StreamNodesByLabelProjected("Person", []string{"name"}, func(*Node) error {
+		visited++
+		return ErrIterationStopped
+	})
+	require.ErrorIs(t, err, ErrIterationStopped)
+	require.Equal(t, 1, visited)
+	require.Len(t, tx.snapshotLabelPrefixNodes, 1, "an early stop should retain only its bounded prefix")
+	require.Empty(t, tx.snapshotProjectedLabelNodes, "an incomplete prefix must not be treated as a complete stream")
+
+	alice, err := tx.GetNode("test:alice")
+	require.NoError(t, err)
+	alice.Properties["name"] = "Alicia"
+	require.NoError(t, tx.UpdateNode(alice))
+	require.NoError(t, tx.DeleteNode("test:bob"))
+	_, err = tx.CreateNode(&Node{ID: "test:erin", Labels: []string{"Person"}, Properties: map[string]any{"name": "Erin"}})
+	require.NoError(t, err)
+
+	var nodes []*Node
+	err = tx.StreamNodesByLabelProjected("Person", []string{"name"}, func(node *Node) error {
+		nodes = append(nodes, node)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"test:alice", "test:carol", "test:dave", "test:erin"}, nodeIDs(nodes))
+	require.Equal(t, "Alicia", nodes[0].Properties["name"], "the cached prefix must apply pending updates")
+	require.Len(t, tx.snapshotProjectedLabelNodes, 1, "resuming to completion should promote the result to a complete snapshot cache")
+	require.Empty(t, tx.snapshotLabelPrefixNodes, "completed replay should release the partial prefix")
+}
+
+func TestTxReads_StreamNodesByLabel_UnprojectedPrefixAndLargePayloadGuard(t *testing.T) {
+	engine := txReadFixture(t)
+	alice, err := engine.GetNode("test:alice")
+	require.NoError(t, err)
+	alice.Properties["large"] = strings.Repeat("x", maxSnapshotLabelPrefixNodeBytes+1)
+	require.NoError(t, engine.UpdateNode(alice))
+
+	tx, err := engine.BeginTransaction()
+	require.NoError(t, err)
+	require.NoError(t, tx.SetNamespace("test"))
+	t.Cleanup(func() { _ = tx.Rollback() })
+
+	err = tx.StreamNodesByLabelProjected("Person", nil, func(*Node) error {
+		return ErrIterationStopped
+	})
+	require.ErrorIs(t, err, ErrIterationStopped)
+	require.Empty(t, tx.snapshotLabelPrefixNodes, "large full-node results must not be retained as a partial prefix")
+
+	largeID := NodeID("test:large")
+	_, err = tx.CreateNode(&Node{ID: largeID, Labels: []string{"Person"}, Properties: map[string]any{"name": "Large"}})
+	require.NoError(t, err)
+	seen := make([]NodeID, 0, 5)
+	err = tx.StreamNodesByLabelProjected("Person", nil, func(node *Node) error {
+		seen = append(seen, node.ID)
+		return nil
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []NodeID{"test:alice", "test:bob", "test:carol", "test:dave", largeID}, seen)
+	require.Len(t, tx.snapshotLabelNodes, 1, "full replay should populate only the complete cache")
 }
 
 func TestTxReads_StreamNodesByLabelProjected_CachedReplayKeepsBeginSnapshot(t *testing.T) {

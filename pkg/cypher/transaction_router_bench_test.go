@@ -24,15 +24,24 @@ func BenchmarkStatementRouting(b *testing.B) {
 	}
 	setup := func(b *testing.B) (*StorageExecutor, context.Context) {
 		store := storage.NewNamespacedEngine(newTestMemoryEngine(b), "bench")
-		exec := NewStorageExecutor(store)
-		ctx := context.Background()
-		_, err := exec.Execute(ctx, "UNWIND range(0, 1999) AS i CREATE (:Person {id: i, name: 'p' + toString(i), age: i % 60})", nil)
-		require.NoError(b, err)
-		for i := 0; i < 500; i++ {
-			_, err := exec.Execute(ctx, fmt.Sprintf("MATCH (a:Person {id: %d}), (b:Person {id: %d}) CREATE (a)-[:KNOWS]->(b)", i, i+1), nil)
+		for i := 0; i < 2000; i++ {
+			_, err := store.CreateNode(&storage.Node{
+				ID:         storage.NodeID(fmt.Sprintf("person-%d", i)),
+				Labels:     []string{"Person"},
+				Properties: map[string]interface{}{"id": i, "name": fmt.Sprintf("p%d", i), "age": i % 60},
+			})
 			require.NoError(b, err)
 		}
-		return exec, ctx
+		for i := 0; i < 500; i++ {
+			err := store.CreateEdge(&storage.Edge{
+				ID:        storage.EdgeID(fmt.Sprintf("knows-%d", i)),
+				StartNode: storage.NodeID(fmt.Sprintf("person-%d", i)),
+				EndNode:   storage.NodeID(fmt.Sprintf("person-%d", i+1)),
+				Type:      "KNOWS",
+			})
+			require.NoError(b, err)
+		}
+		return NewStorageExecutor(store), context.Background()
 	}
 	for _, q := range queries {
 		b.Run("autocommit/"+q.name, func(b *testing.B) {

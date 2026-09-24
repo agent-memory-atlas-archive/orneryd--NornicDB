@@ -79,7 +79,18 @@ type BadgerTransaction struct {
 	// projections. Keeping it separate preserves full-node cache reuse while
 	// avoiding a full physical snapshot walk for every repeated projected read.
 	snapshotProjectedLabelNodes map[string][]*Node
-	operations                  []Operation
+	// snapshotLabelPrefixNodes retains small, early-stopped physical prefixes.
+	// These are never treated as complete streams; a later caller resumes the
+	// pinned label index after the last cached node when it needs more rows.
+	snapshotLabelPrefixNodes     map[string][]*Node
+	snapshotLabelPrefixNodeBytes map[string]int
+	snapshotLabelPrefixBytes     int
+	// Snapshot adjacency caches retain only a bounded set of visible edge IDs.
+	// Edge bodies are resolved again against snapshotTx on each read so decay
+	// filtering and the transaction's pending-edge overlay remain current.
+	snapshotOutgoingAdjacency snapshotAdjacencyCache
+	snapshotIncomingAdjacency snapshotAdjacencyCache
+	operations                []Operation
 
 	// Buffered writes - collected during transaction, flushed at commit
 	// This batches all writes together for better performance while maintaining ACID guarantees
@@ -250,6 +261,11 @@ func (tx *BadgerTransaction) closeLocked(status TransactionStatus, discard bool,
 		tx.snapshotTx.Discard()
 		tx.snapshotTx = nil
 	}
+	tx.snapshotOutgoingAdjacency.clear()
+	tx.snapshotIncomingAdjacency.clear()
+	tx.snapshotLabelPrefixNodes = nil
+	tx.snapshotLabelPrefixNodeBytes = nil
+	tx.snapshotLabelPrefixBytes = 0
 	tx.pendingWrites = make(map[string][]byte)
 	tx.pendingDeletes = make(map[string]bool)
 	tx.pendingLabelCountDeltas = make(map[namespaceLabel]int64)
@@ -1648,14 +1664,25 @@ func (tx *BadgerTransaction) StreamNodesByLabelProjected(label string, propertie
 		return tx.streamPendingLabelNodesLocked(matchesLabel, seen, properties, invokeVisit)
 	}
 
-	var err error
 	completed := make([]*Node, 0)
+	afterNodeID := NodeID("")
+	if prefix := tx.snapshotLabelPrefixNodes[cacheKey]; tx.snapshotTx != nil && len(prefix) > 0 {
+		completed = append(completed, prefix...)
+		for _, node := range prefix {
+			if err := emitCommitted(node); err != nil {
+				return err
+			}
+		}
+		afterNodeID = prefix[len(prefix)-1].ID
+	}
+
+	var err error
 	streamVisit := func(node *Node) error {
 		completed = append(completed, node)
 		return emitCommitted(node)
 	}
 	if tx.snapshotTx != nil {
-		err = tx.engine.streamNodesByLabelFromPhysicalSnapshot(label, tx.withSnapshotViewLocked, properties, streamVisit)
+		err = tx.engine.streamNodesByLabelFromPhysicalSnapshotAfter(label, tx.withSnapshotViewLocked, properties, afterNodeID, streamVisit)
 	} else if tx.readTS.IsZero() {
 		err = tx.engine.StreamNodesByLabelProjected(label, properties, streamVisit)
 	} else {
@@ -1664,6 +1691,9 @@ func (tx *BadgerTransaction) StreamNodesByLabelProjected(label string, propertie
 		)
 	}
 	if err != nil {
+		if err == ErrIterationStopped && tx.snapshotTx != nil {
+			tx.storeSnapshotLabelPrefixLocked(cacheKey, completed)
+		}
 		return err
 	}
 	if properties == nil {
@@ -1671,11 +1701,13 @@ func (tx *BadgerTransaction) StreamNodesByLabelProjected(label string, propertie
 			tx.snapshotLabelNodes = make(map[string][]*Node)
 		}
 		tx.snapshotLabelNodes[cacheKey] = completed
+		tx.clearSnapshotLabelPrefixLocked(cacheKey)
 	} else if len(tx.snapshotProjectedLabelNodes) < maxSnapshotProjectedLabelStreams {
 		if tx.snapshotProjectedLabelNodes == nil {
 			tx.snapshotProjectedLabelNodes = make(map[string][]*Node)
 		}
 		tx.snapshotProjectedLabelNodes[cacheKey] = completed
+		tx.clearSnapshotLabelPrefixLocked(cacheKey)
 	}
 	return tx.streamPendingLabelNodesLocked(matchesLabel, seen, properties, invokeVisit)
 }
@@ -1802,6 +1834,10 @@ func (tx *BadgerTransaction) mergePendingNodesLocked(committed []*Node, includeP
 }
 
 func (tx *BadgerTransaction) mergePendingEdgesLocked(committed []*Edge, includePending func(*Edge) bool) []*Edge {
+	if len(tx.pendingEdges) == 0 && len(tx.deletedEdges) == 0 {
+		return committed
+	}
+
 	merged := make([]*Edge, 0, util.SafePreallocSum(len(committed), len(tx.pendingEdges)))
 	seen := make(map[EdgeID]struct{}, util.SafePreallocSum(len(committed), len(tx.pendingEdges)))
 

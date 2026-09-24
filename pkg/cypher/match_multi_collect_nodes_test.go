@@ -16,6 +16,7 @@ type collectNodesLabelProbeEngine struct {
 	labelCalls          int
 	labelLookupCalls    int
 	projectedLabelCalls int
+	projectedVisits     int
 	labelIDs            []storage.NodeID
 	projectedNodes      []*storage.Node
 	projectedProperties []string
@@ -80,6 +81,7 @@ func (e *collectNodesLabelProbeEngine) StreamNodesByLabelProjected(_ string, pro
 	e.projectedLabelCalls++
 	e.projectedProperties = append([]string(nil), properties...)
 	for _, node := range e.projectedNodes {
+		e.projectedVisits++
 		if err := visit(node); err != nil {
 			return err
 		}
@@ -177,6 +179,26 @@ func TestCollectNodesWithStreaming_UsesLabelIndexedStreamForResidualFilters(t *t
 	assert.Equal(t, 1, probe.projectedLabelCalls, "label-indexed streaming must supply the scan")
 	assert.Equal(t, 0, probe.streamCalls, "the converged collector must not scan unrelated labels")
 	assert.Equal(t, 0, probe.labelCalls, "the collector must not materialize the complete label population")
+}
+
+func TestMatchLimitStopsProjectedLabelStreamAfterRequestedRows(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = base.Close() })
+	projectedNodes := make([]*storage.Node, 40)
+	for i := range projectedNodes {
+		projectedNodes[i] = &storage.Node{
+			ID:         storage.NodeID(fmt.Sprintf("person-%d", i)),
+			Labels:     []string{"Person"},
+			Properties: map[string]any{"name": fmt.Sprintf("person-%d", i)},
+		}
+	}
+	probe := &collectNodesLabelProbeEngine{Engine: base, projectedNodes: projectedNodes}
+	result, err := NewStorageExecutor(probe).Execute(context.Background(),
+		"MATCH (person:Person) RETURN person.name LIMIT 10 /* cache_bust */", nil)
+	require.NoError(t, err)
+	require.Len(t, result.Rows, 10)
+	require.Equal(t, 1, probe.projectedLabelCalls)
+	require.Equal(t, 10, probe.projectedVisits, "LIMIT must stop the storage iterator, not just truncate the result")
 }
 
 func TestCollectNodesWithStreaming_PropagatesProjectedReaderError(t *testing.T) {

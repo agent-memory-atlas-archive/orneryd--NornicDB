@@ -7,12 +7,13 @@
 - [ ] 1.5 Import every reproduction/variant for the 35 scoped issues, including #452's comment; record exact TCK matches or local-only coverage.
 - [ ] 1.6 Check in exact known failures; fail on new/changed failures, missing scenarios, unexpected passes and harness errors.
 - [ ] 1.7 Add required CI workflow, artifacts and runnable make targets; configure required-check enforcement during rollout.
+		- Progress: the conformance workflow triggers on `pkg/**`, runs both `make cypher-conformance` and `make cypher-differential`, and uploads diagnostics with `if: always()`. Required-check enforcement is repository branch protection and remains to be verified.
 - [ ] 1.8 Record test/coverage/benchmark baseline and regenerate the divergence candidate ledger with reproducible inputs.
 
 ## 2. Share execution context and lexical contracts
 
 - [ ] 2.1 Extract common preparation while retaining public/internal cache, limits and transaction differences.
-	- #521 progress: top-level and internal execution now share duplicate RETURN column validation. Internal fragments still need inherited scope-aware preparation; applying the full top-level semantic validator rejects valid correlated subqueries.
+		- Progress: top-level and internal execution share duplicate RETURN column validation (`TestExecuteInternal_RejectsDuplicateReturnColumns`). Internal fragments still need inherited scope-aware preparation; applying the full top-level semantic validator rejects valid correlated subqueries.
 - [ ] 2.2 Introduce bound scope, inherited parameters, source spans and cancellation propagation without text substitution.
 - [ ] 2.3 Converge quote/comment/bracket-aware scanning and prove complete shape/fragment consumption.
 - [ ] 2.4 Add typed dispatch outcomes, effect-boundary tests and unresolved-expression instrumentation.
@@ -44,18 +45,22 @@
 
 - [ ] 6.1 Fix aggregate discovery/grouping, projection aliases, ordered collections and full sort-key evaluation.
 - [ ] 6.2 Fix UNWIND/OPTIONAL MATCH cardinality and correlated CALL; migrate UNION/FOREACH to bound child contexts.
+		- Progress: the reported FOREACH composed-write regressions are covered by `TestForeach_ComposedWritesRetainBindings` and `TestForeach_ComposedMutationShapes`; migrating FOREACH/UNION away from query-text re-entry remains open.
 - [ ] 6.3 Complete #447/#449–#452/#457/#459/#463/#464/#468/#469/#478/#479/#481 regressions and applicable TCK cases.
 - [ ] 6.4 Preserve write/read barriers and prohibit LIMIT from skipping required writes, sorting or grouping.
 
 ## 7. Stream snapshot reads
 
-- [ ] 7.1 Implement projected snapshot-visible iterators including pending mutations and early termination.
+- [x] 7.1 Implement projected snapshot-visible iterators including pending mutations and early termination.
+		- Verified for Badger transactions, Async, WAL, Composite, and Namespaced wrappers; tests cover pending updates/deletes, begin-snapshot replay, projection, deduplication, and early stop.
 - [ ] 7.2 Reproduce #487 and demonstrate per-shape latency/allocation improvements with visit counters and profiles.
+	- Progress: added query-level and explicit-snapshot visit-count coverage for traversal `LIMIT`; explicit one-hop `LIMIT 20` improved from ~1.54 ms/op, 665 KB/op, 14,799 allocs to ~0.17 ms/op, 138 KB/op, 2,161 allocs after adjacency-ID caching and bounded label-prefix replay. Serial CPU profile moved the hotspot from repeated MVCC adjacency iterator seeks to endpoint `GetNode` resolution (`~3.19 s cumulative`) and outgoing-edge reads (`~2.57 s`) in 13.23 s sampled process CPU. Autocommit is ~0.13 ms/op, so this item remains open pending follow-up on those measured reads and full shape/profile qualification.
 - [ ] 7.3 Verify snapshot isolation, cancellation, buffer lifetime and performance of existing correct workloads.
 
 ## 8. Retire remaining divergence
 
 - [ ] 8.1 Converge non-policy DDL and relevant node/edge kernels with contract tests and benchmarks.
+		- Progress: unsupported `DROP` statements now return syntax errors, and missing INDEX/CONSTRAINT behavior has regressions. Full DDL/kernel contract coverage and benchmarks remain open.
 - [ ] 8.2 Complete all remaining pinned-core TCK gaps and preserve Neo4j/Nornic extension suites.
 - [ ] 8.3 Remove superseded handlers/evaluators/text-substitution paths; document retained optimizations and public API adapters.
 - [ ] 8.4 Resolve every Cypher-relevant report candidate and document unrelated deferrals.

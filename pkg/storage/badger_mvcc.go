@@ -1088,16 +1088,26 @@ func (b *BadgerEngine) GetOutgoingEdgesVisibleAt(nodeID NodeID, version MVCCVers
 }
 
 func (b *BadgerEngine) getOutgoingEdgesVisibleAtWithView(nodeID NodeID, version MVCCVersion, view func(func(*badger.Txn) error) error) ([]*Edge, error) {
+	return b.getOutgoingEdgesVisibleAtWithViewRegistration(nodeID, version, view, true)
+}
+
+func (b *BadgerEngine) getOutgoingEdgesVisibleAtWithPinnedSnapshot(nodeID NodeID, version MVCCVersion, view func(func(*badger.Txn) error) error) ([]*Edge, error) {
+	return b.getOutgoingEdgesVisibleAtWithViewRegistration(nodeID, version, view, false)
+}
+
+func (b *BadgerEngine) getOutgoingEdgesVisibleAtWithViewRegistration(nodeID NodeID, version MVCCVersion, view func(func(*badger.Txn) error) error, registerReader bool) ([]*Edge, error) {
 	if nodeID == "" {
 		return nil, ErrInvalidID
 	}
-	deregister, err := b.beginMVCCSnapshotRead(version)
-	if err != nil {
-		return nil, err
+	if registerReader {
+		deregister, err := b.beginMVCCSnapshotRead(version)
+		if err != nil {
+			return nil, err
+		}
+		defer deregister()
 	}
-	defer deregister()
 	var edges []*Edge
-	err = view(func(txn *badger.Txn) error {
+	err := view(func(txn *badger.Txn) error {
 		edgeIDs, err := b.collectVisibleAdjacencyEdgeIDsInTxn(txn, b.mvccOutgoingAdjacencyPrefixString(nodeID), version)
 		if err != nil {
 			return err
@@ -1127,16 +1137,26 @@ func (b *BadgerEngine) GetIncomingEdgesVisibleAt(nodeID NodeID, version MVCCVers
 }
 
 func (b *BadgerEngine) getIncomingEdgesVisibleAtWithView(nodeID NodeID, version MVCCVersion, view func(func(*badger.Txn) error) error) ([]*Edge, error) {
+	return b.getIncomingEdgesVisibleAtWithViewRegistration(nodeID, version, view, true)
+}
+
+func (b *BadgerEngine) getIncomingEdgesVisibleAtWithPinnedSnapshot(nodeID NodeID, version MVCCVersion, view func(func(*badger.Txn) error) error) ([]*Edge, error) {
+	return b.getIncomingEdgesVisibleAtWithViewRegistration(nodeID, version, view, false)
+}
+
+func (b *BadgerEngine) getIncomingEdgesVisibleAtWithViewRegistration(nodeID NodeID, version MVCCVersion, view func(func(*badger.Txn) error) error, registerReader bool) ([]*Edge, error) {
 	if nodeID == "" {
 		return nil, ErrInvalidID
 	}
-	deregister, err := b.beginMVCCSnapshotRead(version)
-	if err != nil {
-		return nil, err
+	if registerReader {
+		deregister, err := b.beginMVCCSnapshotRead(version)
+		if err != nil {
+			return nil, err
+		}
+		defer deregister()
 	}
-	defer deregister()
 	var edges []*Edge
-	err = view(func(txn *badger.Txn) error {
+	err := view(func(txn *badger.Txn) error {
 		edgeIDs, err := b.collectVisibleAdjacencyEdgeIDsInTxn(txn, b.mvccIncomingAdjacencyPrefixString(nodeID), version)
 		if err != nil {
 			return err

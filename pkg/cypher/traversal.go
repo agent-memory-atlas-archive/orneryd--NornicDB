@@ -349,6 +349,18 @@ func (e *StorageExecutor) executeMatchWithRelationshipsWithPathSeeded(ctx contex
 		if whereClause != "" {
 			paths = e.filterPathsByWhere(ctx, paths, matches, whereClause)
 		}
+	} else if matches.TraversalLimit > 0 && !matches.IsChained && len(matches.StartNode.properties) == 0 {
+		viewport, _ := TemporalViewportFromContext(ctx)
+		checker, _ := e.getStorage(ctx).(temporalCurrentNodeChecker)
+		var streamed bool
+		var streamErr error
+		paths, streamed, streamErr = e.traverseGraphWithStreamingStartNodes(ctx, matches, viewport, checker)
+		if streamErr != nil {
+			return nil, streamErr
+		}
+		if !streamed {
+			paths = e.traverseGraph(ctx, matches)
+		}
 	} else {
 		// Normal traversal from all matching nodes
 		paths = e.traverseGraph(ctx, matches)
@@ -1649,6 +1661,67 @@ func (e *StorageExecutor) traverseGraph(ctx context.Context, match *TraversalMat
 	}
 
 	return e.traverseGraphSequential(ctx, match, startNodes, viewport, checker)
+}
+
+func (e *StorageExecutor) traverseGraphWithStreamingStartNodes(
+	ctx context.Context,
+	match *TraversalMatch,
+	viewport TemporalViewport,
+	checker temporalCurrentNodeChecker,
+) ([]PathResult, bool, error) {
+	store := e.getStorage(ctx)
+	labels := match.StartNode.labels
+	var stream func(func(*storage.Node) error) error
+	if len(labels) > 0 {
+		reader, ok := store.(storage.ProjectedLabelNodeReader)
+		if !ok {
+			return nil, false, nil
+		}
+		stream = func(visit func(*storage.Node) error) error {
+			return reader.StreamNodesByLabelProjected(labels[0], nil, visit)
+		}
+	} else {
+		reader, ok := store.(storage.StreamingEngine)
+		if !ok {
+			return nil, false, nil
+		}
+		stream = func(visit func(*storage.Node) error) error {
+			return reader.StreamNodes(ctx, visit)
+		}
+	}
+
+	remaining := match.TraversalLimit
+	hideSystemNodes := shouldHideSystemNodes(store)
+	var paths []PathResult
+	err := stream(func(node *storage.Node) error {
+		if node == nil || (hideSystemNodes && isSystemNode(node)) {
+			return nil
+		}
+		if len(labels) > 0 && !mergeNodeHasLabels(node, labels) {
+			return nil
+		}
+		visible, err := nodeVisibleInTemporalViewport(node, viewport, checker)
+		if err != nil {
+			return err
+		}
+		if !visible {
+			return nil
+		}
+
+		limitedMatch := *match
+		limitedMatch.TraversalLimit = remaining
+		found := e.traverseGraphSequential(ctx, &limitedMatch, []*storage.Node{node}, viewport, checker)
+		paths = append(paths, found...)
+		remaining -= len(found)
+		if remaining <= 0 {
+			return storage.ErrIterationStopped
+		}
+		return nil
+	})
+	if err != nil && err != storage.ErrIterationStopped {
+		return nil, true, err
+	}
+	return paths, true, nil
 }
 
 // traverseGraphSequential performs sequential traversal from start nodes
