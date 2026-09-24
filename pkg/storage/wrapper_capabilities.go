@@ -1,0 +1,182 @@
+// Storage capability contracts for the production wrapper stack.
+//
+// The storage chain (BadgerEngine → WALEngine → AsyncEngine → NamespacedEngine,
+// with MemoryEngine embedding BadgerEngine) must expose the same optional
+// capabilities at every layer so callers that type-assert for a capability
+// never silently fall back to a slower or incorrect path depending on which
+// wrapper they hold (DIVERGENCE_REPORT.md §2: the pattern behind #420, #424,
+// #473).
+//
+// The var-block below turns every missing forward into a compile error.
+// NamespaceLister, NamespaceSchemaProvider, PrefixStatsEngine,
+// NamespaceLabelStatsProvider, StartupMaintenanceStateEngine,
+// MVCCMaintenanceEngine, TemporalMaintenanceEngine and StorageEventNotifier
+// are declared in types.go; the four interfaces below complete the set of
+// capabilities the report found forwarded unevenly.
+package storage
+
+import "context"
+
+// NodeProjectionReader reports nodes carrying only the requested properties.
+type NodeProjectionReader interface {
+	GetNodeProjected(id NodeID, properties []string) (*Node, error)
+}
+
+// NodeIterator streams every node in the engine view.
+type NodeIterator interface {
+	IterateNodes(fn func(*Node) bool) error
+}
+
+// EmbeddingCountProvider reports the pending embedding work-item count.
+type EmbeddingCountProvider interface {
+	PendingEmbeddingsCount() int
+}
+
+// EmbeddingUpdater updates only the embedding of an existing node, never
+// creating an orphan (returns ErrNotFound when the node does not exist).
+type EmbeddingUpdater interface {
+	UpdateNodeEmbedding(node *Node) error
+}
+
+// Compile-time capability assertions: every production wrapper must expose the
+// same optional capabilities as the inner engine. MemoryEngine satisfies these
+// through its embedded *BadgerEngine, which is intentional.
+var (
+	_ NodeProjectionReader          = (*BadgerEngine)(nil)
+	_ NodeProjectionReader          = (*WALEngine)(nil)
+	_ NodeProjectionReader          = (*AsyncEngine)(nil)
+	_ NodeProjectionReader          = (*NamespacedEngine)(nil)
+	_ NodeProjectionReader          = (*MemoryEngine)(nil)
+	_ NodeIterator                  = (*BadgerEngine)(nil)
+	_ NodeIterator                  = (*WALEngine)(nil)
+	_ NodeIterator                  = (*AsyncEngine)(nil)
+	_ NodeIterator                  = (*NamespacedEngine)(nil)
+	_ NodeIterator                  = (*MemoryEngine)(nil)
+	_ EmbeddingCountProvider        = (*BadgerEngine)(nil)
+	_ EmbeddingCountProvider        = (*WALEngine)(nil)
+	_ EmbeddingCountProvider        = (*AsyncEngine)(nil)
+	_ EmbeddingCountProvider        = (*NamespacedEngine)(nil)
+	_ EmbeddingCountProvider        = (*MemoryEngine)(nil)
+	_ EmbeddingUpdater              = (*BadgerEngine)(nil)
+	_ EmbeddingUpdater              = (*WALEngine)(nil)
+	_ EmbeddingUpdater              = (*AsyncEngine)(nil)
+	_ EmbeddingUpdater              = (*NamespacedEngine)(nil)
+	_ EmbeddingUpdater              = (*MemoryEngine)(nil)
+	_ NamespaceLister               = (*BadgerEngine)(nil)
+	_ NamespaceLister               = (*WALEngine)(nil)
+	_ NamespaceLister               = (*AsyncEngine)(nil)
+	_ NamespaceLister               = (*NamespacedEngine)(nil)
+	_ NamespaceLister               = (*MemoryEngine)(nil)
+	_ NamespaceSchemaProvider       = (*BadgerEngine)(nil)
+	_ NamespaceSchemaProvider       = (*WALEngine)(nil)
+	_ NamespaceSchemaProvider       = (*AsyncEngine)(nil)
+	_ NamespaceSchemaProvider       = (*NamespacedEngine)(nil)
+	_ NamespaceSchemaProvider       = (*MemoryEngine)(nil)
+	_ PrefixStatsEngine             = (*BadgerEngine)(nil)
+	_ PrefixStatsEngine             = (*WALEngine)(nil)
+	_ PrefixStatsEngine             = (*AsyncEngine)(nil)
+	_ PrefixStatsEngine             = (*NamespacedEngine)(nil)
+	_ PrefixStatsEngine             = (*MemoryEngine)(nil)
+	_ NamespaceLabelStatsProvider   = (*BadgerEngine)(nil)
+	_ NamespaceLabelStatsProvider   = (*WALEngine)(nil)
+	_ NamespaceLabelStatsProvider   = (*AsyncEngine)(nil)
+	_ NamespaceLabelStatsProvider   = (*NamespacedEngine)(nil)
+	_ NamespaceLabelStatsProvider   = (*MemoryEngine)(nil)
+	_ StartupMaintenanceStateEngine = (*BadgerEngine)(nil)
+	_ StartupMaintenanceStateEngine = (*WALEngine)(nil)
+	_ StartupMaintenanceStateEngine = (*AsyncEngine)(nil)
+	_ StartupMaintenanceStateEngine = (*NamespacedEngine)(nil)
+	_ StartupMaintenanceStateEngine = (*MemoryEngine)(nil)
+	_ MVCCMaintenanceEngine         = (*BadgerEngine)(nil)
+	_ MVCCMaintenanceEngine         = (*WALEngine)(nil)
+	_ MVCCMaintenanceEngine         = (*AsyncEngine)(nil)
+	_ MVCCMaintenanceEngine         = (*NamespacedEngine)(nil)
+	_ MVCCMaintenanceEngine         = (*MemoryEngine)(nil)
+	_ TemporalMaintenanceEngine     = (*BadgerEngine)(nil)
+	_ TemporalMaintenanceEngine     = (*WALEngine)(nil)
+	_ TemporalMaintenanceEngine     = (*AsyncEngine)(nil)
+	_ TemporalMaintenanceEngine     = (*NamespacedEngine)(nil)
+	_ TemporalMaintenanceEngine     = (*MemoryEngine)(nil)
+	_ StorageEventNotifier          = (*BadgerEngine)(nil)
+	_ StorageEventNotifier          = (*WALEngine)(nil)
+	_ StorageEventNotifier          = (*AsyncEngine)(nil)
+	_ StorageEventNotifier          = (*NamespacedEngine)(nil)
+	_ StorageEventNotifier          = (*MemoryEngine)(nil)
+)
+
+// GetNodeProjected returns a node with only the requested properties, honoring
+// the async overlay: staged writes are projected from cache, deleted nodes
+// report ErrNotFound, and everything else reads the underlying engine.
+func (ae *AsyncEngine) GetNodeProjected(id NodeID, properties []string) (*Node, error) {
+	ae.mu.RLock()
+	if ae.deleteNodes[id] {
+		ae.mu.RUnlock()
+		return nil, ErrNotFound
+	}
+	if node, ok := ae.nodeCache[id]; ok && node != nil {
+		ae.mu.RUnlock()
+		return projectCachedNodeForRead(node, properties), nil
+	}
+	ae.mu.RUnlock()
+	if reader, ok := ae.engine.(NodeProjectionReader); ok {
+		return reader.GetNodeProjected(id, properties)
+	}
+	node, err := ae.engine.GetNode(id)
+	if err != nil {
+		return nil, err
+	}
+	return projectCachedNodeForRead(node, properties), nil
+}
+
+// GetNodeProjected forwards the projected read to the underlying engine. WAL
+// adds no overlay, so a plain forward preserves parity with GetNode.
+func (w *WALEngine) GetNodeProjected(id NodeID, properties []string) (*Node, error) {
+	if reader, ok := w.engine.(NodeProjectionReader); ok {
+		return reader.GetNodeProjected(id, properties)
+	}
+	node, err := w.engine.GetNode(id)
+	if err != nil {
+		return nil, err
+	}
+	return projectCachedNodeForRead(node, properties), nil
+}
+
+// Event-callback registration forwards. WAL does not translate IDs, so the
+// callback receives exactly what the inner engine emits.
+func (w *WALEngine) OnNodeCreated(callback NodeEventCallback) {
+	if notifier, ok := w.engine.(StorageEventNotifier); ok {
+		notifier.OnNodeCreated(callback)
+	}
+}
+
+func (w *WALEngine) OnNodeUpdated(callback NodeEventCallback) {
+	if notifier, ok := w.engine.(StorageEventNotifier); ok {
+		notifier.OnNodeUpdated(callback)
+	}
+}
+
+func (w *WALEngine) OnNodeDeleted(callback NodeDeleteCallback) {
+	if notifier, ok := w.engine.(StorageEventNotifier); ok {
+		notifier.OnNodeDeleted(callback)
+	}
+}
+
+func (w *WALEngine) OnEdgeCreated(callback EdgeEventCallback) {
+	if notifier, ok := w.engine.(StorageEventNotifier); ok {
+		notifier.OnEdgeCreated(callback)
+	}
+}
+
+func (w *WALEngine) OnEdgeUpdated(callback EdgeEventCallback) {
+	if notifier, ok := w.engine.(StorageEventNotifier); ok {
+		notifier.OnEdgeUpdated(callback)
+	}
+}
+
+func (w *WALEngine) OnEdgeDeleted(callback EdgeDeleteCallback) {
+	if notifier, ok := w.engine.(StorageEventNotifier); ok {
+		notifier.OnEdgeDeleted(callback)
+	}
+}
+
+var _ = context.Background // keep context import for parity with types.go declarations
