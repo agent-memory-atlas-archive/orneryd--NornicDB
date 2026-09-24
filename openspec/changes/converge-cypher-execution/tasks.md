@@ -70,6 +70,7 @@
 ## 8. Retire remaining divergence
 
 - [ ] 8.1 Converge non-policy DDL and relevant node/edge kernels with contract tests and benchmarks.
+	- Progress (HARD_CONVERGENCE.md item 5, read-only twins first): `BadgerEngine.NodeCountByPrefix`/`EdgeCountByPrefix` now share the `countByPrefix(prefix, keyType, cache)` kernel, and `namespaceForNodeIDs`/`namespaceForEdgeIDs` share the generic `namespaceForIDs[T ~string]` kernel with identical error text; each public twin is a thin wrapper. `BenchmarkBadgerEngine_(Node|Edge)CountByPrefix_Warm` measured 20.9–21.1 ns/op, 0 allocs before and 21.5–21.9 ns/op, 0 allocs after (within noise) on M2 Max. Remaining twin groups (StreamNodes/StreamEdges, mergePending*Locked, decode/coerce pairs, DDL parser families) stay open. The router/evaluator/§1–§3 report items were verified already collapsed (single router, evaluator funnels through WithContextFull); §2's 12 Badger-only methods are by-design unwrap-to-Badger operations (callers hold the concrete type).
 		- Progress: unsupported `DROP` statements now return syntax errors, and missing INDEX/CONSTRAINT behavior has regressions. Full DDL/kernel contract coverage and benchmarks remain open.
 - [ ] 8.2 Complete all remaining pinned-core TCK gaps and preserve Neo4j/Nornic extension suites.
 - [ ] 8.3 Remove superseded handlers/evaluators/text-substitution paths; document retained optimizations and public API adapters.

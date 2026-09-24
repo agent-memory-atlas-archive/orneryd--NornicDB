@@ -11,21 +11,26 @@ import (
 	"github.com/dgraph-io/badger/v4"
 )
 
-// namespaceForNodeIDs returns the shared namespace of a slice of node IDs,
+// namespaceForIDs returns the shared namespace of a slice of node or edge IDs,
 // or an error if the slice is empty / mixed-namespace. Used by the engine's
 // non-transactional bulk APIs (BulkCreateNodes / BulkDeleteNodes) to route
 // the batch's MVCC version allocation through a single namespace's
 // counter — the per-database invariant that BadgerTransaction enforces
 // at the transaction layer also has to hold for these batch APIs.
-func namespaceForNodeIDs(ids []NodeID) (string, error) {
+//
+// namespaceForNodeIDs and namespaceForEdgeIDs are thin wrappers over this
+// generic kernel; the two differ only in the ID type and the namespace
+// extraction function (HARD_CONVERGENCE.md item 5: node/edge twin
+// consolidation).
+func namespaceForIDs[T ~string](ids []T, namespaceOf func(T) string, kind string) (string, error) {
 	var ns string
 	for _, id := range ids {
 		if id == "" {
 			continue
 		}
-		other := namespaceForNodeID(id)
+		other := namespaceOf(id)
 		if other == "" {
-			return "", fmt.Errorf("node ID must be prefixed with namespace, got: %s", id)
+			return "", fmt.Errorf("%s ID must be prefixed with namespace, got: %s", kind, id)
 		}
 		if ns == "" {
 			ns = other
@@ -42,30 +47,14 @@ func namespaceForNodeIDs(ids []NodeID) (string, error) {
 	return ns, nil
 }
 
+// namespaceForNodeIDs returns the shared namespace of a slice of node IDs.
+func namespaceForNodeIDs(ids []NodeID) (string, error) {
+	return namespaceForIDs(ids, namespaceForNodeID, "node")
+}
+
 // namespaceForEdgeIDs is the edge-id analogue of namespaceForNodeIDs.
 func namespaceForEdgeIDs(ids []EdgeID) (string, error) {
-	var ns string
-	for _, id := range ids {
-		if id == "" {
-			continue
-		}
-		other := namespaceForEdgeID(id)
-		if other == "" {
-			return "", fmt.Errorf("edge ID must be prefixed with namespace, got: %s", id)
-		}
-		if ns == "" {
-			ns = other
-			continue
-		}
-		if ns != other {
-			return "", fmt.Errorf("%w: batch contains both %q and %q",
-				ErrCrossNamespaceTransaction, ns, other)
-		}
-	}
-	if ns == "" {
-		return "", fmt.Errorf("batch contains no usable IDs")
-	}
-	return ns, nil
+	return namespaceForIDs(ids, namespaceForEdgeID, "edge")
 }
 
 // namespaceMVCCState holds the per-database MVCC sequence counter and the

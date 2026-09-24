@@ -87,18 +87,17 @@ func (b *BadgerEngine) NodeCount() (int64, error) {
 	return b.nodeCount.Load(), nil
 }
 
-// NodeCountByPrefix counts nodes whose NodeID begins with the provided prefix.
-// The prefix refers to the NodeID string prefix (e.g., database namespace "nornic:").
-//
-// This is an optional fast-path used by NamespacedEngine to provide accurate
-// per-database counts without decoding values.
-func (b *BadgerEngine) NodeCountByPrefix(prefix string) (int64, error) {
+// countByPrefix counts records whose ID key starts with the given ID prefix.
+// NodeCountByPrefix and EdgeCountByPrefix are thin wrappers over this kernel;
+// the two differ only in the key-type byte and the namespace count cache
+// (HARD_CONVERGENCE.md item 5: node/edge twin consolidation).
+func (b *BadgerEngine) countByPrefix(prefix string, keyType byte, cache map[string]int64) (int64, error) {
 	if err := b.ensureOpen(); err != nil {
 		return 0, err
 	}
 
 	b.namespaceCountsMu.RLock()
-	if count, ok := b.namespaceNodeCounts[prefix]; ok {
+	if count, ok := cache[prefix]; ok {
 		b.namespaceCountsMu.RUnlock()
 		return count, nil
 	}
@@ -107,7 +106,7 @@ func (b *BadgerEngine) NodeCountByPrefix(prefix string) (int64, error) {
 	var count int64
 	err := b.withView(func(txn *badger.Txn) error {
 		keyPrefix := make([]byte, 0, 1+len(prefix))
-		keyPrefix = append(keyPrefix, prefixNode)
+		keyPrefix = append(keyPrefix, keyType)
 		keyPrefix = append(keyPrefix, []byte(prefix)...)
 
 		it := txn.NewIterator(badgerIterOptsKeyOnly(keyPrefix))
@@ -121,6 +120,15 @@ func (b *BadgerEngine) NodeCountByPrefix(prefix string) (int64, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+// NodeCountByPrefix counts nodes whose NodeID begins with the provided prefix.
+// The prefix refers to the NodeID string prefix (e.g., database namespace "nornic:").
+//
+// This is an optional fast-path used by NamespacedEngine to provide accurate
+// per-database counts without decoding values.
+func (b *BadgerEngine) NodeCountByPrefix(prefix string) (int64, error) {
+	return b.countByPrefix(prefix, prefixNode, b.namespaceNodeCounts)
 }
 
 // EdgeCount returns the total number of valid, decodable edges.
@@ -136,34 +144,7 @@ func (b *BadgerEngine) EdgeCount() (int64, error) {
 // EdgeCountByPrefix counts edges whose EdgeID begins with the provided prefix.
 // The prefix refers to the EdgeID string prefix (e.g., database namespace "nornic:").
 func (b *BadgerEngine) EdgeCountByPrefix(prefix string) (int64, error) {
-	if err := b.ensureOpen(); err != nil {
-		return 0, err
-	}
-
-	b.namespaceCountsMu.RLock()
-	if count, ok := b.namespaceEdgeCounts[prefix]; ok {
-		b.namespaceCountsMu.RUnlock()
-		return count, nil
-	}
-	b.namespaceCountsMu.RUnlock()
-
-	var count int64
-	err := b.withView(func(txn *badger.Txn) error {
-		keyPrefix := make([]byte, 0, 1+len(prefix))
-		keyPrefix = append(keyPrefix, prefixEdge)
-		keyPrefix = append(keyPrefix, []byte(prefix)...)
-
-		it := txn.NewIterator(badgerIterOptsKeyOnly(keyPrefix))
-		defer it.Close()
-		for it.Rewind(); it.Valid(); it.Next() {
-			count++
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	return count, nil
+	return b.countByPrefix(prefix, prefixEdge, b.namespaceEdgeCounts)
 }
 
 // GetSchema returns the schema manager.
