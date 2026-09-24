@@ -611,6 +611,9 @@ func (e *StorageExecutor) executeMerge(ctx context.Context, cypher string) (*Exe
 			Labels:     labels,
 			Properties: matchProps,
 		}
+		if err := validatePropertyValues(node.Properties); err != nil {
+			return nil, err
+		}
 		actualID, err := store.CreateNode(node)
 		if err != nil {
 			return nil, localizedError(localization.CypherMergeCreateNodeFailed(err), err)
@@ -657,6 +660,9 @@ func (e *StorageExecutor) executeMerge(ctx context.Context, cypher string) (*Exe
 			ID:         storage.NodeID(e.generateID()),
 			Labels:     labels,
 			Properties: matchProps,
+		}
+		if err := validatePropertyValues(node.Properties); err != nil {
+			return nil, err
 		}
 		actualID, err := store.CreateNode(node)
 		if err != nil {
@@ -2002,6 +2008,9 @@ func (e *StorageExecutor) executeMergeWithContext(ctx context.Context, cypher st
 			Labels:     labels,
 			Properties: matchProps,
 		}
+		if err := validatePropertyValues(node.Properties); err != nil {
+			return nil, err
+		}
 		actualID, err := store.CreateNode(node)
 		if err != nil {
 			if mergeCreateConflict(err) {
@@ -2345,6 +2354,9 @@ func (e *StorageExecutor) resolveMergeRelationshipEndpoint(store storage.Engine,
 		ID:         storage.NodeID(e.generateID()),
 		Labels:     pattern.labels,
 		Properties: pattern.properties,
+	}
+	if err := validatePropertyValues(node.Properties); err != nil {
+		return nil, false, err
 	}
 	actualID, err := store.CreateNode(node)
 	if err != nil {
@@ -3352,6 +3364,9 @@ func (e *StorageExecutor) executeMergeNodeSegment(ctx context.Context, segment s
 			ID:         storage.NodeID(e.generateID()),
 			Labels:     labels,
 			Properties: props,
+		}
+		if err := validatePropertyValues(node.Properties); err != nil {
+			return nil, "", err
 		}
 		actualID, err := store.CreateNode(node)
 		if err != nil {
