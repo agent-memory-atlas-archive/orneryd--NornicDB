@@ -55,6 +55,9 @@ func (e *StorageExecutor) executeInternal(ctx context.Context, cypher string, pa
 	if err := e.validateSyntax(cypher); err != nil {
 		return nil, err
 	}
+	if err := e.validateDuplicateReturnColumnName(cypher); err != nil {
+		return nil, err
+	}
 
 	if inheritedParams := getParamsFromContext(ctx); inheritedParams != nil {
 		if params == nil {

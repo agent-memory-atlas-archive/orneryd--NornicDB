@@ -12,6 +12,7 @@
 ## 2. Share execution context and lexical contracts
 
 - [ ] 2.1 Extract common preparation while retaining public/internal cache, limits and transaction differences.
+	- #521 progress: top-level and internal execution now share duplicate RETURN column validation. Internal fragments still need inherited scope-aware preparation; applying the full top-level semantic validator rejects valid correlated subqueries.
 - [ ] 2.2 Introduce bound scope, inherited parameters, source spans and cancellation propagation without text substitution.
 - [ ] 2.3 Converge quote/comment/bracket-aware scanning and prove complete shape/fragment consumption.
 - [ ] 2.4 Add typed dispatch outcomes, effect-boundary tests and unresolved-expression instrumentation.

@@ -44,12 +44,8 @@ func (e *StorageExecutor) validateSemanticScopes(cypher string) error {
 			"aggregate expressions are not allowed inside list-comprehension predicates or projections",
 		)
 	}
-	if duplicate := e.duplicateReturnColumnName(cypher); duplicate != "" {
-		return newSemanticError(
-			"Neo.ClientError.Statement.SyntaxError",
-			"ColumnNameConflict",
-			"Multiple RETURN items project the same column name: "+duplicate,
-		)
+	if err := e.validateDuplicateReturnColumnName(cypher); err != nil {
+		return err
 	}
 	if clauses, ok := splitPipelineClauses(cypher); ok {
 		for _, clause := range clauses {
@@ -103,6 +99,17 @@ func (e *StorageExecutor) validateSemanticScopes(cypher string) error {
 		return err
 	}
 	e.semanticValidationCache.add(cypher)
+	return nil
+}
+
+func (e *StorageExecutor) validateDuplicateReturnColumnName(cypher string) error {
+	if duplicate := e.duplicateReturnColumnName(cypher); duplicate != "" {
+		return newSemanticError(
+			"Neo.ClientError.Statement.SyntaxError",
+			"ColumnNameConflict",
+			"Multiple RETURN items project the same column name: "+duplicate,
+		)
+	}
 	return nil
 }
 

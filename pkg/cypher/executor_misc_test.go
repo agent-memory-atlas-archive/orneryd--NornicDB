@@ -380,6 +380,16 @@ func TestExecuteInternal_Branches(t *testing.T) {
 	assert.Equal(t, int64(1), verify.Rows[0][0])
 }
 
+func TestExecuteInternal_RejectsDuplicateReturnColumns(t *testing.T) {
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
+	for _, run := range []func(context.Context, string, map[string]interface{}) (*ExecuteResult, error){exec.Execute, exec.executeInternal} {
+		_, err := run(context.Background(), "RETURN 1 AS duplicate, 2 AS duplicate", nil)
+		var semantic *SemanticError
+		require.ErrorAs(t, err, &semantic)
+		require.Equal(t, "Neo.ClientError.Statement.SyntaxError", semantic.Code)
+	}
+}
+
 func TestApocDynamicRunAndRunMany_Direct(t *testing.T) {
 	baseStore := newTestMemoryEngine(t)
 	store := storage.NewNamespacedEngine(baseStore, "test")
