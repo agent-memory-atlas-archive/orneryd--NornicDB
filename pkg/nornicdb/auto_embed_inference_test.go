@@ -50,7 +50,9 @@ func (e *staticTestEmbedder) ChunkText(text string, maxTokens, overlap int) ([]s
 func TestAutoTLP_ServerSideEmbeddingsTriggerInferenceOnEmbedded(t *testing.T) {
 	ctx := context.Background()
 
-	db, err := Open(t.TempDir(), nil)
+	config := DefaultConfig()
+	config.Memory.EmbeddingEnabled = true
+	db, err := Open(t.TempDir(), config)
 	require.NoError(t, err)
 	defer db.Close()
 

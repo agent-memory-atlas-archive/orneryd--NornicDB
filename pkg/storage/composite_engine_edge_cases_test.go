@@ -68,11 +68,10 @@ func TestCompositeEngine_OfflineConstituent(t *testing.T) {
 	// Close db2 (simulate offline)
 	engine2.Close()
 
-	// Query should still work with db1 (db2 errors are skipped)
+	// A readable offline constituent makes the combined result incomplete.
 	nodes, err := composite.GetNodesByLabel("Person")
-	require.NoError(t, err)
-	// Should return nodes from db1 (db2 is offline but we skip it)
-	assert.GreaterOrEqual(t, len(nodes), 1)
+	require.ErrorIs(t, err, ErrStorageClosed)
+	require.Nil(t, nodes)
 
 	// Write should still work when explicitly targeted to online db1.
 	node2 := &Node{
@@ -108,10 +107,10 @@ func TestCompositeEngine_AllConstituentsOffline(t *testing.T) {
 	engine1.Close()
 	engine2.Close()
 
-	// Read operations should return empty results (errors are skipped)
+	// Reads must report that the constituent data is unavailable.
 	nodes, err := composite.GetNodesByLabel("Person")
-	require.NoError(t, err)
-	assert.Equal(t, 0, len(nodes))
+	require.ErrorIs(t, err, ErrStorageClosed)
+	require.Nil(t, nodes)
 
 	// Write operations should fail with storage closed error when explicitly targeted.
 	node := &Node{

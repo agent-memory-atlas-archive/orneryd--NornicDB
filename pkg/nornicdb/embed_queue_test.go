@@ -1512,6 +1512,7 @@ func TestAsyncEngineCacheIntegration(t *testing.T) {
 	t.Run("cached_embedding_not_refound", func(t *testing.T) {
 		// Create underlying engine
 		baseUnderlying := storage.NewMemoryEngine()
+		baseUnderlying.SetEmbeddingsEnabled(true)
 
 		underlying := storage.NewNamespacedEngine(baseUnderlying, "test")
 
@@ -2480,6 +2481,7 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 
 	t.Run("worker waits for embedder then ticker picks up new node", func(t *testing.T) {
 		base := storage.NewMemoryEngine()
+		base.SetEmbeddingsEnabled(true)
 		engine := storage.NewNamespacedEngine(base, "test")
 
 		cfg := &EmbedWorkerConfig{

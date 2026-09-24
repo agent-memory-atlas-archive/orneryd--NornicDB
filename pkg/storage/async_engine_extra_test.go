@@ -1419,7 +1419,7 @@ func TestAsyncEngine_GetFirstAndGetNodesByLabel_CaseInsensitive(t *testing.T) {
 		assert.Equal(t, NodeID("test:first-fallback"), first.ID)
 	})
 
-	t.Run("get nodes returns cache on engine error", func(t *testing.T) {
+	t.Run("get nodes propagates engine error", func(t *testing.T) {
 		engine := &labelQueryErrorEngine{
 			MemoryEngine:       NewMemoryEngine(),
 			getNodesByLabelErr: errors.New("label query failed"),
@@ -1436,9 +1436,8 @@ func TestAsyncEngine_GetFirstAndGetNodesByLabel_CaseInsensitive(t *testing.T) {
 		require.NoError(t, err)
 
 		nodes, err := ae.GetNodesByLabel("cacheonly")
-		require.NoError(t, err)
-		require.Len(t, nodes, 1)
-		assert.Equal(t, NodeID(prefixTestID("label-cache-only")), nodes[0].ID)
+		require.EqualError(t, err, "label query failed")
+		require.Nil(t, nodes)
 	})
 
 	t.Run("pending relabel hides stale persisted label view", func(t *testing.T) {

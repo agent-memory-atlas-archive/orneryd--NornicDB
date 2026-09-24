@@ -10,6 +10,7 @@ package cypher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -508,8 +509,12 @@ func (e *StorageExecutor) executeDropIndex(ctx context.Context, cypher string) (
 	}
 
 	if err := e.storage.GetSchema().DropIndex(name); err != nil {
-		if ifExists && strings.Contains(err.Error(), "does not exist") {
-			return &ExecuteResult{Columns: []string{}, Rows: [][]interface{}{}}, nil
+		var missing *localization.LocalizedError
+		if errors.As(err, &missing) && missing.Message.ID == localization.MessageStorageSchemaIndexNotFound {
+			if ifExists {
+				return &ExecuteResult{Columns: []string{}, Rows: [][]interface{}{}}, nil
+			}
+			return nil, newSemanticError("Neo.ClientError.Schema.IndexDropFailed", "MissingIndex", err.Error())
 		}
 		return nil, err
 	}
@@ -568,9 +573,12 @@ func (e *StorageExecutor) executeDropConstraint(ctx context.Context, cypher stri
 	}
 
 	if err := e.storage.GetSchema().DropConstraint(name); err != nil {
-		// If IF EXISTS was used, swallow missing constraint errors.
-		if ifExists && strings.Contains(err.Error(), "does not exist") {
-			return &ExecuteResult{Columns: []string{}, Rows: [][]interface{}{}}, nil
+		var missing *localization.LocalizedError
+		if errors.As(err, &missing) && missing.Message.ID == localization.MessageStorageSchemaConstraintNotFound {
+			if ifExists {
+				return &ExecuteResult{Columns: []string{}, Rows: [][]interface{}{}}, nil
+			}
+			return nil, newSemanticError("Neo.ClientError.Schema.ConstraintDropFailed", "MissingConstraint", err.Error())
 		}
 		return nil, err
 	}

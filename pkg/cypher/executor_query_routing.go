@@ -488,7 +488,7 @@ skipMatchCallRoute:
 	case findMultiWordKeywordIndex(cypher, "DROP", "INDEX") == 0:
 		return e.executeDropIndex(ctx, cypher)
 	case findKeywordIndex(cypher, "DROP") == 0:
-		return &ExecuteResult{Columns: []string{}, Rows: [][]interface{}{}}, nil
+		return nil, newSemanticError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax", "invalid DROP clause: "+truncateQuery(cypher, 80))
 	case findKeywordIndex(cypher, "WITH") == 0:
 		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
 			return result, err
@@ -497,6 +497,9 @@ skipMatchCallRoute:
 	case findKeywordIndex(cypher, "UNWIND") == 0:
 		return e.executeUnwind(ctx, cypher)
 	case findKeywordIndex(cypher, "FOREACH") == 0:
+		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
+			return result, err
+		}
 		return e.executeForeach(ctx, cypher)
 	case findKeywordIndex(cypher, "LOAD CSV") == 0:
 		return e.executeLoadCSV(ctx, cypher)

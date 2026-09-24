@@ -1315,10 +1315,7 @@ func (e *StorageExecutor) collectNodesWithStreaming(
 			if err == nil || err == storage.ErrIterationStopped {
 				return collected, nil
 			}
-			if err != storage.ErrNotImplemented {
-				return nil, err
-			}
-			collected = collected[:0]
+			return nil, err
 		}
 	}
 
@@ -1332,7 +1329,10 @@ func (e *StorageExecutor) collectNodesWithStreaming(
 		filtered := make([]*storage.Node, 0, util.SafePreallocCap(len(ids)))
 		for _, id := range ids {
 			node, getErr := store.GetNode(id)
-			if getErr != nil || node == nil {
+			if getErr != nil {
+				return nil, getErr
+			}
+			if node == nil {
 				continue
 			}
 			if hideSystemNodes && isSystemNode(node) {

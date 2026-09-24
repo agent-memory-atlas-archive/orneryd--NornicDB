@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -38,6 +39,74 @@ func TestCompositeEngine_Deduplication_GetNodesByLabel(t *testing.T) {
 	// Should only return one node, not two
 	assert.Equal(t, 1, len(nodes))
 	assert.Equal(t, node1.ID, nodes[0].ID)
+}
+
+func TestCompositeEngine_GetNodesByLabelPropagatesConstituentError(t *testing.T) {
+	backing := NewMemoryEngine()
+	t.Cleanup(func() { require.NoError(t, backing.Close()) })
+	readErr := errors.New("constituent label scan failed")
+	composite := NewCompositeEngine(
+		map[string]Engine{"failed": failingLabelScanEngine{Engine: backing, err: readErr}},
+		nil,
+		map[string]string{"failed": "read"},
+	)
+	nodes, err := composite.GetNodesByLabel("Evidence")
+	require.ErrorIs(t, err, readErr)
+	require.Nil(t, nodes)
+}
+
+func TestCompositeEngine_StreamNodesByLabelProjected(t *testing.T) {
+	first := NewMemoryEngine()
+	second := NewMemoryEngine()
+	t.Cleanup(func() { require.NoError(t, first.Close()) })
+	t.Cleanup(func() { require.NoError(t, second.Close()) })
+	shared := NodeID(prefixTestID("shared-projected"))
+	unique := NodeID(prefixTestID("unique-projected"))
+	for _, engine := range []*MemoryEngine{first, second} {
+		_, err := engine.CreateNode(&Node{ID: shared, Labels: []string{"Evidence"}, Properties: map[string]any{"asset_id": "shared", "unused": "hidden"}})
+		require.NoError(t, err)
+	}
+	_, err := second.CreateNode(&Node{ID: unique, Labels: []string{"Evidence"}, Properties: map[string]any{"asset_id": "unique", "unused": "hidden"}})
+	require.NoError(t, err)
+	composite := NewCompositeEngine(
+		map[string]Engine{"first": first, "second": second}, nil,
+		map[string]string{"first": "read", "second": "read"},
+	)
+	seen := make(map[NodeID]map[string]any)
+	err = composite.StreamNodesByLabelProjected("Evidence", []string{"asset_id"}, func(node *Node) error {
+		seen[node.ID] = node.Properties
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, map[NodeID]map[string]any{
+		shared: {"asset_id": "shared"},
+		unique: {"asset_id": "unique"},
+	}, seen)
+
+	visited := 0
+	err = composite.StreamNodesByLabelProjected("Evidence", nil, func(*Node) error {
+		visited++
+		return ErrIterationStopped
+	})
+	require.ErrorIs(t, err, ErrIterationStopped)
+	require.Equal(t, 1, visited)
+}
+
+func TestCompositeEngine_StreamNodesByLabelProjectedUnsupportedConstituent(t *testing.T) {
+	backing := NewMemoryEngine()
+	t.Cleanup(func() { require.NoError(t, backing.Close()) })
+	unsupported := struct{ Engine }{backing}
+	composite := NewCompositeEngine(
+		map[string]Engine{"supported": backing, "unsupported": unsupported}, nil,
+		map[string]string{"supported": "read", "unsupported": "read"},
+	)
+	visited := false
+	err := composite.StreamNodesByLabelProjected("Evidence", nil, func(*Node) error {
+		visited = true
+		return nil
+	})
+	require.ErrorIs(t, err, ErrNotImplemented)
+	require.False(t, visited)
 }
 
 func TestCompositeEngine_Deduplication_GetEdgesByType(t *testing.T) {

@@ -40,10 +40,10 @@ func TestAsyncEngine_LowBranchHelpers(t *testing.T) {
 	require.Equal(t, 0, ae.GetOutDegree("test:a"))
 
 	count, err := ae.NodeCountByLabel("User")
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrStorageClosed)
 	require.Equal(t, int64(0), count)
 	count, err = ae.NodeCountByLabelInNamespace("test", "User")
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrStorageClosed)
 	require.Equal(t, int64(0), count)
 
 	require.False(t, (FlushResult{}).isStorageClosedOnly())

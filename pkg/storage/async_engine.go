@@ -1449,7 +1449,7 @@ func (ae *AsyncEngine) GetNodesByLabel(label string) ([]*Node, error) {
 	// Get from engine WITHOUT lock (I/O can be slow)
 	engineNodes, err := ae.engine.GetNodesByLabel(label)
 	if err != nil {
-		return cachedNodes, nil // Return cache-only on error
+		return nil, err
 	}
 
 	if len(engineNodes) == 0 {
@@ -1477,6 +1477,51 @@ func (ae *AsyncEngine) GetNodesByLabel(label string) ([]*Node, error) {
 	}
 	ae.mu.RUnlock()
 	return result, nil
+}
+
+// StreamNodesByLabelProjected merges projected pending writes with the underlying label scan.
+func (ae *AsyncEngine) StreamNodesByLabelProjected(label string, properties []string, visit func(*Node) error) error {
+	if visit == nil {
+		return ErrInvalidData
+	}
+	reader, ok := ae.engine.(ProjectedLabelNodeReader)
+	if !ok {
+		return ErrNotImplemented
+	}
+	ae.mu.RLock()
+	overridden := make(map[NodeID]struct{}, len(ae.nodeCache)+len(ae.deleteNodes))
+	for id := range ae.nodeCache {
+		overridden[id] = struct{}{}
+	}
+	for id := range ae.deleteNodes {
+		overridden[id] = struct{}{}
+	}
+	var cached []*Node
+	for id := range ae.labelIndex[strings.ToLower(label)] {
+		if _, deleted := ae.deleteNodes[id]; deleted {
+			continue
+		}
+		if node := ae.nodeCache[id]; node != nil {
+			cached = append(cached, projectCachedNodeForRead(node, properties))
+		}
+	}
+	ae.mu.RUnlock()
+
+	for _, node := range cached {
+		if err := visit(node); err != nil {
+			return err
+		}
+	}
+	forward := func(node *Node) error {
+		if node == nil {
+			return nil
+		}
+		if _, shadowed := overridden[node.ID]; shadowed {
+			return nil
+		}
+		return visit(node)
+	}
+	return reader.StreamNodesByLabelProjected(label, properties, forward)
 }
 
 // BatchGetNodes fetches multiple nodes, checking cache first then engine.

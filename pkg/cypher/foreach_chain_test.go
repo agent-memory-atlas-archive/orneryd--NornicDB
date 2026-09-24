@@ -70,3 +70,71 @@ func TestForeach_ReplacesLoopVariable_NotMapKeys(t *testing.T) {
 	require.Len(t, got.Rows, 1)
 	require.Equal(t, int64(1), got.Rows[0][0])
 }
+
+func TestForeach_ComposedWritesRetainBindings(t *testing.T) {
+	for _, testCase := range []struct {
+		query       string
+		parentCount int64
+	}{
+		{"CREATE (a:F {id: 1}) WITH a FOREACH (x IN [1, 2] | CREATE (:G {v: x}))", 1},
+		{"UNWIND [1, 2] AS i FOREACH (x IN [i] | CREATE (:G {v: x}))", 0},
+	} {
+		for _, explicit := range []bool{false, true} {
+			t.Run(testCase.query, func(t *testing.T) {
+				exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
+				ctx := context.Background()
+				if explicit {
+					_, err := exec.Execute(ctx, "BEGIN", nil)
+					require.NoError(t, err)
+				}
+				_, err := exec.Execute(ctx, testCase.query, nil)
+				require.NoError(t, err)
+				if explicit {
+					_, err = exec.Execute(ctx, "COMMIT", nil)
+					require.NoError(t, err)
+				}
+				result, err := exec.Execute(ctx, "MATCH (n:G) RETURN n.v ORDER BY n.v", nil)
+				require.NoError(t, err)
+				require.Equal(t, [][]interface{}{{int64(1)}, {int64(2)}}, result.Rows)
+				result, err = exec.Execute(ctx, "MATCH (a:F) RETURN count(a)", nil)
+				require.NoError(t, err)
+				require.Equal(t, testCase.parentCount, result.Rows[0][0])
+			})
+		}
+	}
+}
+
+func TestForeach_ComposedMutationShapes(t *testing.T) {
+	for _, testCase := range []struct {
+		query      string
+		checkQuery string
+		want       [][]interface{}
+	}{
+		{"WITH 5 AS k FOREACH (x IN [1, 2] | CREATE (:G {v: x, k: k}))", "MATCH (n:G) RETURN n.v, n.k ORDER BY n.v", [][]interface{}{{int64(1), int64(5)}, {int64(2), int64(5)}}},
+		{"CREATE (a:F {id: 1}) FOREACH (x IN [1, 2] | CREATE (:G {v: x}))", "MATCH (n:G) RETURN n.v ORDER BY n.v", [][]interface{}{{int64(1)}, {int64(2)}}},
+		{"CREATE (a:F {id: 1}) WITH a, 5 AS k FOREACH (x IN [1, 2] | CREATE (:G {v: x, k: k}))", "MATCH (n:G) RETURN n.v, n.k ORDER BY n.v", [][]interface{}{{int64(1), int64(5)}, {int64(2), int64(5)}}},
+		{"CREATE (a:F {id: 1}) FOREACH (x IN [1] | SET a.touched = x)", "MATCH (a:F) RETURN a.id, a.touched", [][]interface{}{{int64(1), int64(1)}}},
+		{"CREATE (a:F {id: 1}) FOREACH (x IN [1, 2] | CREATE (a)-[:R]->(:G {v: x}))", "MATCH (a:F)-[:R]->(n:G) RETURN n.v ORDER BY n.v", [][]interface{}{{int64(1)}, {int64(2)}}},
+		{"FOREACH (x IN ['a | b', 'c'] | CREATE (:H {v: x}))", "MATCH (n:H) RETURN n.v ORDER BY n.v", [][]interface{}{{"a | b"}, {"c"}}},
+	} {
+		t.Run(testCase.query, func(t *testing.T) {
+			exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
+			ctx := context.Background()
+			_, err := exec.Execute(ctx, testCase.query, nil)
+			require.NoError(t, err)
+			result, err := exec.Execute(ctx, testCase.checkQuery, nil)
+			require.NoError(t, err)
+			require.Equal(t, testCase.want, result.Rows)
+		})
+	}
+}
+
+func TestForeach_UnsupportedUpdateRollsBack(t *testing.T) {
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
+	ctx := context.Background()
+	_, err := exec.Execute(ctx, "CREATE (a:F {id: 1}) FOREACH (x IN [1] | DELETE a)", nil)
+	require.Error(t, err)
+	result, err := exec.Execute(ctx, "MATCH (a:F) RETURN count(a)", nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), result.Rows[0][0])
+}

@@ -17,6 +17,7 @@ import (
 func TestNonFileNodeChunking(t *testing.T) {
 	t.Run("single_chunk_stored_normally", func(t *testing.T) {
 		baseEngine := storage.NewMemoryEngine()
+		baseEngine.SetEmbeddingsEnabled(true)
 
 		engine := storage.NewNamespacedEngine(baseEngine, "test")
 		embedder := newMockEmbedder()
@@ -65,6 +66,7 @@ func TestNonFileNodeChunking(t *testing.T) {
 
 	t.Run("multiple_chunks_stored_on_same_node", func(t *testing.T) {
 		baseEngine := storage.NewMemoryEngine()
+		baseEngine.SetEmbeddingsEnabled(true)
 
 		engine := storage.NewNamespacedEngine(baseEngine, "test")
 		embedder := newMockEmbedder()
@@ -140,6 +142,7 @@ func TestNonFileNodeChunking(t *testing.T) {
 
 	t.Run("chunk_embeddings_preserved_on_update", func(t *testing.T) {
 		baseEngine := storage.NewMemoryEngine()
+		baseEngine.SetEmbeddingsEnabled(true)
 
 		engine := storage.NewNamespacedEngine(baseEngine, "test")
 		embedder := newMockEmbedder()
@@ -205,6 +208,7 @@ func TestNonFileNodeChunking(t *testing.T) {
 // and results are properly deduplicated.
 func TestChunkEmbeddingSearch(t *testing.T) {
 	baseEngine := storage.NewMemoryEngine()
+	baseEngine.SetEmbeddingsEnabled(true)
 
 	engine := storage.NewNamespacedEngine(baseEngine, "test")
 	embedder := newMockEmbedder()
@@ -297,6 +301,7 @@ func TestChunkEmbeddingSearch(t *testing.T) {
 // when a node is deleted.
 func TestChunkEmbeddingRemoval(t *testing.T) {
 	baseEngine := storage.NewMemoryEngine()
+	baseEngine.SetEmbeddingsEnabled(true)
 
 	engine := storage.NewNamespacedEngine(baseEngine, "test")
 	embedder := newMockEmbedder()

@@ -160,11 +160,14 @@ func TestPipelineApplyMatch_AdditionalBranches(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.CreateEdge(&storage.Edge{ID: "e1", Type: "R", StartNode: "n1", EndNode: "n1"}))
 
+	unusedCalls := 0
 	rows := []pipelineRow{{
-		"node": n,
-		"edge": &storage.Edge{ID: "e2", Type: "R", StartNode: "n1", EndNode: "n1"},
-		"m":    map[string]interface{}{"id": "p1"},
-		"x":    int64(1),
+		"node":          n,
+		"edge":          &storage.Edge{ID: "e2", Type: "R", StartNode: "n1", EndNode: "n1"},
+		"m":             map[string]interface{}{"id": "p1"},
+		"mapWithUnused": map[string]interface{}{"unused": countedLiteralStringer{calls: &unusedCalls}},
+		"x":             int64(1),
+		"unused":        countedLiteralStringer{calls: &unusedCalls},
 	}}
 
 	out, ok, err := exec.pipelineApplyMatch(ctx, rows, "MATCH (p:Person {id: m.id})")
@@ -172,6 +175,7 @@ func TestPipelineApplyMatch_AdditionalBranches(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, out, 1)
 	require.NotNil(t, out[0]["p"])
+	require.Zero(t, unusedCalls)
 
 	matchErr := errors.New("match lookup failed")
 	errExec := NewStorageExecutor(&matchErrEngine{Engine: store, err: matchErr})

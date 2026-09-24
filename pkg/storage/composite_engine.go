@@ -643,8 +643,7 @@ func (c *CompositeEngine) GetNodesByLabel(label string) ([]*Node, error) {
 
 		nodes, err := engine.GetNodesByLabel(label)
 		if err != nil {
-			// Error querying constituent - skip it (constituent may be offline)
-			continue
+			return nil, err
 		}
 
 		// Deduplicate: only add nodes we haven't seen before
@@ -657,6 +656,42 @@ func (c *CompositeEngine) GetNodesByLabel(label string) ([]*Node, error) {
 	}
 
 	return allNodes, nil
+}
+
+// StreamNodesByLabelProjected streams deduplicated projected nodes from readable constituents.
+func (c *CompositeEngine) StreamNodesByLabelProjected(label string, properties []string, visit func(*Node) error) error {
+	if visit == nil {
+		return ErrInvalidData
+	}
+	readers := make([]ProjectedLabelNodeReader, 0)
+	for _, alias := range c.getConstituentsForRead() {
+		engine, err := c.getConstituent(alias)
+		if err != nil {
+			return err
+		}
+		reader, ok := engine.(ProjectedLabelNodeReader)
+		if !ok {
+			return ErrNotImplemented
+		}
+		readers = append(readers, reader)
+	}
+	seen := make(map[NodeID]struct{})
+	for _, reader := range readers {
+		err := reader.StreamNodesByLabelProjected(label, properties, func(node *Node) error {
+			if node == nil {
+				return nil
+			}
+			if _, exists := seen[node.ID]; exists {
+				return nil
+			}
+			seen[node.ID] = struct{}{}
+			return visit(node)
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetFirstNodeByLabel returns the first node with the given label from any constituent.

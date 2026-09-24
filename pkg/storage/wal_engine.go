@@ -817,6 +817,14 @@ func (w *WALEngine) GetNodesByLabel(label string) ([]*Node, error) {
 	return w.engine.GetNodesByLabel(label)
 }
 
+// StreamNodesByLabelProjected delegates projected label scans to the underlying engine.
+func (w *WALEngine) StreamNodesByLabelProjected(label string, properties []string, visit func(*Node) error) error {
+	if reader, ok := w.engine.(ProjectedLabelNodeReader); ok {
+		return reader.StreamNodesByLabelProjected(label, properties, visit)
+	}
+	return ErrNotImplemented
+}
+
 // ForEachNodeIDByLabel delegates label-to-nodeID iteration to the underlying
 // engine when available. This keeps LIMIT + label paths fast without forcing
 // full node materialization.

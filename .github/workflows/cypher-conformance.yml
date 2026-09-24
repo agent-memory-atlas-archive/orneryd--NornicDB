@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "pkg/cypher/**"
+      - "pkg/**"
       - "testing/cypher/**"
       - "scripts/cypher-tck/**"
       - "docs/plans/cypher-convergence-*.md"
@@ -15,7 +15,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "pkg/cypher/**"
+      - "pkg/**"
       - "testing/cypher/**"
       - "scripts/cypher-tck/**"
       - "docs/plans/cypher-convergence-*.md"
@@ -46,7 +46,20 @@ jobs:
         run: go mod download
 
       - name: Verify pinned corpus and run conformance regressions
-        run: make cypher-conformance
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          make cypher-conformance 2>&1 | tee artifacts/conformance.log
 
       - name: Compare fixed corpus with pinned Neo4j
-        run: make cypher-differential
+        run: |
+          set -o pipefail
+          make cypher-differential 2>&1 | tee artifacts/differential.log
+
+      - name: Upload conformance diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypher-conformance-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn

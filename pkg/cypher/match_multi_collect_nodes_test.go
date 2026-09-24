@@ -21,6 +21,30 @@ type collectNodesLabelProbeEngine struct {
 	projectedProperties []string
 }
 
+type collectNodesIDProbeEngine struct {
+	storage.Engine
+	labelLookupCalls int
+	labelIDs         []storage.NodeID
+	getNodeErr       error
+}
+
+func (e *collectNodesIDProbeEngine) GetNode(id storage.NodeID) (*storage.Node, error) {
+	if e.getNodeErr != nil {
+		return nil, e.getNodeErr
+	}
+	return e.Engine.GetNode(id)
+}
+
+func (e *collectNodesIDProbeEngine) ForEachNodeIDByLabel(_ string, visit func(storage.NodeID) bool) error {
+	e.labelLookupCalls++
+	for _, id := range e.labelIDs {
+		if !visit(id) {
+			return nil
+		}
+	}
+	return nil
+}
+
 func (e *collectNodesLabelProbeEngine) GetNodesByLabel(label string) ([]*storage.Node, error) {
 	e.labelCalls++
 	return nil, assert.AnError
@@ -87,6 +111,16 @@ func TestPipelineFilteredCountReducesProjectedLabelStream(t *testing.T) {
 	require.Equal(t, 0, probe.labelCalls)
 }
 
+func TestPipelineFilteredCount_PropagatesProjectedReaderError(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = base.Close() })
+	probe := &collectNodesLabelProbeEngine{Engine: base}
+	result, err := NewStorageExecutor(probe).Execute(context.Background(),
+		"MATCH (person:Person) WHERE person.age > 30 RETURN count(person) AS count", nil)
+	require.ErrorIs(t, err, storage.ErrNotImplemented)
+	require.Nil(t, result)
+}
+
 func TestCollectNodesWithStreaming_LabelLimitPrefersLabelLookup(t *testing.T) {
 	base := storage.NewMemoryEngine()
 	t.Cleanup(func() { _ = base.Close() })
@@ -107,7 +141,7 @@ func TestCollectNodesWithStreaming_LabelLimitPrefersLabelLookup(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	probe := &collectNodesLabelProbeEngine{
+	probe := &collectNodesIDProbeEngine{
 		Engine: base,
 		labelIDs: []storage.NodeID{
 			"nornic:n-0", "nornic:n-20", "nornic:n-40", "nornic:n-60", "nornic:n-80",
@@ -119,7 +153,6 @@ func TestCollectNodesWithStreaming_LabelLimitPrefersLabelLookup(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, nodes, 3)
 	assert.GreaterOrEqual(t, probe.labelLookupCalls, 1, "label-id lookup path must be used")
-	assert.Equal(t, 0, probe.streamCalls, "full streaming scan must be skipped")
 }
 
 func TestCollectNodesWithStreaming_UsesLabelIndexedStreamForResidualFilters(t *testing.T) {
@@ -144,4 +177,28 @@ func TestCollectNodesWithStreaming_UsesLabelIndexedStreamForResidualFilters(t *t
 	assert.Equal(t, 1, probe.projectedLabelCalls, "label-indexed streaming must supply the scan")
 	assert.Equal(t, 0, probe.streamCalls, "the converged collector must not scan unrelated labels")
 	assert.Equal(t, 0, probe.labelCalls, "the collector must not materialize the complete label population")
+}
+
+func TestCollectNodesWithStreaming_PropagatesProjectedReaderError(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = base.Close() })
+	probe := &collectNodesLabelProbeEngine{Engine: base, labelIDs: []storage.NodeID{"nornic:one"}}
+	exec := NewStorageExecutor(probe)
+	nodes, err := exec.collectNodesWithStreaming(context.Background(), []string{"Person"}, nil, "n", "", 1)
+	require.ErrorIs(t, err, storage.ErrNotImplemented)
+	require.Nil(t, nodes)
+	require.Equal(t, 0, probe.labelLookupCalls)
+}
+
+func TestCollectNodesWithStreaming_PropagatesLabelLookupReadError(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = base.Close() })
+	probe := &collectNodesIDProbeEngine{
+		Engine: base, labelIDs: []storage.NodeID{"nornic:missing"}, getNodeErr: assert.AnError,
+	}
+	nodes, err := NewStorageExecutor(probe).collectNodesWithStreaming(
+		context.Background(), []string{"Person"}, nil, "n", "", 1,
+	)
+	require.ErrorIs(t, err, assert.AnError)
+	require.Nil(t, nodes)
 }

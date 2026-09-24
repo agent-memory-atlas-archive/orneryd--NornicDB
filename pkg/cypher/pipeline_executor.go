@@ -53,6 +53,7 @@ const (
 	pipelineClauseWith
 	pipelineClauseUnwind
 	pipelineClauseReturn
+	pipelineClauseForeach
 )
 
 // pipelineClause is one segment of the pipeline. `text` includes the leading
@@ -78,8 +79,8 @@ type pipelineMatchPhysicalHint struct {
 type pipelineRow map[string]interface{}
 
 // canExecuteAsPipeline returns true when the query is decomposable into the
-// clause kinds this executor understands. Any unsupported clause (FOREACH,
-// CALL subquery, etc.) causes a false return so the
+// clause kinds this executor understands. Any unsupported clause (CALL
+// subquery, etc.) causes a false return so the
 // caller can select a specialized physical plan.
 func canExecuteAsPipeline(cypher string) ([]pipelineClause, bool) {
 	clauses, ok := splitPipelineClauses(cypher)
@@ -99,7 +100,7 @@ func canExecuteAsPipeline(cypher string) ([]pipelineClause, bool) {
 		}
 	}
 	// Must contain at least two clauses.
-	if len(clauses) < 2 {
+	if len(clauses) < 2 && (len(clauses) == 0 || clauses[0].kind != pipelineClauseForeach) {
 		return nil, false
 	}
 	// Standalone CREATE ... RETURN remains one atomic write operator. CREATE
@@ -136,6 +137,7 @@ func splitPipelineClauses(cypher string) ([]pipelineClause, bool) {
 		{"REMOVE", pipelineClauseRemove},
 		{"WITH", pipelineClauseWith},
 		{"UNWIND", pipelineClauseUnwind},
+		{"FOREACH", pipelineClauseForeach},
 		{"RETURN", pipelineClauseReturn},
 	}
 	// Clauses we don't yet model as their own kind force a fallback. Anything
@@ -143,7 +145,7 @@ func splitPipelineClauses(cypher string) ([]pipelineClause, bool) {
 	// is handled by the per-clause appliers below, which substitute params
 	// from context and respect node bindings supplied by the caller.
 	upper := strings.ToUpper(cypher)
-	for _, bad := range []string{"FOREACH", "CALL "} {
+	for _, bad := range []string{"CALL "} {
 		if findKeywordIndex(upper, strings.TrimRight(bad, " ")) >= 0 {
 			return nil, false
 		}
@@ -479,6 +481,15 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 			if alias := pipelineUnwindAlias(clause.text); alias != "" {
 				scope[alias] = struct{}{}
 			}
+		case pipelineClauseForeach:
+			stats, err := e.pipelineApplyForeach(ctx, rows, clause.text)
+			if err != nil {
+				return nil, true, err
+			}
+			result.Stats.NodesCreated += stats.NodesCreated
+			result.Stats.RelationshipsCreated += stats.RelationshipsCreated
+			result.Stats.PropertiesSet += stats.PropertiesSet
+			result.Stats.LabelsAdded += stats.LabelsAdded
 		case pipelineClauseReturn:
 			if err := validateDeletedEntityProjection(rows, clause.text); err != nil {
 				return nil, true, err
@@ -686,9 +697,6 @@ func (e *StorageExecutor) tryStreamPipelineFilteredNodeCount(
 		count++
 		return nil
 	})
-	if err == storage.ErrNotImplemented {
-		return nil, false, nil
-	}
 	if err != nil {
 		return nil, true, localizedError(localization.CypherMatchingStorageFailed(err), err)
 	}
@@ -1391,7 +1399,9 @@ func (e *StorageExecutor) pipelineApplyMatchWithHint(ctx context.Context, rows [
 				if node != nil {
 					for k, v := range node.Properties {
 						pattern := name + "." + k
-						substituted = strings.ReplaceAll(substituted, pattern, e.valueToLiteral(v))
+						if strings.Contains(substituted, pattern) {
+							substituted = strings.ReplaceAll(substituted, pattern, e.valueToLiteral(v))
+						}
 					}
 					if referencesVariable(substituted, name) {
 						var label string
@@ -1411,11 +1421,15 @@ func (e *StorageExecutor) pipelineApplyMatchWithHint(ctx context.Context, rows [
 			if asMap, ok := toStringAnyMap(val); ok {
 				for k, v := range asMap {
 					pattern := name + "." + k
-					substituted = strings.ReplaceAll(substituted, pattern, e.valueToLiteral(v))
+					if strings.Contains(substituted, pattern) {
+						substituted = strings.ReplaceAll(substituted, pattern, e.valueToLiteral(v))
+					}
 				}
 				continue
 			}
-			substituted = replaceIdentifierOutsideQuotes(substituted, name, e.valueToLiteral(val))
+			if referencesVariable(substituted, name) {
+				substituted = replaceIdentifierOutsideQuotes(substituted, name, e.valueToLiteral(val))
+			}
 		}
 
 		patternPart := strings.TrimSpace(strings.TrimPrefix(substituted, "MATCH"))
@@ -1748,6 +1762,9 @@ func (e *StorageExecutor) pipelineBindZeroLengthPath(row pipelineRow, variable s
 }
 
 func (e *StorageExecutor) materializePipelinePredicateExpressions(expression string, row pipelineRow) string {
+	if expression == "" {
+		return expression
+	}
 	materialized := expression
 	for name, value := range row {
 		if strings.HasPrefix(name, "$") {
@@ -1755,7 +1772,10 @@ func (e *StorageExecutor) materializePipelinePredicateExpressions(expression str
 		}
 		if object, ok := toStringAnyMap(value); ok {
 			for property, propertyValue := range object {
-				materialized = replaceQualifiedReferenceOutsideQuotes(materialized, name+"."+property, e.valueToLiteral(propertyValue))
+				reference := name + "." + property
+				if strings.Contains(materialized, reference) {
+					materialized = replaceQualifiedReferenceOutsideQuotes(materialized, reference, e.valueToLiteral(propertyValue))
+				}
 			}
 			continue
 		}
@@ -1763,19 +1783,27 @@ func (e *StorageExecutor) materializePipelinePredicateExpressions(expression str
 		case *storage.Node:
 			if entity != nil {
 				for property, propertyValue := range entity.Properties {
-					materialized = replaceQualifiedReferenceOutsideQuotes(materialized, name+"."+property, e.valueToLiteral(propertyValue))
+					reference := name + "." + property
+					if strings.Contains(materialized, reference) {
+						materialized = replaceQualifiedReferenceOutsideQuotes(materialized, reference, e.valueToLiteral(propertyValue))
+					}
 				}
 			}
 			continue
 		case *storage.Edge:
 			if entity != nil {
 				for property, propertyValue := range entity.Properties {
-					materialized = replaceQualifiedReferenceOutsideQuotes(materialized, name+"."+property, e.valueToLiteral(propertyValue))
+					reference := name + "." + property
+					if strings.Contains(materialized, reference) {
+						materialized = replaceQualifiedReferenceOutsideQuotes(materialized, reference, e.valueToLiteral(propertyValue))
+					}
 				}
 			}
 			continue
 		}
-		materialized = replaceIdentifierOutsideQuotes(materialized, name, e.valueToLiteral(value))
+		if referencesVariable(materialized, name) {
+			materialized = replaceIdentifierOutsideQuotes(materialized, name, e.valueToLiteral(value))
+		}
 	}
 	return materialized
 }
@@ -2242,7 +2270,10 @@ func (e *StorageExecutor) pipelineApplyCreate(ctx context.Context, rows []pipeli
 			if node, isNode := val.(*storage.Node); isNode {
 				if node != nil {
 					for property, propertyValue := range node.Properties {
-						substituted = strings.ReplaceAll(substituted, name+"."+property, e.valueToLiteral(propertyValue))
+						pattern := name + "." + property
+						if strings.Contains(substituted, pattern) {
+							substituted = strings.ReplaceAll(substituted, pattern, e.valueToLiteral(propertyValue))
+						}
 					}
 				}
 				continue
@@ -2250,7 +2281,10 @@ func (e *StorageExecutor) pipelineApplyCreate(ctx context.Context, rows []pipeli
 			if edge, isEdge := val.(*storage.Edge); isEdge {
 				if edge != nil {
 					for property, propertyValue := range edge.Properties {
-						substituted = strings.ReplaceAll(substituted, name+"."+property, e.valueToLiteral(propertyValue))
+						pattern := name + "." + property
+						if strings.Contains(substituted, pattern) {
+							substituted = strings.ReplaceAll(substituted, pattern, e.valueToLiteral(propertyValue))
+						}
 					}
 				}
 				continue
@@ -2258,11 +2292,15 @@ func (e *StorageExecutor) pipelineApplyCreate(ctx context.Context, rows []pipeli
 			if asMap, ok := toStringAnyMap(val); ok {
 				for k, v := range asMap {
 					pattern := name + "." + k
-					substituted = strings.ReplaceAll(substituted, pattern, e.valueToLiteral(v))
+					if strings.Contains(substituted, pattern) {
+						substituted = strings.ReplaceAll(substituted, pattern, e.valueToLiteral(v))
+					}
 				}
 				continue
 			}
-			substituted = replaceIdentifierOutsideQuotes(substituted, name, e.valueToLiteral(val))
+			if referencesVariable(substituted, name) {
+				substituted = replaceIdentifierOutsideQuotes(substituted, name, e.valueToLiteral(val))
+			}
 		}
 
 		// Package node bindings into a MATCH prefix so the CREATE handler
@@ -2951,6 +2989,80 @@ func (e *StorageExecutor) pipelineApplyUnwind(ctx context.Context, rows []pipeli
 		}
 	}
 	return out, true
+}
+
+func (e *StorageExecutor) pipelineApplyForeach(ctx context.Context, rows []pipelineRow, clause string) (*QueryStats, error) {
+	invalid := func() error {
+		return newSemanticError("Neo.ClientError.Statement.SyntaxError", "InvalidForeach", "invalid or unsupported FOREACH update")
+	}
+	open := strings.Index(clause, "(")
+	if open < 0 || !strings.EqualFold(strings.TrimSpace(clause[:open]), "FOREACH") {
+		return nil, invalid()
+	}
+	close := findMatchingParen(clause, open)
+	if close < 0 || strings.TrimSpace(clause[close+1:]) != "" {
+		return nil, invalid()
+	}
+	inner := clause[open+1 : close]
+	inIndex := topLevelKeywordIndex(inner, "IN")
+	if inIndex < 0 {
+		return nil, invalid()
+	}
+	variable := strings.TrimSpace(inner[:inIndex])
+	if !isValidIdentifier(variable) {
+		return nil, invalid()
+	}
+	remainder := inner[inIndex+len("IN"):]
+	pipeIndex := findTopLevelByte(remainder, '|')
+	if pipeIndex < 0 {
+		return nil, invalid()
+	}
+	listExpr := strings.TrimSpace(remainder[:pipeIndex])
+	update := strings.TrimSpace(remainder[pipeIndex+1:])
+	updates, supported := splitPipelineClauses(update)
+	if !supported || len(updates) != 1 {
+		return nil, invalid()
+	}
+	kind := updates[0].kind
+	if kind != pipelineClauseCreate && kind != pipelineClauseSet && kind != pipelineClauseMerge {
+		return nil, invalid()
+	}
+	stats := &QueryStats{}
+	for _, row := range rows {
+		items, ok := e.evaluateListForPipelineWithContext(ctx, listExpr, row)
+		if !ok {
+			return nil, invalid()
+		}
+		for _, item := range items {
+			child := make(pipelineRow, len(row)+1)
+			for name, value := range row {
+				child[name] = value
+			}
+			child[variable] = item
+			var change *QueryStats
+			var err error
+			switch kind {
+			case pipelineClauseCreate:
+				_, change, ok, err = e.pipelineApplyCreate(ctx, []pipelineRow{child}, update)
+			case pipelineClauseSet:
+				change, ok, err = e.pipelineApplySet(ctx, []pipelineRow{child}, update)
+			case pipelineClauseMerge:
+				_, change, err = e.pipelineApplyMerge(ctx, []pipelineRow{child}, update)
+				ok = true
+			}
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, invalid()
+			}
+			stats.NodesCreated += change.NodesCreated
+			stats.RelationshipsCreated += change.RelationshipsCreated
+			stats.PropertiesSet += change.PropertiesSet
+			stats.LabelsAdded += change.LabelsAdded
+		}
+	}
+	return stats, nil
 }
 
 // parsePipelineAggregate recognizes the standard Cypher aggregate functions

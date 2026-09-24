@@ -11,6 +11,62 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type countedLiteralStringer struct {
+	calls *int
+}
+
+func (value countedLiteralStringer) String() string {
+	*value.calls++
+	return "unused"
+}
+
+func TestPipelineCreateSkipsUnusedRowLiteral(t *testing.T) {
+	baseStore := newTestMemoryEngine(t)
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(baseStore, "test"))
+	called := 0
+	_, _, handled, err := exec.pipelineApplyCreate(context.Background(), []pipelineRow{
+		{"unused": countedLiteralStringer{calls: &called}},
+	}, "CREATE (n:MongoRecord)")
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.Zero(t, called)
+}
+
+func TestPipelineCreateSkipsUnusedMapPropertyLiteral(t *testing.T) {
+	baseStore := newTestMemoryEngine(t)
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(baseStore, "test"))
+	called := 0
+	_, _, handled, err := exec.pipelineApplyCreate(context.Background(), []pipelineRow{
+		{"row": map[string]interface{}{"id": "found", "unused": countedLiteralStringer{calls: &called}}},
+	}, "CREATE (n:MongoRecord {id: row.id})")
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.Zero(t, called)
+}
+
+func TestPipelinePredicateSkipsUnusedRowLiteral(t *testing.T) {
+	called := 0
+	exec := NewStorageExecutor(newTestMemoryEngine(t))
+	expression := exec.materializePipelinePredicateExpressions("42 > 1", pipelineRow{
+		"unused": countedLiteralStringer{calls: &called},
+	})
+	require.Equal(t, "42 > 1", expression)
+	require.Zero(t, called)
+}
+
+func TestPipelinePredicateSkipsUnusedMapPropertyLiteral(t *testing.T) {
+	called := 0
+	exec := NewStorageExecutor(newTestMemoryEngine(t))
+	expression := exec.materializePipelinePredicateExpressions("item.id = 42", pipelineRow{
+		"item": map[string]interface{}{
+			"id":     42,
+			"unused": countedLiteralStringer{calls: &called},
+		},
+	})
+	require.Equal(t, "42 = 42", expression)
+	require.Zero(t, called)
+}
+
 func TestCreateParsesBacktickedPropertyKeys(t *testing.T) {
 	baseStore := newTestMemoryEngine(t)
 	store := storage.NewNamespacedEngine(baseStore, "test")
