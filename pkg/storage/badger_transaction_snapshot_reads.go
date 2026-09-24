@@ -11,9 +11,13 @@ const (
 	maxSnapshotLabelPrefixNodes     = 64
 	maxSnapshotLabelPrefixNodeBytes = 4 << 10
 	maxSnapshotLabelPrefixBytes     = 256 << 10
+	maxSnapshotPrefixNodeCacheNodes = 128
+	maxSnapshotPrefixNodeCacheBytes = 256 << 10
+	maxSnapshotEdgeCacheEntries     = 128
+	maxSnapshotEdgeCacheBytes       = 256 << 10
 )
 
-func (tx *BadgerTransaction) storeSnapshotLabelPrefixLocked(key string, nodes []*Node) {
+func (tx *BadgerTransaction) storeSnapshotLabelPrefixLocked(key string, nodes []*Node, indexNodesByID bool) {
 	if len(nodes) == 0 || len(nodes) > maxSnapshotLabelPrefixNodes {
 		return
 	}
@@ -44,6 +48,37 @@ func (tx *BadgerTransaction) storeSnapshotLabelPrefixLocked(key string, nodes []
 	tx.snapshotLabelPrefixNodes[key] = append([]*Node(nil), nodes...)
 	tx.snapshotLabelPrefixNodeBytes[key] = bytes
 	tx.snapshotLabelPrefixBytes += bytes - previousBytes
+	if indexNodesByID {
+		for _, node := range nodes {
+			tx.cacheSnapshotPrefixNodeByIDLocked(node)
+		}
+	}
+}
+
+func (tx *BadgerTransaction) cacheSnapshotPrefixNodeByIDLocked(node *Node) {
+	nodeBytes, ok := snapshotLabelPrefixNodeBytes(node)
+	if !ok || nodeBytes > maxSnapshotPrefixNodeCacheBytes {
+		return
+	}
+	if _, exists := tx.snapshotPrefixNodeByID[node.ID]; exists {
+		return
+	}
+	if tx.snapshotPrefixNodeByID == nil {
+		tx.snapshotPrefixNodeByID = make(map[NodeID]*Node, maxSnapshotPrefixNodeCacheNodes)
+		tx.snapshotPrefixNodeBytesByID = make(map[NodeID]int, maxSnapshotPrefixNodeCacheNodes)
+	}
+	for len(tx.snapshotPrefixNodeOrder) >= maxSnapshotPrefixNodeCacheNodes ||
+		tx.snapshotPrefixNodeBytes > maxSnapshotPrefixNodeCacheBytes-nodeBytes {
+		oldest := tx.snapshotPrefixNodeOrder[0]
+		tx.snapshotPrefixNodeOrder = tx.snapshotPrefixNodeOrder[1:]
+		tx.snapshotPrefixNodeBytes -= tx.snapshotPrefixNodeBytesByID[oldest]
+		delete(tx.snapshotPrefixNodeBytesByID, oldest)
+		delete(tx.snapshotPrefixNodeByID, oldest)
+	}
+	tx.snapshotPrefixNodeOrder = append(tx.snapshotPrefixNodeOrder, node.ID)
+	tx.snapshotPrefixNodeBytesByID[node.ID] = nodeBytes
+	tx.snapshotPrefixNodeBytes += nodeBytes
+	tx.snapshotPrefixNodeByID[node.ID] = node
 }
 
 func (tx *BadgerTransaction) clearSnapshotLabelPrefixLocked(key string) {
@@ -137,6 +172,49 @@ func snapshotLabelPrefixValueBytes(value interface{}, depth int) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func (tx *BadgerTransaction) cacheSnapshotEdgeByIDLocked(edge *Edge) {
+	edgeBytes, ok := snapshotEdgeBytes(edge)
+	if !ok || edgeBytes > maxSnapshotEdgeCacheBytes {
+		return
+	}
+	if _, exists := tx.snapshotEdgeByID[edge.ID]; exists {
+		return
+	}
+	if tx.snapshotEdgeByID == nil {
+		tx.snapshotEdgeByID = make(map[EdgeID]*Edge, maxSnapshotEdgeCacheEntries)
+		tx.snapshotEdgeBytesByID = make(map[EdgeID]int, maxSnapshotEdgeCacheEntries)
+	}
+	for len(tx.snapshotEdgeOrder) >= maxSnapshotEdgeCacheEntries || tx.snapshotEdgeBytes > maxSnapshotEdgeCacheBytes-edgeBytes {
+		oldest := tx.snapshotEdgeOrder[0]
+		tx.snapshotEdgeOrder = tx.snapshotEdgeOrder[1:]
+		tx.snapshotEdgeBytes -= tx.snapshotEdgeBytesByID[oldest]
+		delete(tx.snapshotEdgeBytesByID, oldest)
+		delete(tx.snapshotEdgeByID, oldest)
+	}
+	tx.snapshotEdgeOrder = append(tx.snapshotEdgeOrder, edge.ID)
+	tx.snapshotEdgeBytesByID[edge.ID] = edgeBytes
+	tx.snapshotEdgeBytes += edgeBytes
+	tx.snapshotEdgeByID[edge.ID] = copyEdge(edge)
+}
+
+func snapshotEdgeBytes(edge *Edge) (int, bool) {
+	if edge == nil || edge.ID == "" || edge.StartNode == "" || edge.EndNode == "" {
+		return 0, false
+	}
+	bytes := 96 + len(edge.ID) + len(edge.StartNode) + len(edge.EndNode) + len(edge.Type)
+	for key, value := range edge.Properties {
+		valueBytes, ok := snapshotLabelPrefixValueBytes(value, 0)
+		if !ok || len(key) > maxSnapshotLabelPrefixNodeBytes-bytes || valueBytes > maxSnapshotLabelPrefixNodeBytes-bytes-len(key) {
+			return 0, false
+		}
+		bytes += len(key) + valueBytes
+	}
+	if bytes > maxSnapshotLabelPrefixNodeBytes {
+		return 0, false
+	}
+	return bytes, true
 }
 
 func (tx *BadgerTransaction) getAllCommittedNodesLocked() ([]*Node, error) {
@@ -268,12 +346,22 @@ func (tx *BadgerTransaction) readSnapshotAdjacentEdgesLocked(nodeID NodeID, dire
 			edges = make([]*Edge, 0, len(edgeIDs))
 		}
 		for _, edgeID := range edgeIDs {
-			edge, edgeErr := tx.engine.getEdgeVisibleAtInTxn(snapshot, edgeID, tx.readTS)
-			if edgeErr == ErrNotFound || edgeErr == ErrNotVisibleAtSnapshot {
-				continue
-			}
-			if edgeErr != nil {
-				return edgeErr
+			var edge *Edge
+			decayStable := !tx.engine.decayEnabled || tx.engine.revealAll.Load()
+			if cachedEdge, ok := tx.snapshotEdgeByID[edgeID]; ok && decayStable {
+				edge = copyEdge(cachedEdge)
+			} else {
+				var edgeErr error
+				edge, edgeErr = tx.engine.getEdgeVisibleAtInTxn(snapshot, edgeID, tx.readTS)
+				if edgeErr == ErrNotFound || edgeErr == ErrNotVisibleAtSnapshot {
+					continue
+				}
+				if edgeErr != nil {
+					return edgeErr
+				}
+				if decayStable {
+					tx.cacheSnapshotEdgeByIDLocked(edge)
+				}
 			}
 			if edge == nil {
 				continue

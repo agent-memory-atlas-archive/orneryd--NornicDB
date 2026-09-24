@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -208,6 +209,64 @@ func TestTxReads_StreamNodesByLabel_UnprojectedPrefixAndLargePayloadGuard(t *tes
 	require.Len(t, tx.snapshotLabelNodes, 1, "full replay should populate only the complete cache")
 }
 
+func TestTxReads_CommittedNodeCanUseCachedLabelPrefix(t *testing.T) {
+	cached := &Node{ID: "test:cached", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}}
+	tx := &BadgerTransaction{snapshotPrefixNodeByID: map[NodeID]*Node{cached.ID: cached}}
+
+	got, err := tx.getCommittedNodeLocked(cached.ID)
+	require.NoError(t, err)
+	require.Equal(t, cached, got)
+	require.NotSame(t, cached, got, "cached snapshot nodes must be copied before returning them to callers")
+	got.Properties["name"] = "mutated"
+	require.Equal(t, "Alice", cached.Properties["name"], "caller mutation must not alter the retained snapshot prefix")
+}
+
+func TestTxReads_EndpointPrefixNodeCacheIsBounded(t *testing.T) {
+	tx := &BadgerTransaction{}
+	for index := 0; index < maxSnapshotPrefixNodeCacheNodes+5; index++ {
+		node := &Node{ID: NodeID(fmt.Sprintf("test:cached-%03d", index)), Labels: []string{"Person"}}
+		tx.cacheSnapshotPrefixNodeByIDLocked(node)
+	}
+	require.Len(t, tx.snapshotPrefixNodeByID, maxSnapshotPrefixNodeCacheNodes)
+	require.NotContains(t, tx.snapshotPrefixNodeByID, NodeID("test:cached-000"), "oldest entries should be evicted first")
+	require.Contains(t, tx.snapshotPrefixNodeByID, NodeID(fmt.Sprintf("test:cached-%03d", maxSnapshotPrefixNodeCacheNodes+4)))
+	require.LessOrEqual(t, tx.snapshotPrefixNodeBytes, maxSnapshotPrefixNodeCacheBytes)
+	require.Len(t, tx.snapshotPrefixNodeOrder, maxSnapshotPrefixNodeCacheNodes)
+}
+
+func TestTxReads_GetNodeUsesUnprojectedSnapshotPrefix(t *testing.T) {
+	engine := txReadFixture(t)
+	tx, err := engine.BeginTransaction()
+	require.NoError(t, err)
+	require.NoError(t, tx.SetNamespace("test"))
+	t.Cleanup(func() { _ = tx.Rollback() })
+
+	err = tx.StreamNodesByLabelProjected("Person", nil, func(*Node) error {
+		return ErrIterationStopped
+	})
+	require.ErrorIs(t, err, ErrIterationStopped)
+	require.Len(t, tx.snapshotPrefixNodeByID, 1)
+
+	first := tx.snapshotLabelPrefixNodes["person"][0]
+	got, err := tx.GetNode(first.ID)
+	require.NoError(t, err)
+	require.Equal(t, first, got)
+	require.NotSame(t, first, got)
+	got.Properties["name"] = "caller mutation"
+	gotAgain, err := tx.GetNode(first.ID)
+	require.NoError(t, err)
+	require.Equal(t, first.Properties["name"], gotAgain.Properties["name"])
+
+	gotAgain.Properties["name"] = "pending update"
+	require.NoError(t, tx.UpdateNode(gotAgain))
+	pending, err := tx.GetNode(first.ID)
+	require.NoError(t, err)
+	require.Equal(t, "pending update", pending.Properties["name"], "pending state must take priority over the committed prefix cache")
+	require.NoError(t, tx.DeleteNode(first.ID))
+	_, err = tx.GetNode(first.ID)
+	require.ErrorIs(t, err, ErrNotFound, "deleted state must take priority over the committed prefix cache")
+}
+
 func TestTxReads_StreamNodesByLabelProjected_CachedReplayKeepsBeginSnapshot(t *testing.T) {
 	engine := txReadFixture(t)
 	reader, err := engine.BeginTransaction()
@@ -306,15 +365,37 @@ func TestTxReads_GetOutgoingEdges(t *testing.T) {
 	out, err := tx.GetOutgoingEdges("test:alice")
 	require.NoError(t, err)
 	require.Equal(t, []string{"test:e-knows-1", "test:e-knows-2"}, edgeIDs(out))
+	out[0].Type = "CALLER_MUTATION"
+	out, err = tx.GetOutgoingEdges("test:alice")
+	require.NoError(t, err)
+	require.Equal(t, "KNOWS", out[0].Type, "mutating returned edge data must not corrupt the transaction snapshot cache")
+
+	updated, err := tx.GetEdge("test:e-knows-2")
+	require.NoError(t, err)
+	updated.EndNode = "test:dave"
+	updated.Type = "MENTIONS"
+	require.NoError(t, tx.UpdateEdge(updated))
+	out, err = tx.GetOutgoingEdges("test:alice")
+	require.NoError(t, err)
+	var foundUpdated *Edge
+	for _, edge := range out {
+		if edge.ID == "test:e-knows-2" {
+			foundUpdated = edge
+		}
+	}
+	require.NotNil(t, foundUpdated)
+	require.Equal(t, NodeID("test:dave"), foundUpdated.EndNode, "pending edge update must override the cached committed edge")
+	require.Equal(t, "MENTIONS", foundUpdated.Type)
 
 	// Layer a pending edge from alice — must merge in.
 	require.NoError(t, tx.CreateEdge(&Edge{
 		ID: "test:e-new", StartNode: "test:alice", EndNode: "test:dave",
 		Type: "MENTIONS", Properties: map[string]any{},
 	}))
+	require.NoError(t, tx.DeleteEdge("test:e-knows-1"))
 	out, err = tx.GetOutgoingEdges("test:alice")
 	require.NoError(t, err)
-	require.Equal(t, []string{"test:e-knows-1", "test:e-knows-2", "test:e-new"}, edgeIDs(out))
+	require.Equal(t, []string{"test:e-knows-2", "test:e-new"}, edgeIDs(out))
 
 	// Pending edge from a different node must NOT show up under alice.
 	require.NoError(t, tx.CreateEdge(&Edge{
@@ -323,7 +404,7 @@ func TestTxReads_GetOutgoingEdges(t *testing.T) {
 	}))
 	out, err = tx.GetOutgoingEdges("test:alice")
 	require.NoError(t, err)
-	require.Equal(t, []string{"test:e-knows-1", "test:e-knows-2", "test:e-new"}, edgeIDs(out),
+	require.Equal(t, []string{"test:e-knows-2", "test:e-new"}, edgeIDs(out),
 		"alice's outgoing must not include bob→dave")
 }
 

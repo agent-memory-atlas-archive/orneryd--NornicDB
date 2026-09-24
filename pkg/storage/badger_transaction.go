@@ -85,6 +85,14 @@ type BadgerTransaction struct {
 	snapshotLabelPrefixNodes     map[string][]*Node
 	snapshotLabelPrefixNodeBytes map[string]int
 	snapshotLabelPrefixBytes     int
+	snapshotPrefixNodeByID       map[NodeID]*Node
+	snapshotPrefixNodeBytesByID  map[NodeID]int
+	snapshotPrefixNodeOrder      []NodeID
+	snapshotPrefixNodeBytes      int
+	snapshotEdgeByID             map[EdgeID]*Edge
+	snapshotEdgeBytesByID        map[EdgeID]int
+	snapshotEdgeOrder            []EdgeID
+	snapshotEdgeBytes            int
 	// Snapshot adjacency caches retain only a bounded set of visible edge IDs.
 	// Edge bodies are resolved again against snapshotTx on each read so decay
 	// filtering and the transaction's pending-edge overlay remain current.
@@ -266,6 +274,14 @@ func (tx *BadgerTransaction) closeLocked(status TransactionStatus, discard bool,
 	tx.snapshotLabelPrefixNodes = nil
 	tx.snapshotLabelPrefixNodeBytes = nil
 	tx.snapshotLabelPrefixBytes = 0
+	tx.snapshotPrefixNodeByID = nil
+	tx.snapshotPrefixNodeBytesByID = nil
+	tx.snapshotPrefixNodeOrder = nil
+	tx.snapshotPrefixNodeBytes = 0
+	tx.snapshotEdgeByID = nil
+	tx.snapshotEdgeBytesByID = nil
+	tx.snapshotEdgeOrder = nil
+	tx.snapshotEdgeBytes = 0
 	tx.pendingWrites = make(map[string][]byte)
 	tx.pendingDeletes = make(map[string]bool)
 	tx.pendingLabelCountDeltas = make(map[namespaceLabel]int64)
@@ -1692,7 +1708,8 @@ func (tx *BadgerTransaction) StreamNodesByLabelProjected(label string, propertie
 	}
 	if err != nil {
 		if err == ErrIterationStopped && tx.snapshotTx != nil {
-			tx.storeSnapshotLabelPrefixLocked(cacheKey, completed)
+			cacheEndpointNodes := properties == nil && (!tx.engine.decayEnabled || tx.engine.revealAll.Load())
+			tx.storeSnapshotLabelPrefixLocked(cacheKey, completed, cacheEndpointNodes)
 		}
 		return err
 	}
@@ -2243,6 +2260,9 @@ func (tx *BadgerTransaction) OperationCount() int {
 }
 
 func (tx *BadgerTransaction) getCommittedNodeLocked(nodeID NodeID) (*Node, error) {
+	if node, ok := tx.snapshotPrefixNodeByID[nodeID]; ok {
+		return copyNode(node), nil
+	}
 	if tx.readTS.IsZero() {
 		return tx.getNodeFromBadgerSnapshotLocked(nodeID)
 	}

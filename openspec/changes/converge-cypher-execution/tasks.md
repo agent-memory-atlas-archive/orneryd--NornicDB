@@ -53,9 +53,10 @@
 
 - [x] 7.1 Implement projected snapshot-visible iterators including pending mutations and early termination.
 		- Verified for Badger transactions, Async, WAL, Composite, and Namespaced wrappers; tests cover pending updates/deletes, begin-snapshot replay, projection, deduplication, and early stop.
-- [ ] 7.2 Reproduce #487 and demonstrate per-shape latency/allocation improvements with visit counters and profiles.
-	- Progress: added query-level and explicit-snapshot visit-count coverage for traversal `LIMIT`; explicit one-hop `LIMIT 20` improved from ~1.54 ms/op, 665 KB/op, 14,799 allocs to ~0.17 ms/op, 138 KB/op, 2,161 allocs after adjacency-ID caching and bounded label-prefix replay. Serial CPU profile moved the hotspot from repeated MVCC adjacency iterator seeks to endpoint `GetNode` resolution (`~3.19 s cumulative`) and outgoing-edge reads (`~2.57 s`) in 13.23 s sampled process CPU. Autocommit is ~0.13 ms/op, so this item remains open pending follow-up on those measured reads and full shape/profile qualification.
+- [x] 7.2 Reproduce #487 and demonstrate per-shape latency/allocation improvements with visit counters and profiles.
+	- Verified on Apple M2 Max with repeated `BenchmarkStatementRouting` runs: `simple_match_limit` 13.0 µs / 6.0 KB / 112 allocs in explicit tx vs 23.6 µs / 11.4 KB / 185 allocs autocommit; `property_lookup` 295 µs / 301 KB / 2,264 allocs vs 1.11 ms / 1.34 MB / 14,225; `filter_count` 202 µs / 295 KB / 2,124 vs 833 µs / 1.30 MB / 12,109; final `one_hop_limit` 111 µs / 101 KB / 1,339 vs 129 µs / 98.6 KB / 1,328; `return_literal` 3.28 µs / 2.61 KB / 44 vs 3.76 µs / 2.21 KB / 44. Added query-level and explicit-snapshot visit-count checks. CPU profiles drove bounded transaction-local caches for MVCC adjacency IDs, resumable label prefixes, endpoint nodes, and visible edge bodies; the final profile no longer shows adjacency-index iteration or edge-version lookup among the leading application costs. Full `pkg/storage` and `pkg/cypher` suites pass. Profile timings are hardware-specific; retain the benchmark for remeasurement on target hosts.
 - [ ] 7.3 Verify snapshot isolation, cancellation, buffer lifetime and performance of existing correct workloads.
+	- Progress: begin-snapshot replay, adjacency consistency, snapshot cancellation, bounded-prefix lifecycle, and returned-node/edge copy isolation have focused coverage. The selected storage regressions pass under `-race`; projected callback buffer lifetime still needs an explicit contract test before completion.
 
 ## 8. Retire remaining divergence
 
