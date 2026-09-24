@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,51 @@ import (
 	"github.com/orneryd/nornicdb/pkg/auth"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHTTPShowDatabasesFiltersSingleStatement(t *testing.T) {
+	server, authenticator := setupTestServer(t)
+	require.NoError(t, server.dbManager.CreateDatabase("private"))
+	dbName := server.dbManager.DefaultDatabaseName()
+	require.NoError(t, server.allowlistStore.SaveRoleDatabases(context.Background(), "viewer", []string{dbName}))
+	require.NoError(t, server.privilegesStore.SavePrivilege(context.Background(), "viewer", dbName, true, false))
+	token := getAuthToken(t, authenticator, "reader")
+
+	for _, statements := range [][]map[string]any{
+		{{"statement": "SHOW DATABASES"}},
+		{{"statement": "SHOW DATABASES"}, {"statement": "RETURN 1"}},
+	} {
+		recorder := makeRequest(t, server, http.MethodPost, "/db/"+dbName+"/tx/commit", map[string]any{
+			"statements": statements,
+		}, "Bearer "+token)
+		require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+		var response TransactionResponse
+		require.NoError(t, json.NewDecoder(recorder.Body).Decode(&response))
+		require.Empty(t, response.Errors)
+		require.NotEmpty(t, response.Results)
+		require.NotEmpty(t, response.Results[0].Data)
+		for _, row := range response.Results[0].Data {
+			require.Equal(t, dbName, row.Row[0])
+		}
+	}
+}
+
+func TestHTTPCreateDatabaseFastPathGrantsCreator(t *testing.T) {
+	server, authenticator := setupTestServer(t)
+	dbName := server.dbManager.DefaultDatabaseName()
+	require.NoError(t, server.allowlistStore.SaveRoleDatabases(context.Background(), "admin", []string{dbName}))
+	require.NoError(t, server.privilegesStore.SavePrivilege(context.Background(), "admin", dbName, true, true))
+	token := getAuthToken(t, authenticator, "admin")
+	require.False(t, server.GetDatabaseAccessModeForRoles([]string{"admin"}).CanSeeDatabase("created_by_admin"))
+
+	recorder := makeRequest(t, server, http.MethodPost, "/db/"+dbName+"/tx/commit", map[string]any{
+		"statements": []map[string]any{{"statement": "CREATE DATABASE created_by_admin"}},
+	}, "Bearer "+token)
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	var response TransactionResponse
+	require.NoError(t, json.NewDecoder(recorder.Body).Decode(&response))
+	require.Empty(t, response.Errors)
+	require.True(t, server.GetDatabaseAccessModeForRoles([]string{"admin"}).CanSeeDatabase("created_by_admin"))
+}
 
 func TestHTTPReadOnlyRoleCannotMutateAfterMatch(t *testing.T) {
 	server, authenticator := setupTestServer(t)

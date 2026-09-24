@@ -282,6 +282,7 @@ func (sm *SchemaManager) CreatePromotionPolicy(policy knowledgepolicy.PromotionP
 	}
 
 	if _, exists := sm.promotionPolicies[policy.Name]; exists {
+		sm.mu.Unlock()
 		if len(ifNotExists) > 0 && ifNotExists[0] {
 			return nil
 		}

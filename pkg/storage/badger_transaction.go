@@ -1507,6 +1507,26 @@ func (tx *BadgerTransaction) GetEdgeBetween(startID, endID NodeID, edgeType stri
 	return nil
 }
 
+// AllEdges returns all visible edges including pending transaction writes.
+func (tx *BadgerTransaction) AllEdges() ([]*Edge, error) {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if err := tx.ensureLifecycleActiveLocked(); err != nil {
+		return nil, err
+	}
+	var committed []*Edge
+	var err error
+	if tx.readTS.IsZero() {
+		committed, err = tx.engine.AllEdges()
+	} else {
+		committed, err = tx.engine.getEdgesByTypeVisibleAtSnapshotWithView("", tx.readTS, tx.withSnapshotViewLocked)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return tx.mergePendingEdgesLocked(committed, func(edge *Edge) bool { return edge != nil }), nil
+}
+
 // GetEdgesByType returns edges of a given type including pending transaction writes.
 func (tx *BadgerTransaction) GetEdgesByType(edgeType string) ([]*Edge, error) {
 	tx.mu.Lock()

@@ -55,7 +55,7 @@ func applyKnowledgePolicyDDL(schema *storage.SchemaManager, stmt string) error {
 	case *cypher.CreatePromotionProfileCmd:
 		return schema.CreatePromotionProfile(c.Profile)
 	case *cypher.CreatePromotionPolicyCmd:
-		return schema.CreatePromotionPolicy(c.Policy)
+		return schema.CreatePromotionPolicy(c.Policy, c.IfNotExists)
 	default:
 		return localizedError(localization.NornicDBCoreBootstrapDDLCommandUnsupported(cmd), nil)
 	}

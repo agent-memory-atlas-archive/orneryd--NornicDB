@@ -47,7 +47,7 @@ func (e *StorageExecutor) executeKnowledgePolicyDDL(ctx context.Context, cypher 
 	case *ShowPromotionProfilesCmd:
 		return e.executeShowKnowledgePromotionProfiles(schema)
 	case *CreatePromotionPolicyCmd:
-		return knowledgePolicySchemaResult("CREATE PROMOTION POLICY", schema.CreatePromotionPolicy(c.Policy))
+		return knowledgePolicySchemaResult("CREATE PROMOTION POLICY", schema.CreatePromotionPolicy(c.Policy, c.IfNotExists))
 	case *AlterPromotionPolicyCmd:
 		return knowledgePolicySchemaResult("ALTER PROMOTION POLICY", schema.AlterPromotionPolicy(c.Name, c.Updates))
 	case *AlterPromotionPolicyDefinitionCmd:

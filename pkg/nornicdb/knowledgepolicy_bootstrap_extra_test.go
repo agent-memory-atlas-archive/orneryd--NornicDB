@@ -62,6 +62,7 @@ func TestApplyKnowledgePolicyDDLBranches(t *testing.T) {
 	require.NoError(t, applyKnowledgePolicyDDL(schema, `CREATE DECAY PROFILE unit_binding FOR (n:Unit) APPLY { DECAY PROFILE 'unit_decay' }`))
 	require.NoError(t, applyKnowledgePolicyDDL(schema, `CREATE PROMOTION PROFILE unit_promo OPTIONS { multiplier: 1.0, scoreFloor: 0.0, scoreCap: 1.0 }`))
 	require.NoError(t, applyKnowledgePolicyDDL(schema, `CREATE PROMOTION POLICY unit_policy FOR (n:Unit) APPLY { WHEN n.score >= 1 APPLY PROFILE 'unit_promo' }`))
+	require.NoError(t, applyKnowledgePolicyDDL(schema, `CREATE PROMOTION POLICY IF NOT EXISTS unit_policy FOR (n:Unit) APPLY { WHEN n.score >= 1 APPLY PROFILE 'unit_promo' }`))
 
 	bundles, bindings := schema.ShowDecayProfiles()
 	require.Len(t, bundles, 1)

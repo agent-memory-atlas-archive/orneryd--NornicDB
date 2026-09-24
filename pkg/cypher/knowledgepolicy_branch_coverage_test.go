@@ -96,6 +96,28 @@ func TestKnowledgePolicyExecuteDDL_Branches(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestKnowledgePolicyCreatePromotionPolicy_RepeatedDDLDoesNotBlockWrites(t *testing.T) {
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
+	ctx := context.Background()
+	create := "CREATE PROMOTION POLICY repeat_policy FOR (n:Fact) APPLY { ON ACCESS { SET n.accessCount = n.accessCount + 1 } }"
+	_, err := exec.Execute(ctx, create, nil)
+	require.NoError(t, err)
+	_, err = exec.Execute(ctx, create, nil)
+	require.Error(t, err)
+	for _, stmt := range []string{
+		"CREATE PROMOTION POLICY IF NOT EXISTS repeat_policy FOR (n:Fact) APPLY { ON ACCESS { SET n.accessCount = n.accessCount + 1 } }",
+		"CREATE PROMOTION POLICY repeat_policy IF NOT EXISTS FOR (n:Fact) APPLY { ON ACCESS { SET n.accessCount = n.accessCount + 1 } }",
+	} {
+		_, err = exec.Execute(ctx, stmt, nil)
+		require.NoError(t, err)
+	}
+	policies := exec.storage.GetSchema().ShowPromotionPolicies()
+	require.Len(t, policies, 1)
+	require.Equal(t, "repeat_policy", policies[0].Name)
+	_, err = exec.Execute(ctx, "CREATE (:Other {name: 'after bootstrap'})", nil)
+	require.NoError(t, err)
+}
+
 func TestKnowledgePolicyProcedure_Branches(t *testing.T) {
 	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
 	ctx := context.Background()

@@ -316,8 +316,31 @@ func TestCypherCoverage_VisibleAtWrapperAndMergeHelpers(t *testing.T) {
 	nsNode := &storage.Node{ID: "tenant:n1", Labels: []string{"Doc"}, Properties: map[string]interface{}{"name": "Ada"}}
 	nsEdge := &storage.Edge{ID: "tenant:e1", Type: "LINKS", StartNode: "tenant:n1", EndNode: "tenant:n2", Properties: map[string]interface{}{"rank": 1}}
 	otherTenantEdge := &storage.Edge{ID: "other:e2", Type: "LINKS", StartNode: "other:n1", EndNode: "other:n2", Properties: map[string]interface{}{"rank": 2}}
-	nsVisibleEngine := &cypherVisibleMemoryEngine{MemoryEngine: storage.NewMemoryEngine(), nodes: []*storage.Node{nsNode}, edges: []*storage.Edge{nsEdge, otherTenantEdge}}
+	otherTenantNode := &storage.Node{ID: "other:n1", Labels: []string{"Doc"}}
+	nsVisibleEngine := &cypherVisibleMemoryEngine{MemoryEngine: storage.NewMemoryEngine(), nodes: []*storage.Node{nsNode, otherTenantNode}, edges: []*storage.Edge{nsEdge, otherTenantEdge}}
 	nsWrapper := &transactionStorageWrapper{underlying: nsVisibleEngine, namespace: "tenant", separator: ":"}
+	nodes, err = nsWrapper.GetNodesByLabelVisibleAt("Doc", storage.MVCCVersion{})
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+	require.Equal(t, storage.NodeID("n1"), nodes[0].ID)
+	edges, err = nsWrapper.GetEdgesByTypeVisibleAt("LINKS", storage.MVCCVersion{})
+	require.NoError(t, err)
+	require.Len(t, edges, 1)
+	require.Equal(t, storage.EdgeID("e1"), edges[0].ID)
+	edges, err = nsWrapper.GetEdgesBetweenVisibleAt("n1", "n2", storage.MVCCVersion{})
+	require.NoError(t, err)
+	require.Len(t, edges, 1)
+	require.Equal(t, storage.EdgeID("e1"), edges[0].ID)
+
+	scopedWrapper := &transactionStorageWrapper{underlying: storage.NewNamespacedEngine(nsVisibleEngine, "tenant"), namespace: "tenant", separator: ":"}
+	edges, err = scopedWrapper.GetEdgesByTypeVisibleAt("LINKS", storage.MVCCVersion{})
+	require.NoError(t, err)
+	require.Len(t, edges, 1)
+	require.Equal(t, storage.EdgeID("e1"), edges[0].ID)
+	outgoing, err = scopedWrapper.GetOutgoingEdgesVisibleAt("n1", storage.MVCCVersion{})
+	require.NoError(t, err)
+	require.Len(t, outgoing, 1)
+	require.Equal(t, storage.EdgeID("e1"), outgoing[0].ID)
 
 	outgoing, err = nsWrapper.GetOutgoingEdgesVisibleAt("n1", storage.MVCCVersion{})
 	require.NoError(t, err)

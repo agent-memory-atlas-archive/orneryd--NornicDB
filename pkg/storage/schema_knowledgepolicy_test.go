@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/orneryd/nornicdb/pkg/knowledgepolicy"
 	"github.com/stretchr/testify/assert"
@@ -521,6 +523,33 @@ func TestCreatePromotionPolicy(t *testing.T) {
 	policies := sm.ShowPromotionPolicies()
 	assert.Len(t, policies, 1)
 	assert.Equal(t, "access_policy", policies[0].Name)
+}
+
+func TestCreatePromotionPolicy_DuplicateReleasesSchemaLock(t *testing.T) {
+	for _, ifNotExists := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ifNotExists=%t", ifNotExists), func(t *testing.T) {
+			sm := NewSchemaManager()
+			policy := knowledgepolicy.PromotionPolicyDef{Name: "existing", TargetLabels: []string{"Fact"}, Enabled: true}
+			require.NoError(t, sm.CreatePromotionPolicy(policy))
+			err := sm.CreatePromotionPolicy(policy, ifNotExists)
+			if ifNotExists {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+
+			done := make(chan error, 1)
+			go func() {
+				done <- sm.CreatePromotionPolicy(knowledgepolicy.PromotionPolicyDef{Name: "next", TargetLabels: []string{"Fact"}})
+			}()
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("duplicate promotion policy left the schema lock held")
+			}
+		})
+	}
 }
 
 // TestCreatePromotionPolicy_MissingProfileRef tests that a WHEN clause referencing a missing profile returns an error.

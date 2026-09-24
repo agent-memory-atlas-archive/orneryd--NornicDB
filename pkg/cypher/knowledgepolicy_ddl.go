@@ -225,7 +225,8 @@ type DropPromotionProfileCmd struct {
 type ShowPromotionProfilesCmd struct{}
 
 type CreatePromotionPolicyCmd struct {
-	Policy knowledgepolicy.PromotionPolicyDef
+	Policy      knowledgepolicy.PromotionPolicyDef
+	IfNotExists bool
 }
 
 type AlterPromotionPolicyCmd struct {
@@ -943,9 +944,33 @@ func parseDropPromotionProfile(s string, i int) (interface{}, bool, error) {
 
 func parseCreatePromotionPolicy(s string, i int) (interface{}, bool, error) {
 	i = kpSkipSpaces(s, i)
+	parseGuard := func(index int) (int, bool, error) {
+		if next := kpMatchKeywordAt(s, index, "IF"); next > 0 {
+			next = kpSkipSpaces(s, next)
+			if next = kpMatchKeywordAt(s, next, "NOT"); next > 0 {
+				next = kpSkipSpaces(s, next)
+				if next = kpMatchKeywordAt(s, next, "EXISTS"); next > 0 {
+					return kpSkipSpaces(s, next), true, nil
+				}
+			}
+			return index, false, localizedError(localization.CypherKnowledgePolicyExpectedAfter("NOT EXISTS", "IF"), nil)
+		}
+		return index, false, nil
+	}
+	i, ifNotExists, err := parseGuard(i)
+	if err != nil {
+		return nil, false, err
+	}
 	name, i := kpScanName(s, i)
 	if name == "" {
 		return nil, false, localizedError(localization.CypherKnowledgePolicyPolicyNameExpectedAfter("CREATE PROMOTION POLICY"), nil)
+	}
+	i = kpSkipSpaces(s, i)
+	if !ifNotExists {
+		i, ifNotExists, err = parseGuard(i)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 
 	policy, err := parsePromotionPolicyDefinition(name, s, i)
@@ -953,7 +978,7 @@ func parseCreatePromotionPolicy(s string, i int) (interface{}, bool, error) {
 		return nil, false, err
 	}
 
-	return &CreatePromotionPolicyCmd{Policy: policy}, true, nil
+	return &CreatePromotionPolicyCmd{Policy: policy, IfNotExists: ifNotExists}, true, nil
 }
 
 func parsePromotionPolicyDefinition(name, s string, i int) (knowledgepolicy.PromotionPolicyDef, error) {

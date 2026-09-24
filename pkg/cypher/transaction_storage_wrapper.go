@@ -203,7 +203,7 @@ func (w *transactionStorageWrapper) GetNodesByLabel(label string) ([]*storage.No
 	if w.namespace == "" {
 		return nodes, nil
 	}
-	return w.toUserNodes(nodes), nil
+	return w.toUserNamespacedNodes(nodes), nil
 }
 
 // StreamNodesByLabelProjected keeps labelled MATCH reads on the transaction's
@@ -235,14 +235,14 @@ func (w *transactionStorageWrapper) StreamNodesByLabelProjected(label string, pr
 }
 
 func (w *transactionStorageWrapper) GetFirstNodeByLabel(label string) (*storage.Node, error) {
-	node, err := w.tx.GetFirstNodeByLabel(label)
+	nodes, err := w.GetNodesByLabel(label)
 	if err != nil {
 		return nil, err
 	}
-	if w.namespace == "" {
-		return node, nil
+	if len(nodes) == 0 {
+		return nil, storage.ErrNotFound
 	}
-	return w.toUserNode(node), nil
+	return nodes[0], nil
 }
 
 func (w *transactionStorageWrapper) ForEachNodeIDByLabel(label string, visit func(storage.NodeID) bool) error {
@@ -322,12 +322,16 @@ func (w *transactionStorageWrapper) GetEdgesByType(edgeType string) ([]*storage.
 	if err != nil {
 		return nil, err
 	}
-	return w.toUserEdges(edges), nil
+	return w.toUserNamespacedEdges(edges), nil
 }
 
 func (w *transactionStorageWrapper) GetNodesByLabelVisibleAt(label string, version storage.MVCCVersion) ([]*storage.Node, error) {
 	if provider, ok := w.underlying.(storage.MVCCIndexedVisibilityEngine); ok {
-		return provider.GetNodesByLabelVisibleAt(label, version)
+		nodes, err := provider.GetNodesByLabelVisibleAt(label, version)
+		if err != nil || w.namespace == "" || w.underlyingIsNamespaced() {
+			return nodes, err
+		}
+		return w.toUserNamespacedNodes(nodes), nil
 	}
 	return nil, storage.ErrNotImplemented
 }
@@ -336,6 +340,9 @@ func (w *transactionStorageWrapper) GetOutgoingEdgesVisibleAt(nodeID storage.Nod
 	provider, ok := w.underlying.(storage.MVCCIndexedVisibilityEngine)
 	if !ok {
 		return nil, storage.ErrNotImplemented
+	}
+	if w.underlyingIsNamespaced() {
+		return provider.GetOutgoingEdgesVisibleAt(nodeID, version)
 	}
 	edges, err := provider.GetOutgoingEdgesVisibleAt(w.prefixNodeID(nodeID), version)
 	if err != nil || w.namespace == "" {
@@ -349,6 +356,9 @@ func (w *transactionStorageWrapper) GetIncomingEdgesVisibleAt(nodeID storage.Nod
 	if !ok {
 		return nil, storage.ErrNotImplemented
 	}
+	if w.underlyingIsNamespaced() {
+		return provider.GetIncomingEdgesVisibleAt(nodeID, version)
+	}
 	edges, err := provider.GetIncomingEdgesVisibleAt(w.prefixNodeID(nodeID), version)
 	if err != nil || w.namespace == "" {
 		return edges, err
@@ -358,16 +368,28 @@ func (w *transactionStorageWrapper) GetIncomingEdgesVisibleAt(nodeID storage.Nod
 
 func (w *transactionStorageWrapper) GetEdgesByTypeVisibleAt(edgeType string, version storage.MVCCVersion) ([]*storage.Edge, error) {
 	if provider, ok := w.underlying.(storage.MVCCIndexedVisibilityEngine); ok {
-		return provider.GetEdgesByTypeVisibleAt(edgeType, version)
+		edges, err := provider.GetEdgesByTypeVisibleAt(edgeType, version)
+		if err != nil || w.namespace == "" || w.underlyingIsNamespaced() {
+			return edges, err
+		}
+		return w.toUserNamespacedEdges(edges), nil
 	}
 	return nil, storage.ErrNotImplemented
 }
 
 func (w *transactionStorageWrapper) GetEdgesBetweenVisibleAt(startID, endID storage.NodeID, version storage.MVCCVersion) ([]*storage.Edge, error) {
-	if provider, ok := w.underlying.(storage.MVCCIndexedVisibilityEngine); ok {
+	provider, ok := w.underlying.(storage.MVCCIndexedVisibilityEngine)
+	if !ok {
+		return nil, storage.ErrNotImplemented
+	}
+	if w.underlyingIsNamespaced() {
 		return provider.GetEdgesBetweenVisibleAt(startID, endID, version)
 	}
-	return nil, storage.ErrNotImplemented
+	edges, err := provider.GetEdgesBetweenVisibleAt(w.prefixNodeID(startID), w.prefixNodeID(endID), version)
+	if err != nil || w.namespace == "" {
+		return edges, err
+	}
+	return w.toUserNamespacedEdges(edges), nil
 }
 
 func (w *transactionStorageWrapper) AllNodes() ([]*storage.Node, error) {
@@ -378,11 +400,15 @@ func (w *transactionStorageWrapper) AllNodes() ([]*storage.Node, error) {
 	if w.namespace == "" {
 		return nodes, nil
 	}
-	return w.toUserNodes(nodes), nil
+	return w.toUserNamespacedNodes(nodes), nil
 }
 
 func (w *transactionStorageWrapper) AllEdges() ([]*storage.Edge, error) {
-	return w.underlying.AllEdges()
+	edges, err := w.tx.AllEdges()
+	if err != nil || w.namespace == "" {
+		return edges, err
+	}
+	return w.toUserNamespacedEdges(edges), nil
 }
 
 func (w *transactionStorageWrapper) GetAllNodes() []*storage.Node {
@@ -390,7 +416,7 @@ func (w *transactionStorageWrapper) GetAllNodes() []*storage.Node {
 	if w.namespace == "" {
 		return nodes
 	}
-	return w.toUserNodes(nodes)
+	return w.toUserNamespacedNodes(nodes)
 }
 
 func (w *transactionStorageWrapper) GetInDegree(nodeID storage.NodeID) int {
@@ -553,6 +579,22 @@ func (w *transactionStorageWrapper) toUserNodes(nodes []*storage.Node) []*storag
 	return out
 }
 
+func (w *transactionStorageWrapper) toUserNamespacedNodes(nodes []*storage.Node) []*storage.Node {
+	prefix := w.namespace + w.separator
+	out := make([]*storage.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if node != nil && strings.HasPrefix(string(node.ID), prefix) {
+			out = append(out, w.toUserNode(node))
+		}
+	}
+	return out
+}
+
+func (w *transactionStorageWrapper) underlyingIsNamespaced() bool {
+	scoped, ok := w.underlying.(interface{ Namespace() string })
+	return ok && w.namespace != "" && scoped.Namespace() == w.namespace
+}
+
 func (w *transactionStorageWrapper) BatchGetNodes(ids []storage.NodeID) (map[storage.NodeID]*storage.Node, error) {
 	return w.underlying.BatchGetNodes(ids)
 }
@@ -572,7 +614,7 @@ func (w *transactionStorageWrapper) NodeCount() (int64, error) {
 // transaction-visible label result so uncommitted creates and deletes retain
 // Neo4j-compatible visibility.
 func (w *transactionStorageWrapper) NodeCountByLabel(label string) (int64, error) {
-	if !w.tx.HasPendingNodeMutations() {
+	if (w.namespace == "" || w.underlyingIsNamespaced()) && !w.tx.HasPendingNodeMutations() {
 		if counter, ok := w.underlying.(interface {
 			NodeCountByLabel(string) (int64, error)
 		}); ok {

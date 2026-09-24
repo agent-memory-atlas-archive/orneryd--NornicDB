@@ -55,6 +55,8 @@ APPLY {
 }
 ```
 
+For repeatable bootstrap scripts, use `CREATE PROMOTION POLICY IF NOT EXISTS <name> FOR ... APPLY { ... }` (or place `IF NOT EXISTS` after the name). An existing policy is left unchanged; without the guard, a duplicate name returns an error.
+
 ### Example: Basic Tiered Promotion
 
 ```cypher

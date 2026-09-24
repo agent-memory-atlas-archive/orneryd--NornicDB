@@ -50,6 +50,55 @@ func TestTransactionStorageWrapper_CreateGetDelete_WithNamespace(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestTransactionStorageWrapper_NamespaceIsolation(t *testing.T) {
+	eng := newTestMemoryEngine(t)
+	for _, item := range []struct{ id, label string }{
+		{"tenant:own", "Shared"}, {"tenant:removed", "Shared"},
+		{"tenantb:other", "Shared"}, {"system:admin", "_User"},
+	} {
+		_, err := eng.CreateNode(&storage.Node{ID: storage.NodeID(item.id), Labels: []string{item.label}, Properties: map[string]interface{}{"secret": item.id}})
+		require.NoError(t, err)
+	}
+	for _, id := range []storage.EdgeID{"tenant:edge", "tenantb:edge"} {
+		prefix := "tenant"
+		if id == "tenantb:edge" {
+			prefix = "tenantb"
+		}
+		require.NoError(t, eng.CreateEdge(&storage.Edge{ID: id, StartNode: storage.NodeID(prefix + ":" + map[string]string{"tenant": "own", "tenantb": "other"}[prefix]), EndNode: storage.NodeID(prefix + ":" + map[string]string{"tenant": "own", "tenantb": "other"}[prefix]), Type: "REL"}))
+	}
+	tx, err := eng.BeginTransaction()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	w := &transactionStorageWrapper{tx: tx, underlying: storage.NewNamespacedEngine(eng, "tenant"), namespace: "tenant", separator: ":"}
+	require.NoError(t, w.DeleteNode("removed"))
+	_, err = w.CreateNode(&storage.Node{ID: "pending", Labels: []string{"Shared"}})
+	require.NoError(t, err)
+	require.NoError(t, w.CreateEdge(&storage.Edge{ID: "pending-edge", StartNode: "own", EndNode: "pending", Type: "REL"}))
+
+	for _, read := range []func() ([]*storage.Node, error){w.AllNodes, func() ([]*storage.Node, error) { return w.GetAllNodes(), nil }, func() ([]*storage.Node, error) { return w.GetNodesByLabel("Shared") }} {
+		nodes, err := read()
+		require.NoError(t, err)
+		ids := make([]storage.NodeID, 0, len(nodes))
+		for _, node := range nodes {
+			ids = append(ids, node.ID)
+		}
+		require.ElementsMatch(t, []storage.NodeID{"own", "pending"}, ids)
+	}
+	users, err := w.GetNodesByLabel("_User")
+	require.NoError(t, err)
+	require.Empty(t, users)
+	count, err := w.NodeCountByLabel("Shared")
+	require.NoError(t, err)
+	require.Equal(t, int64(2), count)
+	edges, err := w.AllEdges()
+	require.NoError(t, err)
+	ids := make([]storage.EdgeID, 0, len(edges))
+	for _, edge := range edges {
+		ids = append(ids, edge.ID)
+	}
+	require.ElementsMatch(t, []storage.EdgeID{"edge", "pending-edge"}, ids)
+}
+
 func TestTransactionStorageWrapper_BulkOps_AndCounts(t *testing.T) {
 	eng := newTestMemoryEngine(t)
 	defer eng.Close()

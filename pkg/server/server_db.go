@@ -1462,6 +1462,28 @@ func (s *Server) handleSingleStatementFastPath(w http.ResponseWriter, r *http.Re
 		return nil, true
 	}
 
+	if isCreateDatabaseStatement(queryStatement) {
+		if createdName, ok := parseCreatedDatabaseName(queryStatement); ok && createdName != "" {
+			s.grantAccessToNewDatabase(r.Context(), createdName, claims)
+			if len(result.Columns) == 0 && len(result.Rows) == 0 {
+				result.Columns = []string{"name"}
+				result.Rows = [][]interface{}{{createdName}}
+			}
+		}
+	}
+	if isShowDatabasesQuery(queryStatement) && result.Rows != nil {
+		mode := s.getDatabaseAccessMode(claims)
+		filtered := make([][]interface{}, 0, len(result.Rows))
+		for _, row := range result.Rows {
+			if len(row) > 0 {
+				if name, ok := row[0].(string); ok && mode.CanSeeDatabase(name) {
+					filtered = append(filtered, row)
+				}
+			}
+		}
+		result.Rows = filtered
+	}
+
 	// Build response with minimal allocation.
 	qr := QueryResult{
 		Columns: result.Columns,
