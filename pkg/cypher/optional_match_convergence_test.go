@@ -53,7 +53,7 @@ func TestOptionalMatchReturnsUndirectedSelfRelationshipOnce(t *testing.T) {
 	require.NotNil(t, result.Rows[0][0])
 }
 
-func TestUnwindCorrelatesSingleNodeOptionalMatchPerInputRow(t *testing.T) {
+func TestGH447_UnwindOptionalMatchCorrelationMatrix(t *testing.T) {
 	tests := []struct {
 		name     string
 		query    string
@@ -61,40 +61,46 @@ func TestUnwindCorrelatesSingleNodeOptionalMatchPerInputRow(t *testing.T) {
 		expected [][]interface{}
 	}{
 		{
-			name:     "inline property expression",
+			name:     "gh-447-inline-property-expression",
 			query:    "UNWIND [1, 2, 3] AS k OPTIONAL MATCH (t:OM {k: k}) RETURN k, t.k AS tk",
 			columns:  []string{"k", "tk"},
 			expected: [][]interface{}{{int64(1), int64(1)}, {int64(2), int64(2)}, {int64(3), nil}},
 		},
 		{
-			name:     "where predicate",
+			name:     "gh-447-where-predicate",
 			query:    "UNWIND [1, 2, 3] AS k OPTIONAL MATCH (t:OM) WHERE t.k = k RETURN k, t.k AS tk",
 			columns:  []string{"k", "tk"},
 			expected: [][]interface{}{{int64(1), int64(1)}, {int64(2), int64(2)}, {int64(3), nil}},
 		},
 		{
-			name:     "null projection",
+			name:     "gh-447-null-projection",
 			query:    "UNWIND [1, 2, 3] AS k OPTIONAL MATCH (t:OM {k: k}) RETURN k, t IS NULL AS missing",
 			columns:  []string{"k", "missing"},
 			expected: [][]interface{}{{int64(1), false}, {int64(2), false}, {int64(3), true}},
 		},
 		{
-			name:     "null anti join",
+			name:     "gh-447-null-anti-join",
 			query:    "UNWIND [1, 2, 3] AS k OPTIONAL MATCH (t:OM {k: k}) WITH k, t WHERE t IS NULL RETURN k",
 			columns:  []string{"k"},
 			expected: [][]interface{}{{int64(3)}},
 		},
 		{
-			name:     "grouped optional count",
+			name:     "gh-447-grouped-optional-count",
 			query:    "UNWIND [1, 2, 3] AS k OPTIONAL MATCH (t:OM {k: k}) WITH k, count(t) AS c RETURN k, c",
 			columns:  []string{"k", "c"},
 			expected: [][]interface{}{{int64(1), int64(1)}, {int64(2), int64(1)}, {int64(3), int64(0)}},
 		},
 		{
-			name:     "standalone optional miss",
+			name:     "gh-447-standalone-optional-miss",
 			query:    "OPTIONAL MATCH (t:OM {k: 3}) RETURN t IS NULL AS missing",
 			columns:  []string{"missing"},
 			expected: [][]interface{}{{true}},
+		},
+		{
+			name:     "gh-447-matched-node-is-not-null",
+			query:    "MATCH (t:OM) RETURN t.k AS k, t.k IS NULL AS isnull ORDER BY k",
+			columns:  []string{"k", "isnull"},
+			expected: [][]interface{}{{int64(1), false}, {int64(2), false}},
 		},
 	}
 
