@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -374,4 +375,60 @@ func TestNamespacedEngine_StreamNodesByPrefixProjected(t *testing.T) {
 	require.Equal(t, NodeID("evidence-one"), nodes[0].ID)
 	require.Equal(t, "wanted", nodes[0].Properties["asset_id"])
 	require.NotContains(t, nodes[0].Properties, "embedding")
+}
+
+// TestBadgerEngine_GetNodeKernel_CacheStoreAsymmetry pins the shared
+// getNodeByID kernel contract: GetNode caches decoded nodes, while
+// GetNodeWithoutEmbeddings never stores — an embedding-free read must not
+// poison the cache for later full reads — and both return copies.
+func TestBadgerEngine_GetNodeKernel_CacheStoreAsymmetry(t *testing.T) {
+	engine := createTestBadgerEngine(t)
+	tenant := NewNamespacedEngine(engine, "tenant")
+	node := &Node{
+		ID:              "cache-asym",
+		Labels:          []string{"Doc"},
+		Properties:      map[string]any{"title": "T"},
+		ChunkEmbeddings: [][]float32{make([]float32, 10_000)},
+	}
+	_, err := tenant.CreateNode(node)
+	require.NoError(t, err)
+	storedID := NodeID("tenant:cache-asym")
+
+	// Evict the create-time cache entry so the first read is a genuine miss.
+	engine.nodeCacheMu.Lock()
+	delete(engine.nodeCache, storedID)
+	engine.nodeCacheMu.Unlock()
+
+	// Cold read without embeddings: must not populate the cache.
+	beforeMisses := atomic.LoadInt64(&engine.cacheMisses)
+	light, err := engine.GetNodeWithoutEmbeddings(storedID)
+	require.NoError(t, err)
+	require.Equal(t, "T", light.Properties["title"])
+	require.Equal(t, beforeMisses+1, atomic.LoadInt64(&engine.cacheMisses))
+	engine.nodeCacheMu.RLock()
+	_, cached := engine.nodeCache[storedID]
+	engine.nodeCacheMu.RUnlock()
+	require.False(t, cached, "without-embeddings read must not store into the node cache")
+
+	_, err = engine.GetNodeWithoutEmbeddings(storedID)
+	require.NoError(t, err)
+	require.Equal(t, beforeMisses+2, atomic.LoadInt64(&engine.cacheMisses), "without-embeddings read must not cache")
+
+	// A full read caches; the next without-embeddings read is a cache hit
+	// that copies without embeddings.
+	full, err := engine.GetNode(storedID)
+	require.NoError(t, err)
+	require.NotEmpty(t, full.ChunkEmbeddings)
+	beforeHits := atomic.LoadInt64(&engine.cacheHits)
+	fromCache, err := engine.GetNodeWithoutEmbeddings(storedID)
+	require.NoError(t, err)
+	require.Equal(t, beforeHits+1, atomic.LoadInt64(&engine.cacheHits), "after a full read the without-embeddings read is a cache hit")
+	require.Empty(t, fromCache.ChunkEmbeddings)
+	require.Equal(t, "T", fromCache.Properties["title"])
+
+	// Copies: mutating a returned node must not leak into the cache.
+	light.Properties["title"] = "mutated"
+	again, err := engine.GetNodeWithoutEmbeddings(storedID)
+	require.NoError(t, err)
+	require.Equal(t, "T", again.Properties["title"])
 }
