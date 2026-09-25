@@ -510,7 +510,10 @@ func TestLowerCoverageHelpers_Branches(t *testing.T) {
 	require.True(t, exec.evaluateConditionFromValues("x = 1 AND y IS NOT NULL", map[string]interface{}{"x": int64(1), "y": "ok"}))
 	require.True(t, exec.evaluateConditionFromValues("x = 1 OR y = 2", map[string]interface{}{"x": int64(9), "y": int64(2)}))
 	require.False(t, exec.evaluateConditionFromValues("NOT x = 1", map[string]interface{}{"x": int64(1)}))
-	require.False(t, exec.evaluateConditionFromValues("missing IS NULL", map[string]interface{}{}))
+	// Undefined identifiers evaluate to Cypher null in the shared evaluator
+	// (legacy clone returned the raw text, which broke IS NULL semantics).
+	require.True(t, exec.evaluateConditionFromValues("missing IS NULL", map[string]interface{}{}))
+	require.False(t, exec.evaluateConditionFromValues("missing IS NOT NULL", map[string]interface{}{}))
 	require.True(t, exec.evaluateConditionFromValues("x <> 2", map[string]interface{}{"x": int64(1)}))
 	lit, litOK := parseLiteralValueFromComputedRow(`"hello"`)
 	require.True(t, litOK)

@@ -1164,92 +1164,18 @@ func (e *StorageExecutor) evaluateArithmeticExprFromValues(expr string, values m
 }
 
 func (e *StorageExecutor) evaluateCaseExpressionFromValues(expr string, values map[string]interface{}) interface{} {
-	ce, err := parseCaseExpression(expr)
-	if err != nil {
-		return nil
-	}
-
-	resolve := func(caseExpr string) interface{} {
-		val := e.evaluateExpressionFromValues(caseExpr, values)
-		if literal, ok := val.(string); ok && literal == strings.TrimSpace(caseExpr) {
-			if parsed, parsedOK := parseLiteralValueFromComputedRow(caseExpr); parsedOK {
-				return parsed
-			}
-		}
-		return val
-	}
-
-	if ce.isSimple {
-		testValue := resolve(ce.testExpression)
-		for _, clause := range ce.whenClauses {
-			whenValue := resolve(clause.value)
-			if compareValues(testValue, whenValue) {
-				return resolve(clause.result)
-			}
-		}
-	} else {
-		for _, clause := range ce.whenClauses {
-			if e.evaluateConditionFromValues(clause.condition, values) {
-				return resolve(clause.result)
-			}
-		}
-	}
-
-	if ce.elseResult != "" {
-		return resolve(ce.elseResult)
-	}
-	return nil
+	// The shared CASE evaluator resolves non-entity variables through the
+	// context value bindings, so the values scope is passed the same way as
+	// every other scope instead of using a parallel evaluator.
+	return e.evaluateCaseExpression(withValueBindings(context.Background(), values), expr, nil, nil, nil, nil, nil, 0)
 }
 
+// evaluateConditionFromValues evaluates a boolean condition over a computed
+// values scope. It delegates to the shared condition evaluator with the values
+// carried as context bindings, mirroring how the main expression evaluator
+// resolves non-entity variables.
 func (e *StorageExecutor) evaluateConditionFromValues(condition string, values map[string]interface{}) bool {
-	condition = strings.TrimSpace(condition)
-	upper := strings.ToUpper(condition)
-
-	if idx := findTopLevelKeyword(condition, " AND "); idx > 0 {
-		left := strings.TrimSpace(condition[:idx])
-		right := strings.TrimSpace(condition[idx+5:])
-		return e.evaluateConditionFromValues(left, values) && e.evaluateConditionFromValues(right, values)
-	}
-
-	if idx := findTopLevelKeyword(condition, " OR "); idx > 0 {
-		left := strings.TrimSpace(condition[:idx])
-		right := strings.TrimSpace(condition[idx+4:])
-		return e.evaluateConditionFromValues(left, values) || e.evaluateConditionFromValues(right, values)
-	}
-
-	if strings.HasPrefix(upper, "NOT ") {
-		if truth, ok := inPredicateTruth(condition[4:], func(expr string) interface{} {
-			return e.evaluateExpressionFromValues(expr, values)
-		}); ok {
-			return truth == truthFalse
-		}
-		return !e.evaluateConditionFromValues(strings.TrimSpace(condition[4:]), values)
-	}
-
-	if strings.HasSuffix(upper, " IS NULL") {
-		expr := strings.TrimSpace(condition[:len(condition)-8])
-		return e.evaluateExpressionFromValues(expr, values) == nil
-	}
-	if strings.HasSuffix(upper, " IS NOT NULL") {
-		expr := strings.TrimSpace(condition[:len(condition)-12])
-		return e.evaluateExpressionFromValues(expr, values) != nil
-	}
-
-	resolveComparisonOperand := func(operand string) interface{} {
-		value := e.evaluateExpressionFromValues(operand, values)
-		if literal, ok := value.(string); ok && literal == strings.TrimSpace(operand) {
-			if parsed, parsedOK := parseLiteralValueFromComputedRow(operand); parsedOK {
-				return parsed
-			}
-		}
-		return value
-	}
-	if result, ok := evaluateComparisonChain(condition, resolveComparisonOperand, compareCypherPredicateValue); ok {
-		matched, _ := result.(bool)
-		return matched
-	}
-
-	return isTruthy(e.evaluateExpressionFromValues(condition, values))
+	return e.evaluateCondition(withValueBindings(context.Background(), values), condition, nil, nil)
 }
 
 func parseLiteralValueFromComputedRow(expr string) (interface{}, bool) {

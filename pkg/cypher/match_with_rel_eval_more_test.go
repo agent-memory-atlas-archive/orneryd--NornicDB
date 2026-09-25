@@ -144,10 +144,37 @@ func TestEvaluateConditionFromValues_AdditionalBranches(t *testing.T) {
 	require.True(t, exec.evaluateConditionFromValues("b < a", values))
 	require.True(t, exec.evaluateConditionFromValues("s <> 'y'", values))
 	require.True(t, exec.evaluateConditionFromValues("NOT s = 'y'", values))
-	require.False(t, exec.evaluateConditionFromValues("missing IS NULL", values))
-	require.True(t, exec.evaluateConditionFromValues("missing IS NOT NULL", values))
+	// Undefined identifiers evaluate to Cypher null in the shared evaluator
+	// (legacy clone returned the raw text, which broke IS NULL semantics).
+	require.True(t, exec.evaluateConditionFromValues("missing IS NULL", values))
+	require.False(t, exec.evaluateConditionFromValues("missing IS NOT NULL", values))
 	require.True(t, exec.evaluateConditionFromValues("a = 3 AND b = 2", values))
 	require.True(t, exec.evaluateConditionFromValues("a = 9 OR b = 2", values))
+}
+
+func BenchmarkEvaluateConditionFromValues(b *testing.B) {
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(b), "match_with_rel_cond_bench"))
+	values := map[string]interface{}{"a": int64(3), "b": int64(2), "s": "x"}
+	conditions := []string{"a >= b", "s <> 'y'", "a = 3 AND b = 2", "missing IS NULL"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		exec.evaluateConditionFromValues(conditions[i%len(conditions)], values)
+	}
+}
+
+func BenchmarkEvaluateCaseExpressionFromValues(b *testing.B) {
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(b), "match_with_rel_case_bench"))
+	values := map[string]interface{}{"a": int64(3), "b": int64(2), "s": "x"}
+	exprs := []string{
+		"CASE a WHEN 3 THEN 'three' ELSE 'other' END",
+		"CASE WHEN b > 1 THEN s ELSE 'low' END",
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		exec.evaluateCaseExpressionFromValues(exprs[i%len(exprs)], values)
+	}
 }
 
 func TestEvaluateMapLiteralFromValues_AdditionalBranches(t *testing.T) {
