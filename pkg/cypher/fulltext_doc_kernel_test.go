@@ -36,10 +36,14 @@ func TestFulltextDocKernel_NodeAndEdgeBuildersAgree(t *testing.T) {
 	require.False(t, hasNil, "nil property must be skipped")
 
 	// Edge builder with the full property set: the kernel output matches the
-	// node doc for the same properties and content.
+	// node doc for the same properties and content. Request the properties
+	// explicitly — the empty-properties edge path concatenates map values in
+	// map iteration order, which is nondeterministic and not part of the
+	// kernel contract (the kernel covers property canonicalization; content
+	// assembly belongs to the builders).
 	edgeDoc := buildEdgeFulltextDoc(&storage.Edge{ID: "e1", Properties: map[string]interface{}{
 		"Title": "Graph Databases", "Body": "A book", "Count": int64(42),
-	}}, nil)
+	}}, []string{"Title", "Body", "Count"})
 	require.NotNil(t, edgeDoc)
 	require.Equal(t, "graph databases a book 42", edgeDoc.contentLower)
 	require.Equal(t, doc.properties, edgeDoc.properties)

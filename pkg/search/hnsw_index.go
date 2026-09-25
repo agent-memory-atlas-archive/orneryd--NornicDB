@@ -271,7 +271,16 @@ func (h *HNSWIndex) Add(id string, vec []float32) error {
 	if len(vec) != h.dimensions {
 		return ErrDimensionMismatch
 	}
+	return h.addLocked(id, vec, nil)
+}
 
+// addLocked is the shared insertion core for Add and addWithLevel0Candidates:
+// the in-place upsert fast path, vector storage, arena/level bookkeeping and
+// the entry-point walk are identical. When level0Candidates is non-nil, level 0
+// is linked straight from the supplied candidates instead of a layer-0 search
+// (the GPU build path); the supplied candidates are caller-owned and never
+// released back to the candidate pool.
+func (h *HNSWIndex) addLocked(id string, vec []float32, level0Candidates []uint32) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -296,7 +305,10 @@ func (h *HNSWIndex) Add(id string, vec []float32) error {
 
 	level := h.randomLevel()
 
-	if len(h.nodeLevel) >= int(^uint32(0)) {
+	// Allocation-free overflow guard for the uint32 internal-ID domain.
+	// util.SafeIntToUint32 would also work here but costs strconv/fmt
+	// allocations on the per-node hot path (~4 allocs/node measured).
+	if uint64(len(h.nodeLevel)) >= uint64(^uint32(0)) {
 		return errHNSWIndexFull
 	}
 	internalID := uint32(len(h.nodeLevel))
@@ -369,7 +381,14 @@ func (h *HNSWIndex) Add(id string, vec []float32) error {
 	}
 
 	for l := min(level, epLevel); l >= 0; l-- {
-		candidates := h.searchLayer(normalized, ep, h.config.EfConstruction, l)
+		var candidates []uint32
+		searched := true
+		if l == 0 && level0Candidates != nil {
+			candidates = level0Candidates
+			searched = false
+		} else {
+			candidates = h.searchLayer(normalized, ep, h.config.EfConstruction, l)
+		}
 		neighbors = h.selectNeighborsInto(normalized, candidates, h.config.M, neighbors[:0])
 		h.setNeighborsAtLevelLocked(internalID, l, neighbors)
 
@@ -383,7 +402,9 @@ func (h *HNSWIndex) Add(id string, vec []float32) error {
 		if len(candidates) > 0 {
 			ep = candidates[0]
 		}
-		h.releaseCandidateIDs(candidates)
+		if searched {
+			h.releaseCandidateIDs(candidates)
+		}
 	}
 
 	if level > h.maxLevel {
@@ -403,126 +424,7 @@ func (h *HNSWIndex) addWithLevel0Candidates(id string, vec []float32, level0Cand
 	if len(vec) != h.dimensions {
 		return ErrDimensionMismatch
 	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if id == "" {
-		return nil
-	}
-	if internalID, ok := h.idToInternal[id]; ok && validHNSWIndex(internalID, len(h.deleted)) && !h.deleted[internalID] {
-		off := int(h.vecOff[internalID])
-		if h.vectorLookup == nil && off >= 0 && off+h.dimensions <= len(h.vectors) {
-			dst := h.vectors[off : off+h.dimensions]
-			copy(dst, vec)
-			vector.NormalizeInPlace(dst)
-			return nil
-		}
-		h.removeLocked(internalID)
-	}
-
-	level := h.randomLevel()
-	internalID, ok := util.SafeIntToUint32(len(h.nodeLevel))
-	if !ok {
-		return errHNSWIndexFull
-	}
-	m := h.config.M
-	if m <= 0 {
-		return nil
-	}
-
-	var normalized []float32
-	if h.vectorLookup != nil {
-		normalized = make([]float32, h.dimensions)
-		copy(normalized, vec)
-		vector.NormalizeInPlace(normalized)
-		h.vecOff = append(h.vecOff, -1)
-	} else {
-		vecOff := len(h.vectors)
-		h.vectors = append(h.vectors, vec...)
-		normalized = h.vectors[vecOff : vecOff+h.dimensions]
-		vector.NormalizeInPlace(normalized)
-		vecOff32, ok := util.SafeIntToInt32(vecOff)
-		if !ok {
-			return errHNSWIndexFull
-		}
-		h.vecOff = append(h.vecOff, vecOff32)
-	}
-
-	level16, ok := util.SafeIntToUint16(level)
-	if !ok {
-		return errHNSWIndexFull
-	}
-	h.nodeLevel = append(h.nodeLevel, level16)
-	neighborsOff := len(h.neighborsArena)
-	neighborSlots, ok := h.neighborSlotsForNode(level)
-	if !ok {
-		return errHNSWIndexFull
-	}
-	h.neighborsArena = append(h.neighborsArena, make([]uint32, neighborSlots)...)
-	neighborsOff32, ok := util.SafeIntToInt32(neighborsOff)
-	if !ok {
-		return errHNSWIndexFull
-	}
-	h.neighborsOff = append(h.neighborsOff, neighborsOff32)
-	countsOff := len(h.neighborCountsArena)
-	h.neighborCountsArena = append(h.neighborCountsArena, make([]uint16, level+1)...)
-	countsOff32, ok := util.SafeIntToInt32(countsOff)
-	if !ok {
-		return errHNSWIndexFull
-	}
-	h.neighborCountsOff = append(h.neighborCountsOff, countsOff32)
-	h.internalToID = append(h.internalToID, id)
-	h.idToInternal[id] = internalID
-	h.deleted = append(h.deleted, false)
-	h.liveCount++
-
-	if !h.hasEntryPoint {
-		h.entryPoint = internalID
-		h.hasEntryPoint = true
-		h.maxLevel = level
-		return nil
-	}
-
-	ep := h.entryPoint
-	epLevel := int(h.nodeLevel[ep])
-	neighbors := h.addBestScratch[:0]
-	for l := epLevel; l > level; l-- {
-		ep = h.searchLayerSingle(normalized, ep, l)
-	}
-	for l := min(level, epLevel); l > 0; l-- {
-		candidates := h.searchLayer(normalized, ep, h.config.EfConstruction, l)
-		neighbors = h.selectNeighborsInto(normalized, candidates, h.config.M, neighbors[:0])
-		h.setNeighborsAtLevelLocked(internalID, l, neighbors)
-		for _, neighborID := range neighbors {
-			if !validHNSWIndex(neighborID, len(h.nodeLevel)) || h.deleted[neighborID] {
-				continue
-			}
-			h.insertNeighborAtLevelLocked(neighborID, l, internalID)
-		}
-		if len(candidates) > 0 {
-			ep = candidates[0]
-		}
-		h.releaseCandidateIDs(candidates)
-	}
-
-	neighbors = h.selectNeighborsInto(normalized, level0Candidates, h.config.M, neighbors[:0])
-	h.setNeighborsAtLevelLocked(internalID, 0, neighbors)
-	for _, neighborID := range neighbors {
-		if !validHNSWIndex(neighborID, len(h.nodeLevel)) || h.deleted[neighborID] {
-			continue
-		}
-		h.insertNeighborAtLevelLocked(neighborID, 0, internalID)
-	}
-
-	if level > h.maxLevel {
-		h.entryPoint = internalID
-		h.hasEntryPoint = true
-		h.maxLevel = level
-	}
-	h.addBestScratch = neighbors[:0]
-
-	return nil
+	return h.addLocked(id, vec, level0Candidates)
 }
 
 func (h *HNSWIndex) internalID(id string) (uint32, bool) {
