@@ -337,7 +337,11 @@ skipMatchCallRoute:
 		return e.executeTopLevelUnwind(ctx, cypher)
 	}
 
-	hasDelete := findKeywordIndex(cypher, "DELETE") > 0
+	// Standalone DELETE / DETACH DELETE (no MATCH) must reach executeDelete:
+	// a bound-variable target (§6.2) deletes its entity, an unbound target
+	// gets the classified match-required error instead of the terminal
+	// unsupported-type rejection.
+	hasDelete := findKeywordIndex(cypher, "DELETE") >= 0
 	hasDetachDelete := containsKeywordOutsideStrings(cypher, "DETACH DELETE")
 	if hasDelete || hasDetachDelete {
 		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {

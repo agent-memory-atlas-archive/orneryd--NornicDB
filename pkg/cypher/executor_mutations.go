@@ -77,6 +77,24 @@ func (e *StorageExecutor) executeDelete(ctx context.Context, cypher string) (*Ex
 	}
 
 	if matchIdx == -1 || deleteIdx == -1 {
+		// Standalone DELETE <var> with the variable bound through the value
+		// scope (§6.2 bound child contexts, e.g. FOREACH over an entity list).
+		if matchIdx == -1 && deleteIdx >= 0 {
+			target := strings.TrimSpace(cypher[deleteIdx:])
+			upperTarget := strings.ToUpper(target)
+			switch {
+			case strings.HasPrefix(upperTarget, "DETACH DELETE "):
+				target = target[14:] // len("DETACH DELETE ")
+			case strings.HasPrefix(upperTarget, "DELETE "):
+				target = target[7:] // len("DELETE ")
+			}
+			if ret := findKeywordIndex(target, "RETURN"); ret > 0 {
+				target = strings.TrimSpace(target[:ret])
+			}
+			if boundResult, ok, err := e.tryExecuteBoundStandaloneDelete(ctx, target, detach); ok || err != nil {
+				return boundResult, err
+			}
+		}
 		return nil, localizedError(localization.CypherMutationsDeleteMatchRequired(), nil)
 	}
 
@@ -213,6 +231,93 @@ func (e *StorageExecutor) executeDelete(ctx context.Context, cypher string) (*Ex
 	e.applyDeleteReturnProjection(result, cypher, deleteVars, inferDeleteProjectionInfo(matchResult.Rows, deleteVars))
 
 	return result, nil
+}
+
+// tryExecuteBoundStandaloneDelete executes DELETE / DETACH DELETE <var> where
+// <var> resolves through the value scope (FOREACH over entity lists, §6.2
+// bound child contexts). It reports ok=false when the target is not a single
+// bound variable, so the caller keeps its historical match-required error.
+// Non-DETACH deletion of a connected node goes through the same residual-
+// relationship guard as the MATCH path.
+func (e *StorageExecutor) tryExecuteBoundStandaloneDelete(ctx context.Context, target string, detach bool) (*ExecuteResult, bool, error) {
+	target = strings.TrimSpace(target)
+	if target == "" || !isValidIdentifier(target) {
+		return nil, false, nil
+	}
+	value, bound := e.boundValue(ctx, target)
+	if !bound {
+		return nil, false, nil
+	}
+	store := e.getStorage(ctx)
+	result := &ExecuteResult{
+		Columns: []string{},
+		Rows:    [][]interface{}{},
+		Stats:   &QueryStats{},
+	}
+
+	deleteEntity := func(entityID string, isNode bool) error {
+		if isNode {
+			if !detach {
+				if err := validateNoResidualRelationships(store, []storage.NodeID{storage.NodeID(entityID)}, nil); err != nil {
+					return err
+				}
+			}
+			edgesCount := 0
+			if detach {
+				outgoing, _ := store.GetOutgoingEdges(storage.NodeID(entityID))
+				incoming, _ := store.GetIncomingEdges(storage.NodeID(entityID))
+				edgesCount = len(outgoing) + len(incoming)
+			}
+			if err := store.DeleteNode(storage.NodeID(entityID)); err != nil {
+				return localizedError(localization.CypherMutationsDeleteFailed(err), err)
+			}
+			result.Stats.NodesDeleted++
+			result.Stats.RelationshipsDeleted += edgesCount
+			e.removeNodeFromSearch(entityID)
+			return nil
+		}
+		if err := store.DeleteEdge(storage.EdgeID(entityID)); err != nil {
+			return localizedError(localization.CypherMutationsDeleteFailed(err), err)
+		}
+		result.Stats.RelationshipsDeleted++
+		return nil
+	}
+
+	switch entity := value.(type) {
+	case *storage.Node:
+		if entity == nil {
+			return result, true, nil
+		}
+		if err := deleteEntity(string(entity.ID), true); err != nil {
+			return nil, true, err
+		}
+		return result, true, nil
+	case *storage.Edge:
+		if entity == nil {
+			return result, true, nil
+		}
+		if err := deleteEntity(string(entity.ID), false); err != nil {
+			return nil, true, err
+		}
+		return result, true, nil
+	case string:
+		if _, err := store.GetNode(storage.NodeID(entity)); err == nil {
+			if err := deleteEntity(entity, true); err != nil {
+				return nil, true, err
+			}
+			return result, true, nil
+		}
+		if _, err := store.GetEdge(storage.EdgeID(entity)); err == nil {
+			if err := deleteEntity(entity, false); err != nil {
+				return nil, true, err
+			}
+			return result, true, nil
+		}
+		return nil, true, localizedError(localization.CypherMutationsDeleteFailed(storage.ErrNotFound), storage.ErrNotFound)
+	default:
+		// Bound non-entity values are not deletable targets.
+		return nil, true, localizedError(localization.CypherMutationsDeleteFailed(storage.ErrInvalidData), storage.ErrInvalidData)
+	}
 }
 
 // tryExecuteDeleteWithWithLimitHotPath executes:
