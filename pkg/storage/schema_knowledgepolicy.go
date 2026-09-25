@@ -8,31 +8,76 @@ import (
 	"github.com/orneryd/nornicdb/pkg/localization"
 )
 
-// CreateDecayProfileBundle adds a decay profile bundle to the schema.
-func (sm *SchemaManager) CreateDecayProfileBundle(bundle knowledgepolicy.DecayProfileBundle, ifNotExists ...bool) error {
+// createKnowledgeProfile is the shared create path for knowledge-policy
+// profiles (decay bundles, promotion profiles): ensure the map, reject a
+// duplicate name (honoring IF NOT EXISTS), validate, store a copy and finish
+// the mutation.
+func createKnowledgeProfile[T any](
+	sm *SchemaManager,
+	profiles *map[string]*T,
+	name string,
+	value T,
+	alreadyExists func(string) localization.Message,
+	validate func(*T) error,
+	ifNotExists bool,
+) error {
 	sm.mu.Lock()
-
-	if sm.decayProfileBundles == nil {
-		sm.decayProfileBundles = make(map[string]*knowledgepolicy.DecayProfileBundle)
+	if *profiles == nil {
+		*profiles = make(map[string]*T)
 	}
-
-	if _, exists := sm.decayProfileBundles[bundle.Name]; exists {
-		if len(ifNotExists) > 0 && ifNotExists[0] {
-			sm.mu.Unlock()
+	if _, exists := (*profiles)[name]; exists {
+		sm.mu.Unlock()
+		if ifNotExists {
 			return nil
 		}
-		sm.mu.Unlock()
-		return localizedError(localization.StorageSchemaDecayProfileBundleAlreadyExists(bundle.Name), nil)
+		return localizedError(alreadyExists(name), nil)
 	}
-
-	if err := validateDecayProfileBundle(&bundle); err != nil {
+	if err := validate(&value); err != nil {
 		sm.mu.Unlock()
 		return err
 	}
-
-	b := bundle
-	sm.decayProfileBundles[b.Name] = &b
+	(*profiles)[name] = &value
 	return sm.finishKnowledgePolicyMutationLocked()
+}
+
+// alterKnowledgeProfile is the shared update path for knowledge-policy
+// profiles: find the named profile, apply the option updates to a copy,
+// validate the copy and finish the mutation.
+func alterKnowledgeProfile[T any](
+	sm *SchemaManager,
+	profiles map[string]*T,
+	notFound func(string) localization.Message,
+	apply func(*T, map[string]interface{}) error,
+	validate func(*T) error,
+	name string,
+	updates map[string]interface{},
+) error {
+	sm.mu.Lock()
+	if profiles == nil {
+		sm.mu.Unlock()
+		return localizedError(notFound(name), nil)
+	}
+	profile, ok := profiles[name]
+	if !ok {
+		sm.mu.Unlock()
+		return localizedError(notFound(name), nil)
+	}
+	updated := *profile
+	if err := apply(&updated, updates); err != nil {
+		sm.mu.Unlock()
+		return err
+	}
+	if err := validate(&updated); err != nil {
+		sm.mu.Unlock()
+		return err
+	}
+	profiles[name] = &updated
+	return sm.finishKnowledgePolicyMutationLocked()
+}
+
+// CreateDecayProfileBundle adds a decay profile bundle to the schema.
+func (sm *SchemaManager) CreateDecayProfileBundle(bundle knowledgepolicy.DecayProfileBundle, ifNotExists ...bool) error {
+	return createKnowledgeProfile(sm, &sm.decayProfileBundles, bundle.Name, bundle, localization.StorageSchemaDecayProfileBundleAlreadyExists, validateDecayProfileBundle, len(ifNotExists) > 0 && ifNotExists[0])
 }
 
 // CreateDecayProfileBinding adds a decay profile binding to the schema.
@@ -102,29 +147,7 @@ func (sm *SchemaManager) DropDecayProfile(name string, ifExists ...bool) error {
 
 // AlterDecayProfile updates options on an existing decay profile bundle.
 func (sm *SchemaManager) AlterDecayProfile(name string, updates map[string]interface{}) error {
-	sm.mu.Lock()
-
-	if sm.decayProfileBundles == nil {
-		sm.mu.Unlock()
-		return localizedError(localization.StorageSchemaDecayProfileBundleNotFound(name), nil)
-	}
-	bundle, ok := sm.decayProfileBundles[name]
-	if !ok {
-		sm.mu.Unlock()
-		return localizedError(localization.StorageSchemaDecayProfileBundleNotFound(name), nil)
-	}
-
-	updated := *bundle
-	if err := applyBundleUpdates(&updated, updates); err != nil {
-		sm.mu.Unlock()
-		return err
-	}
-	if err := validateDecayProfileBundle(&updated); err != nil {
-		sm.mu.Unlock()
-		return err
-	}
-	sm.decayProfileBundles[name] = &updated
-	return sm.finishKnowledgePolicyMutationLocked()
+	return alterKnowledgeProfile(sm, sm.decayProfileBundles, localization.StorageSchemaDecayProfileBundleNotFound, applyBundleUpdates, validateDecayProfileBundle, name, updates)
 }
 
 // AlterDecayProfileBinding replaces the target and APPLY definition of an existing binding.
@@ -177,29 +200,7 @@ func (sm *SchemaManager) ShowDecayProfiles() ([]knowledgepolicy.DecayProfileBund
 
 // CreatePromotionProfile adds a promotion profile to the schema.
 func (sm *SchemaManager) CreatePromotionProfile(profile knowledgepolicy.PromotionProfileDef, ifNotExists ...bool) error {
-	sm.mu.Lock()
-
-	if sm.promotionProfiles == nil {
-		sm.promotionProfiles = make(map[string]*knowledgepolicy.PromotionProfileDef)
-	}
-
-	if _, exists := sm.promotionProfiles[profile.Name]; exists {
-		if len(ifNotExists) > 0 && ifNotExists[0] {
-			sm.mu.Unlock()
-			return nil
-		}
-		sm.mu.Unlock()
-		return localizedError(localization.StorageSchemaPromotionProfileAlreadyExists(profile.Name), nil)
-	}
-
-	if err := validatePromotionProfile(&profile); err != nil {
-		sm.mu.Unlock()
-		return err
-	}
-
-	p := profile
-	sm.promotionProfiles[p.Name] = &p
-	return sm.finishKnowledgePolicyMutationLocked()
+	return createKnowledgeProfile(sm, &sm.promotionProfiles, profile.Name, profile, localization.StorageSchemaPromotionProfileAlreadyExists, validatePromotionProfile, len(ifNotExists) > 0 && ifNotExists[0])
 }
 
 // DropPromotionProfile removes a promotion profile by name.
@@ -235,29 +236,7 @@ func (sm *SchemaManager) DropPromotionProfile(name string, ifExists ...bool) err
 
 // AlterPromotionProfile updates options on an existing promotion profile.
 func (sm *SchemaManager) AlterPromotionProfile(name string, updates map[string]interface{}) error {
-	sm.mu.Lock()
-
-	if sm.promotionProfiles == nil {
-		sm.mu.Unlock()
-		return localizedError(localization.StorageSchemaPromotionProfileNotFound(name), nil)
-	}
-	profile, ok := sm.promotionProfiles[name]
-	if !ok {
-		sm.mu.Unlock()
-		return localizedError(localization.StorageSchemaPromotionProfileNotFound(name), nil)
-	}
-
-	updated := *profile
-	if err := applyPromotionProfileUpdates(&updated, updates); err != nil {
-		sm.mu.Unlock()
-		return err
-	}
-	if err := validatePromotionProfile(&updated); err != nil {
-		sm.mu.Unlock()
-		return err
-	}
-	sm.promotionProfiles[name] = &updated
-	return sm.finishKnowledgePolicyMutationLocked()
+	return alterKnowledgeProfile(sm, sm.promotionProfiles, localization.StorageSchemaPromotionProfileNotFound, applyPromotionProfileUpdates, validatePromotionProfile, name, updates)
 }
 
 // ShowPromotionProfiles returns all stored promotion profiles.

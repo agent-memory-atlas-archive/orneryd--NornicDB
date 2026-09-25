@@ -37,6 +37,90 @@ func validPromoProfile(name string) knowledgepolicy.PromotionProfileDef {
 	}
 }
 
+// TestKnowledgeProfileKernels_SharedContract pins the create/alter behavior of
+// decay profile bundles and promotion profiles, which share the
+// createKnowledgeProfile / alterKnowledgeProfile kernels: identical lifecycle
+// semantics, error texts from the kind-specific constructors, and copy-on-write
+// (a failed alter leaves the stored profile untouched).
+func TestKnowledgeProfileKernels_SharedContract(t *testing.T) {
+	t.Run("decay bundle", func(t *testing.T) {
+		sm := NewSchemaManager()
+
+		// Create persists and reads back.
+		require.NoError(t, sm.CreateDecayProfileBundle(validBundle("kp_bundle")))
+		bundles, _ := sm.ShowDecayProfiles()
+		require.Len(t, bundles, 1)
+		require.Equal(t, int64(604800), bundles[0].HalfLifeSeconds)
+
+		// Duplicate errors; IF NOT EXISTS is idempotent.
+		err := sm.CreateDecayProfileBundle(validBundle("kp_bundle"))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "kp_bundle")
+		require.NoError(t, sm.CreateDecayProfileBundle(validBundle("kp_bundle"), true))
+
+		// Alter applies updates and persists.
+		require.NoError(t, sm.AlterDecayProfile("kp_bundle", map[string]interface{}{"halfLifeSeconds": int64(3600)}))
+		bundles, _ = sm.ShowDecayProfiles()
+		require.Equal(t, int64(3600), bundles[0].HalfLifeSeconds)
+
+		// Alter of a missing profile reports not found.
+		err = sm.AlterDecayProfile("kp_missing", map[string]interface{}{"halfLifeSeconds": int64(1)})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "kp_missing")
+
+		// An unknown option leaves the stored profile untouched.
+		err = sm.AlterDecayProfile("kp_bundle", map[string]interface{}{"notAnOption": 1})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "unknown option")
+		bundles, _ = sm.ShowDecayProfiles()
+		require.Equal(t, int64(3600), bundles[0].HalfLifeSeconds)
+	})
+
+	t.Run("promotion profile", func(t *testing.T) {
+		sm := NewSchemaManager()
+
+		// Create persists and reads back.
+		require.NoError(t, sm.CreatePromotionProfile(validPromoProfile("kp_promo")))
+		profiles := sm.ShowPromotionProfiles()
+		require.Len(t, profiles, 1)
+		require.Equal(t, 1.5, profiles[0].Multiplier)
+
+		// Duplicate errors; IF NOT EXISTS is idempotent.
+		err := sm.CreatePromotionProfile(validPromoProfile("kp_promo"))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "kp_promo")
+		require.NoError(t, sm.CreatePromotionProfile(validPromoProfile("kp_promo"), true))
+
+		// Validation failure on create stores nothing.
+		invalid := validPromoProfile("kp_invalid")
+		invalid.ScoreCap = 5
+		require.Error(t, sm.CreatePromotionProfile(invalid))
+		require.Len(t, sm.ShowPromotionProfiles(), 1)
+
+		// Alter applies updates and persists.
+		require.NoError(t, sm.AlterPromotionProfile("kp_promo", map[string]interface{}{"multiplier": 2.0}))
+		profiles = sm.ShowPromotionProfiles()
+		require.Equal(t, 2.0, profiles[0].Multiplier)
+
+		// Alter of a missing profile reports not found.
+		err = sm.AlterPromotionProfile("kp_missing", map[string]interface{}{"multiplier": 1.0})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "kp_missing")
+
+		// An unknown option leaves the stored profile untouched.
+		err = sm.AlterPromotionProfile("kp_promo", map[string]interface{}{"notAnOption": 1})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "unknown option")
+		require.Equal(t, 2.0, sm.ShowPromotionProfiles()[0].Multiplier)
+
+		// A validating but invalid update leaves the stored profile untouched.
+		err = sm.AlterPromotionProfile("kp_promo", map[string]interface{}{"scoreCap": 5.0})
+		require.Error(t, err)
+		require.Equal(t, 2.0, sm.ShowPromotionProfiles()[0].Multiplier)
+		require.Equal(t, 1.0, sm.ShowPromotionProfiles()[0].ScoreCap)
+	})
+}
+
 // TestDecayProfileBundle_Create tests creating a valid bundle and verifying it via ShowDecayProfiles.
 func TestDecayProfileBundle_Create(t *testing.T) {
 	sm := NewSchemaManager()
