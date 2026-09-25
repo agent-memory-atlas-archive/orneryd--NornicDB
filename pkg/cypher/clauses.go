@@ -5369,22 +5369,22 @@ func (e *StorageExecutor) executeForeachWithContext(ctx context.Context, cypher 
 	}
 
 	for _, item := range items {
-		substituted := strings.TrimSpace(e.replaceVariableInQuery(updateClause, variable, item))
-		if substituted == "" {
-			continue
-		}
+		// Bound child context: the loop variable travels as a value binding,
+		// never as query-text substitution. Property parsing (CREATE/MERGE
+		// maps) and expression evaluation resolve it through the value scope.
+		childCtx := withValueBindings(ctx, map[string]interface{}{variable: item})
 
-		upper := strings.ToUpper(substituted)
+		upper := strings.ToUpper(updateClause)
 		var updateResult *ExecuteResult
 		var err error
 
 		switch {
 		case strings.HasPrefix(upper, "MERGE"):
-			updateResult, err = e.executeMergeWithContext(ctx, substituted, nodeCtx, relCtx)
+			updateResult, err = e.executeMergeWithContext(childCtx, updateClause, nodeCtx, relCtx)
 		default:
-			// Fallback: execute as standalone clause.
-			// This supports simple CREATE/SET/REMOVE updates that don't depend on external bindings.
-			updateResult, err = e.executeInternal(ctx, substituted, nil)
+			// Standalone update clause (CREATE/SET/REMOVE/DELETE): the same
+			// executor the substituted text used, with the bound context.
+			updateResult, err = e.executeInternal(childCtx, updateClause, nil)
 		}
 
 		if err != nil {
