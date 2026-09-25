@@ -151,6 +151,40 @@ func (b *BadgerEngine) CreateEdge(edge *Edge) error {
 	return err
 }
 
+// readEdgeBodyInTxn reads and decodes the current edge body for id from txn.
+// This is the shared direct-read core of GetEdge and getEdgeVisibleAtInTxn:
+// key lookup, decode and the decay filter are one implementation so the two
+// read paths cannot drift apart.
+//
+// A missing key is reported as (nil, false, nil) so MVCC callers can fall
+// through to their record path; decoding failures, an absent decoded edge and
+// decay-filtered edges are reported as errors (ErrNotFound where the caller
+// should observe a not-found edge).
+func (b *BadgerEngine) readEdgeBodyInTxn(txn *badger.Txn, id EdgeID) (*Edge, bool, error) {
+	item, err := txn.Get(edgeKey(id))
+	if err == badger.ErrKeyNotFound {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var edge *Edge
+	if err := item.Value(func(val []byte) error {
+		var decodeErr error
+		edge, decodeErr = b.decodeEdgeBodyByID(val, id)
+		return decodeErr
+	}); err != nil {
+		return nil, false, err
+	}
+	if edge == nil {
+		return nil, false, ErrNotFound
+	}
+	if b.filterEdgeByDecay(edge, DecayScoringTime()) {
+		return nil, false, ErrNotFound
+	}
+	return edge, true, nil
+}
+
 // GetEdge retrieves an edge by ID.
 func (b *BadgerEngine) GetEdge(id EdgeID) (*Edge, error) {
 	start := time.Now()
@@ -165,25 +199,14 @@ func (b *BadgerEngine) GetEdge(id EdgeID) (*Edge, error) {
 
 	var edge *Edge
 	err := b.withView(func(txn *badger.Txn) error {
-		item, err := txn.Get(edgeKey(id))
-		if err == badger.ErrKeyNotFound {
+		var ok bool
+		var readErr error
+		edge, ok, readErr = b.readEdgeBodyInTxn(txn, id)
+		if !ok && readErr == nil {
 			return ErrNotFound
 		}
-		if err != nil {
-			return err
-		}
-
-		return item.Value(func(val []byte) error {
-			var decodeErr error
-			edge, decodeErr = b.decodeEdgeBodyByID(val, id)
-			return decodeErr
-		})
+		return readErr
 	})
-	if err == nil && edge != nil {
-		if b.filterEdgeByDecay(edge, DecayScoringTime()) {
-			return nil, ErrNotFound
-		}
-	}
 
 	return edge, err
 }

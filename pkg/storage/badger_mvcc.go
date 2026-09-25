@@ -328,27 +328,12 @@ func (b *BadgerEngine) getEdgeVisibleAtInTxn(txn *badger.Txn, id EdgeID, version
 	}
 
 	if version.Compare(head.Version) >= 0 && !head.Tombstoned {
-		item, getErr := txn.Get(edgeKey(id))
-		if getErr == nil {
-			var edge *Edge
-			if err := item.Value(func(val []byte) error {
-				decoded, decodeErr := b.decodeEdgeBodyByID(val, id)
-				if decodeErr != nil {
-					return decodeErr
-				}
-				decoded.ID = id
-				edge = decoded
-				return nil
-			}); err != nil {
-				return nil, err
-			}
-			if b.filterEdgeByDecay(edge, DecayScoringTime()) {
-				return nil, ErrNotFound
-			}
-			return edge, nil
+		edge, ok, readErr := b.readEdgeBodyInTxn(txn, id)
+		if readErr != nil {
+			return nil, readErr
 		}
-		if getErr != badger.ErrKeyNotFound {
-			return nil, getErr
+		if ok {
+			return edge, nil
 		}
 	}
 	if head.Tombstoned && version.Compare(head.Version) >= 0 {
