@@ -28,6 +28,108 @@ type HNSWGraphBuildAccelerator interface {
 	CandidateSearchGraph(ctx context.Context, queries [][]float32, graph *hnswBuildGraphSnapshot, topK int) (indices [][]uint32, distances [][]float32, err error)
 }
 
+// gpuBuildCandidateSearcher is the backend-local candidate-search contract the
+// beam-orchestration kernel needs from each GPU accelerator (CUDA, Metal,
+// Vulkan). The frontier-based method already shares one signature across the
+// three accelerators; this interface just names it for the generic kernel.
+type gpuBuildCandidateSearcher interface {
+	candidateSearch(ctx context.Context, queries [][]float32, frontier [][]float32, topK int, wantDistances bool) ([][]int, [][]float32, error)
+}
+
+// candidateSearchGraphBatched chunks the query set into env-sized groups and
+// runs the shared beam orchestration per group. Each accelerator's
+// CandidateSearchGraph keeps only its backend-specific precondition and
+// device-availability checks and delegates here.
+func candidateSearchGraphBatched[A gpuBuildCandidateSearcher](ctx context.Context, a A, queries [][]float32, graph *hnswBuildGraphSnapshot, topK int) ([][]uint32, [][]float32, error) {
+	groupSize := envutil.GetInt("NORNICDB_HNSW_BUILD_GPU_BEAM_QUERY_GROUP", 512)
+	if groupSize <= 0 {
+		groupSize = 512
+	}
+	outIdx := make([][]uint32, len(queries))
+	outDist := make([][]float32, len(queries))
+	for start := 0; start < len(queries); start += groupSize {
+		end := start + groupSize
+		if end > len(queries) {
+			end = len(queries)
+		}
+		idx, dist, err := candidateSearchGraphGroup(ctx, a, queries[start:end], graph, topK)
+		if err != nil {
+			return nil, nil, err
+		}
+		copy(outIdx[start:end], idx)
+		copy(outDist[start:end], dist)
+	}
+	return outIdx, outDist, nil
+}
+
+// candidateSearchGraphGroup runs one grouped beam search over the build graph:
+// seed beams from the graph, iterate expand→local-search→remap, then truncate
+// to topK. It is shared by the CUDA, Metal and Vulkan accelerators; only the
+// local candidateSearch call is backend-specific.
+func candidateSearchGraphGroup[A gpuBuildCandidateSearcher](ctx context.Context, a A, queries [][]float32, graph *hnswBuildGraphSnapshot, topK int) ([][]uint32, [][]float32, error) {
+	defaultBeamWidth := topK
+	if defaultBeamWidth > 64 {
+		defaultBeamWidth = 64
+	}
+	beamWidth := envutil.GetInt("NORNICDB_HNSW_BUILD_GPU_BEAM_WIDTH", defaultBeamWidth)
+	if beamWidth <= 0 {
+		beamWidth = topK
+	}
+	if beamWidth > 256 {
+		beamWidth = 256
+	}
+	iterations := envutil.GetInt("NORNICDB_HNSW_BUILD_GPU_BEAM_ITERS", 2)
+	if iterations <= 0 {
+		iterations = 2
+	}
+	unionMax := envutil.GetInt("NORNICDB_HNSW_BUILD_GPU_BEAM_UNION_MAX", 4096)
+	if unionMax <= 0 {
+		unionMax = 4096
+	}
+
+	beamStorage := make([]uint32, 0, len(queries)*beamWidth)
+	beams := make([][]uint32, len(queries))
+	seed := graph.seedCandidates(beamWidth)
+	for i := range beams {
+		start := len(beamStorage)
+		beamStorage = append(beamStorage, seed...)
+		beams[i] = beamStorage[start:]
+	}
+	for iter := 0; iter < iterations; iter++ {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		unionIDs := graph.expandBeamUnion(beams, unionMax)
+		if len(unionIDs) == 0 {
+			break
+		}
+		unionVectors := graph.vectorsForInternalIDs(unionIDs)
+		localIdx, _, err := a.candidateSearch(ctx, queries, unionVectors, beamWidth, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		nextStorage := make([]uint32, 0, len(localIdx)*beamWidth)
+		next := make([][]uint32, len(queries))
+		for qi := range localIdx {
+			start := len(nextStorage)
+			for _, idx := range localIdx[qi] {
+				if idx < 0 || idx >= len(unionIDs) {
+					continue
+				}
+				nextStorage = append(nextStorage, unionIDs[idx])
+			}
+			next[qi] = nextStorage[start:]
+		}
+		beams = next
+	}
+	for qi := range beams {
+		if topK < len(beams[qi]) {
+			beams[qi] = beams[qi][:topK]
+		}
+	}
+	return beams, nil, nil
+}
+
 type hnswBuildPair struct {
 	id      string
 	vec     []float32
@@ -264,89 +366,7 @@ func (a *MetalHNSWBuildAccelerator) CandidateSearchGraph(ctx context.Context, qu
 	if topK > 256 {
 		topK = 256
 	}
-	groupSize := envutil.GetInt("NORNICDB_HNSW_BUILD_GPU_BEAM_QUERY_GROUP", 512)
-	if groupSize <= 0 {
-		groupSize = 512
-	}
-	outIdx := make([][]uint32, len(queries))
-	outDist := make([][]float32, len(queries))
-	for start := 0; start < len(queries); start += groupSize {
-		end := start + groupSize
-		if end > len(queries) {
-			end = len(queries)
-		}
-		idx, dist, err := a.candidateSearchGraphGroup(ctx, queries[start:end], graph, topK)
-		if err != nil {
-			return nil, nil, err
-		}
-		copy(outIdx[start:end], idx)
-		copy(outDist[start:end], dist)
-	}
-	return outIdx, outDist, nil
-}
-
-func (a *MetalHNSWBuildAccelerator) candidateSearchGraphGroup(ctx context.Context, queries [][]float32, graph *hnswBuildGraphSnapshot, topK int) ([][]uint32, [][]float32, error) {
-	defaultBeamWidth := topK
-	if defaultBeamWidth > 64 {
-		defaultBeamWidth = 64
-	}
-	beamWidth := envutil.GetInt("NORNICDB_HNSW_BUILD_GPU_BEAM_WIDTH", defaultBeamWidth)
-	if beamWidth <= 0 {
-		beamWidth = topK
-	}
-	if beamWidth > 256 {
-		beamWidth = 256
-	}
-	iterations := envutil.GetInt("NORNICDB_HNSW_BUILD_GPU_BEAM_ITERS", 2)
-	if iterations <= 0 {
-		iterations = 2
-	}
-	unionMax := envutil.GetInt("NORNICDB_HNSW_BUILD_GPU_BEAM_UNION_MAX", 4096)
-	if unionMax <= 0 {
-		unionMax = 4096
-	}
-
-	beamStorage := make([]uint32, 0, len(queries)*beamWidth)
-	beams := make([][]uint32, len(queries))
-	seed := graph.seedCandidates(beamWidth)
-	for i := range beams {
-		start := len(beamStorage)
-		beamStorage = append(beamStorage, seed...)
-		beams[i] = beamStorage[start:]
-	}
-	for iter := 0; iter < iterations; iter++ {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
-		}
-		unionIDs := graph.expandBeamUnion(beams, unionMax)
-		if len(unionIDs) == 0 {
-			break
-		}
-		unionVectors := graph.vectorsForInternalIDs(unionIDs)
-		localIdx, _, err := a.candidateSearch(ctx, queries, unionVectors, beamWidth, false)
-		if err != nil {
-			return nil, nil, err
-		}
-		nextStorage := make([]uint32, 0, len(localIdx)*beamWidth)
-		next := make([][]uint32, len(queries))
-		for qi := range localIdx {
-			start := len(nextStorage)
-			for _, idx := range localIdx[qi] {
-				if idx < 0 || idx >= len(unionIDs) {
-					continue
-				}
-				nextStorage = append(nextStorage, unionIDs[idx])
-			}
-			next[qi] = nextStorage[start:]
-		}
-		beams = next
-	}
-	for qi := range beams {
-		if topK < len(beams[qi]) {
-			beams[qi] = beams[qi][:topK]
-		}
-	}
-	return beams, nil, nil
+	return candidateSearchGraphBatched(ctx, a, queries, graph, topK)
 }
 
 func (a *MetalHNSWBuildAccelerator) Close() error {
