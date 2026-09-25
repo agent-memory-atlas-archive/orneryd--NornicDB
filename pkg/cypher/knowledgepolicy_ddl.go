@@ -337,10 +337,9 @@ func ParseKnowledgePolicyDDL(stmt string) (interface{}, bool, error) {
 }
 
 func parseCreateDecayProfile(s string, i int) (interface{}, bool, error) {
-	i = kpSkipSpaces(s, i)
-	name, i := kpScanName(s, i)
-	if name == "" {
-		return nil, false, localizedError(localization.CypherKnowledgePolicyProfileNameExpectedAfter("CREATE DECAY PROFILE"), nil)
+	name, i, err := kpParseKnowledgeName(s, i, "CREATE DECAY PROFILE", false)
+	if err != nil {
+		return nil, false, err
 	}
 	i = kpSkipSpaces(s, i)
 
@@ -765,11 +764,72 @@ func parsePropertyRuleDirectives(s string, i int) (knowledgepolicy.DecayProfileP
 	return rule, i, nil
 }
 
-func parseAlterDecayProfile(s string, i int) (interface{}, bool, error) {
+// kpParseKnowledgeName trims spaces, scans a profile/policy name and returns
+// the shared name-required error when the next token is not a name.
+func kpParseKnowledgeName(s string, i int, statement string, isPolicy bool) (string, int, error) {
 	i = kpSkipSpaces(s, i)
 	name, i := kpScanName(s, i)
 	if name == "" {
-		return nil, false, localizedError(localization.CypherKnowledgePolicyProfileNameExpectedAfter("ALTER DECAY PROFILE"), nil)
+		if isPolicy {
+			return "", i, localizedError(localization.CypherKnowledgePolicyPolicyNameExpectedAfter(statement), nil)
+		}
+		return "", i, localizedError(localization.CypherKnowledgePolicyProfileNameExpectedAfter(statement), nil)
+	}
+	return name, i, nil
+}
+
+// kpParseSetOptions parses `SET OPTIONS { … }` at s[i] into a raw-value updates
+// map and returns the index after the block. ok is false when no SET keyword is
+// present (i is left at the clause start); updates is nil when SET is present
+// without an OPTIONS block, so callers can tell a parsed (possibly empty) block
+// apart from a missing one.
+func kpParseSetOptions(s string, i int) (updates map[string]interface{}, next int, ok bool, err error) {
+	j := kpMatchKeywordAt(s, i, "SET")
+	if j < 0 {
+		return nil, i, false, nil
+	}
+	j = kpSkipSpaces(s, j)
+	k := kpMatchKeywordAt(s, j, "OPTIONS")
+	if k < 0 {
+		return nil, j, true, nil
+	}
+	body, l := kpScanBraceBlock(s, k)
+	if l < 0 {
+		return nil, j, true, localizedError(localization.CypherKnowledgePolicyExpectedAfter("{", "SET OPTIONS"), nil)
+	}
+	updates = make(map[string]interface{})
+	if err := parseOptionsMap(body, func(key, rawVal string) error {
+		updates[key] = parseRawValue(rawVal)
+		return nil
+	}); err != nil {
+		return nil, j, true, err
+	}
+	return updates, l, true, nil
+}
+
+// kpParseDrop parses the shared `DROP [IF EXISTS] <name>` tail of the profile
+// and policy statements.
+func kpParseDrop(s string, i int, statement string, isPolicy bool, build func(name string, ifExists bool) interface{}) (interface{}, bool, error) {
+	ifExists := false
+	i = kpSkipSpaces(s, i)
+	if j := kpMatchKeywordAt(s, i, "IF"); j > 0 {
+		j = kpSkipSpaces(s, j)
+		if k := kpMatchKeywordAt(s, j, "EXISTS"); k > 0 {
+			ifExists = true
+			i = kpSkipSpaces(s, k)
+		}
+	}
+	name, i, err := kpParseKnowledgeName(s, i, statement, isPolicy)
+	if err != nil {
+		return nil, false, err
+	}
+	return build(name, ifExists), true, nil
+}
+
+func parseAlterDecayProfile(s string, i int) (interface{}, bool, error) {
+	name, i, err := kpParseKnowledgeName(s, i, "ALTER DECAY PROFILE", false)
+	if err != nil {
+		return nil, false, err
 	}
 
 	i = kpSkipSpaces(s, i)
@@ -781,53 +841,27 @@ func parseAlterDecayProfile(s string, i int) (interface{}, bool, error) {
 		return &AlterDecayProfileBindingCmd{Binding: cmd.(*CreateDecayProfileBindingCmd).Binding}, true, nil
 	}
 
-	if j := kpMatchKeywordAt(s, i, "SET"); j > 0 {
-		j = kpSkipSpaces(s, j)
-		if k := kpMatchKeywordAt(s, j, "OPTIONS"); k > 0 {
-			body, l := kpScanBraceBlock(s, k)
-			if l < 0 {
-				return nil, false, localizedError(localization.CypherKnowledgePolicyExpectedAfter("{", "SET OPTIONS"), nil)
-			}
-			_ = l
-			updates := make(map[string]interface{})
-			if err := parseOptionsMap(body, func(key, rawVal string) error {
-				updates[key] = parseRawValue(rawVal)
-				return nil
-			}); err != nil {
-				return nil, false, err
-			}
-			return &AlterDecayProfileCmd{Name: name, Updates: updates}, true, nil
-		}
+	updates, _, ok, err := kpParseSetOptions(s, i)
+	if err != nil {
+		return nil, false, err
+	}
+	if ok && updates != nil {
+		return &AlterDecayProfileCmd{Name: name, Updates: updates}, true, nil
 	}
 
 	return nil, false, localizedError(localization.CypherKnowledgePolicyExpectedAfter("SET OPTIONS", "ALTER DECAY PROFILE "+name), nil)
 }
 
 func parseDropDecayProfile(s string, i int) (interface{}, bool, error) {
-	i = kpSkipSpaces(s, i)
-
-	ifExists := false
-	if j := kpMatchKeywordAt(s, i, "IF"); j > 0 {
-		j = kpSkipSpaces(s, j)
-		if k := kpMatchKeywordAt(s, j, "EXISTS"); k > 0 {
-			ifExists = true
-			i = kpSkipSpaces(s, k)
-		}
-	}
-
-	name, i := kpScanName(s, i)
-	if name == "" {
-		return nil, false, localizedError(localization.CypherKnowledgePolicyProfileNameExpectedAfter("DROP DECAY PROFILE"), nil)
-	}
-
-	return &DropDecayProfileCmd{Name: name, IfExists: ifExists}, true, nil
+	return kpParseDrop(s, i, "DROP DECAY PROFILE", false, func(name string, ifExists bool) interface{} {
+		return &DropDecayProfileCmd{Name: name, IfExists: ifExists}
+	})
 }
 
 func parseCreatePromotionProfile(s string, i int) (interface{}, bool, error) {
-	i = kpSkipSpaces(s, i)
-	name, i := kpScanName(s, i)
-	if name == "" {
-		return nil, false, localizedError(localization.CypherKnowledgePolicyProfileNameExpectedAfter("CREATE PROMOTION PROFILE"), nil)
+	name, i, err := kpParseKnowledgeName(s, i, "CREATE PROMOTION PROFILE", false)
+	if err != nil {
+		return nil, false, err
 	}
 
 	i = kpSkipSpaces(s, i)
@@ -893,53 +927,27 @@ func parseCreatePromotionProfile(s string, i int) (interface{}, bool, error) {
 }
 
 func parseAlterPromotionProfile(s string, i int) (interface{}, bool, error) {
-	i = kpSkipSpaces(s, i)
-	name, i := kpScanName(s, i)
-	if name == "" {
-		return nil, false, localizedError(localization.CypherKnowledgePolicyProfileNameExpectedAfter("ALTER PROMOTION PROFILE"), nil)
+	name, i, err := kpParseKnowledgeName(s, i, "ALTER PROMOTION PROFILE", false)
+	if err != nil {
+		return nil, false, err
 	}
 
 	i = kpSkipSpaces(s, i)
-	if j := kpMatchKeywordAt(s, i, "SET"); j > 0 {
-		j = kpSkipSpaces(s, j)
-		if k := kpMatchKeywordAt(s, j, "OPTIONS"); k > 0 {
-			body, l := kpScanBraceBlock(s, k)
-			if l < 0 {
-				return nil, false, localizedError(localization.CypherKnowledgePolicyExpectedAfter("{", "SET OPTIONS"), nil)
-			}
-			_ = l
-			updates := make(map[string]interface{})
-			if err := parseOptionsMap(body, func(key, rawVal string) error {
-				updates[key] = parseRawValue(rawVal)
-				return nil
-			}); err != nil {
-				return nil, false, err
-			}
-			return &AlterPromotionProfileCmd{Name: name, Updates: updates}, true, nil
-		}
+	updates, _, ok, err := kpParseSetOptions(s, i)
+	if err != nil {
+		return nil, false, err
+	}
+	if ok && updates != nil {
+		return &AlterPromotionProfileCmd{Name: name, Updates: updates}, true, nil
 	}
 
 	return nil, false, localizedError(localization.CypherKnowledgePolicyExpectedAfter("SET OPTIONS", "ALTER PROMOTION PROFILE "+name), nil)
 }
 
 func parseDropPromotionProfile(s string, i int) (interface{}, bool, error) {
-	i = kpSkipSpaces(s, i)
-
-	ifExists := false
-	if j := kpMatchKeywordAt(s, i, "IF"); j > 0 {
-		j = kpSkipSpaces(s, j)
-		if k := kpMatchKeywordAt(s, j, "EXISTS"); k > 0 {
-			ifExists = true
-			i = kpSkipSpaces(s, k)
-		}
-	}
-
-	name, i := kpScanName(s, i)
-	if name == "" {
-		return nil, false, localizedError(localization.CypherKnowledgePolicyProfileNameExpectedAfter("DROP PROMOTION PROFILE"), nil)
-	}
-
-	return &DropPromotionProfileCmd{Name: name, IfExists: ifExists}, true, nil
+	return kpParseDrop(s, i, "DROP PROMOTION PROFILE", false, func(name string, ifExists bool) interface{} {
+		return &DropPromotionProfileCmd{Name: name, IfExists: ifExists}
+	})
 }
 
 func parseCreatePromotionPolicy(s string, i int) (interface{}, bool, error) {
@@ -961,9 +969,9 @@ func parseCreatePromotionPolicy(s string, i int) (interface{}, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	name, i := kpScanName(s, i)
-	if name == "" {
-		return nil, false, localizedError(localization.CypherKnowledgePolicyPolicyNameExpectedAfter("CREATE PROMOTION POLICY"), nil)
+	name, i, err := kpParseKnowledgeName(s, i, "CREATE PROMOTION POLICY", true)
+	if err != nil {
+		return nil, false, err
 	}
 	i = kpSkipSpaces(s, i)
 	if !ifNotExists {
@@ -1228,10 +1236,9 @@ func parsePolicyWhenClause(s string, i int) (knowledgepolicy.PromotionPolicyWhen
 }
 
 func parseAlterPromotionPolicy(s string, i int) (interface{}, bool, error) {
-	i = kpSkipSpaces(s, i)
-	name, i := kpScanName(s, i)
-	if name == "" {
-		return nil, false, localizedError(localization.CypherKnowledgePolicyPolicyNameExpectedAfter("ALTER PROMOTION POLICY"), nil)
+	name, i, err := kpParseKnowledgeName(s, i, "ALTER PROMOTION POLICY", true)
+	if err != nil {
+		return nil, false, err
 	}
 
 	i = kpSkipSpaces(s, i)
@@ -1244,21 +1251,12 @@ func parseAlterPromotionPolicy(s string, i int) (interface{}, bool, error) {
 	}
 
 	updates := make(map[string]interface{})
-
-	if j := kpMatchKeywordAt(s, i, "SET"); j > 0 {
-		j = kpSkipSpaces(s, j)
-		if k := kpMatchKeywordAt(s, j, "OPTIONS"); k > 0 {
-			body, l := kpScanBraceBlock(s, k)
-			if l < 0 {
-				return nil, false, localizedError(localization.CypherKnowledgePolicyExpectedAfter("{", "SET OPTIONS"), nil)
-			}
-			_ = l
-			if err := parseOptionsMap(body, func(key, rawVal string) error {
-				updates[key] = parseRawValue(rawVal)
-				return nil
-			}); err != nil {
-				return nil, false, err
-			}
+	if parsed, next, ok, err := kpParseSetOptions(s, i); err != nil {
+		return nil, false, err
+	} else if ok {
+		i = next
+		if parsed != nil {
+			updates = parsed
 		}
 	}
 
@@ -1275,23 +1273,9 @@ func parseAlterPromotionPolicy(s string, i int) (interface{}, bool, error) {
 }
 
 func parseDropPromotionPolicy(s string, i int) (interface{}, bool, error) {
-	i = kpSkipSpaces(s, i)
-
-	ifExists := false
-	if j := kpMatchKeywordAt(s, i, "IF"); j > 0 {
-		j = kpSkipSpaces(s, j)
-		if k := kpMatchKeywordAt(s, j, "EXISTS"); k > 0 {
-			ifExists = true
-			i = kpSkipSpaces(s, k)
-		}
-	}
-
-	name, i := kpScanName(s, i)
-	if name == "" {
-		return nil, false, localizedError(localization.CypherKnowledgePolicyPolicyNameExpectedAfter("DROP PROMOTION POLICY"), nil)
-	}
-
-	return &DropPromotionPolicyCmd{Name: name, IfExists: ifExists}, true, nil
+	return kpParseDrop(s, i, "DROP PROMOTION POLICY", true, func(name string, ifExists bool) interface{} {
+		return &DropPromotionPolicyCmd{Name: name, IfExists: ifExists}
+	})
 }
 
 // parseOptionsMap parses a comma- or newline-separated list of key: value pairs.

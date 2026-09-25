@@ -1599,3 +1599,66 @@ APPLY {
 	assert.Equal(t, int64(1209600), c.Binding.PropertyRules[0].HalfLifeSeconds)
 	assert.Equal(t, 0.10, c.Binding.PropertyRules[0].ScoreFloor)
 }
+
+// TestPlanDDL_SharedAlterDropShapes pins the error texts and shapes shared by
+// the alter and drop parsers through kpParseKnowledgeName / kpParseSetOptions /
+// kpParseDrop: one helper bug would show up across all six statements.
+func TestPlanDDL_SharedAlterDropShapes(t *testing.T) {
+	tests := []struct {
+		name       string
+		stmt       string
+		wantErr    string
+		wantIFDrop bool
+		wantCmd    string
+	}{
+		{name: "alter decay missing SET OPTIONS", stmt: "ALTER DECAY PROFILE p", wantErr: "SET OPTIONS"},
+		{name: "alter promotion missing SET OPTIONS", stmt: "ALTER PROMOTION PROFILE p", wantErr: "SET OPTIONS"},
+		{name: "alter policy bare name is valid", stmt: "ALTER PROMOTION POLICY p", wantCmd: "alter_promotion_policy"},
+		{name: "drop decay missing name", stmt: "DROP DECAY PROFILE", wantErr: "name"},
+		{name: "drop promotion missing name", stmt: "DROP PROMOTION PROFILE", wantErr: "name"},
+		{name: "drop policy missing name", stmt: "DROP PROMOTION POLICY", wantErr: "name"},
+		{name: "drop decay if exists", stmt: "DROP DECAY PROFILE IF EXISTS dp", wantIFDrop: true, wantCmd: "drop_decay"},
+		{name: "alter decay set options parses", stmt: "ALTER DECAY PROFILE dp SET OPTIONS {halfLifeSeconds: 3600}", wantCmd: "alter_decay"},
+		{name: "alter promotion set options parses", stmt: "ALTER PROMOTION PROFILE pp SET OPTIONS {multiplier: 2.0}", wantCmd: "alter_promotion"},
+		{name: "alter policy enable", stmt: "ALTER PROMOTION POLICY pol ENABLE", wantCmd: "alter_promotion_policy"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, ok, err := ParseKnowledgePolicyDDL(tc.stmt)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantErr)
+				require.False(t, ok)
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, ok)
+			switch tc.wantCmd {
+			case "alter_decay":
+				require.IsType(t, &AlterDecayProfileCmd{}, cmd)
+			case "alter_promotion":
+				require.IsType(t, &AlterPromotionProfileCmd{}, cmd)
+			case "alter_promotion_policy":
+				require.IsType(t, &AlterPromotionPolicyCmd{}, cmd)
+			case "drop_decay":
+				require.IsType(t, &DropDecayProfileCmd{}, cmd)
+				require.True(t, cmd.(*DropDecayProfileCmd).IfExists == tc.wantIFDrop)
+			}
+		})
+	}
+}
+
+// BenchmarkParseKnowledgePolicyDDL_AlterSetOptions pins the shared alter-parser
+// path (kpParseKnowledgeName + kpParseSetOptions).
+func BenchmarkParseKnowledgePolicyDDL_AlterSetOptions(b *testing.B) {
+	stmt := "ALTER DECAY PROFILE dp SET OPTIONS {halfLifeSeconds: 3600, visibilityThreshold: 0.05}"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cmd, ok, err := ParseKnowledgePolicyDDL(stmt)
+		if err != nil || !ok {
+			b.Fatalf("parse failed: %v", err)
+		}
+		_ = cmd
+	}
+}
