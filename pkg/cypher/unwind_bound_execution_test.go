@@ -43,3 +43,36 @@ ORDER BY id
 	require.EqualValues(t, 9002, got.Rows[1][0])
 	require.Equal(t, "a, b", got.Rows[1][1])
 }
+
+// TestUnwind_MutationBoundExecutionHostileValues pins the UNWIND mutation
+// migration (§6.2): MERGE/SET over unwound rows run against bound child
+// contexts, so hostile values survive without query-text substitution and
+// without the old WITH/UNWIND "{}"-collapse guards.
+func TestUnwind_MutationBoundExecutionHostileValues(t *testing.T) {
+	baseStore := newTestMemoryEngine(t)
+	store := storage.NewNamespacedEngine(baseStore, "test")
+	exec := NewStorageExecutor(store)
+	ctx := context.Background()
+
+	_, err := exec.Execute(ctx, `
+UNWIND $rows AS row
+MERGE (o:HostileRow {textKey: row.textKey})
+ON CREATE SET o.note = row.note, o.weight = row.weight
+`, map[string]interface{}{
+		"rows": []interface{}{
+			map[string]interface{}{"textKey": "k1", "note": "O'Brien;2", "weight": int64(3)},
+			map[string]interface{}{"textKey": "k2", "note": "a, b", "weight": int64(5)},
+		},
+	})
+	require.NoError(t, err)
+
+	got, err := exec.Execute(ctx, `MATCH (o:HostileRow) RETURN o.textKey, o.note, o.weight ORDER BY o.textKey`, nil)
+	require.NoError(t, err)
+	require.Len(t, got.Rows, 2)
+	require.Equal(t, "k1", got.Rows[0][0])
+	require.Equal(t, "O'Brien;2", got.Rows[0][1])
+	require.EqualValues(t, 3, got.Rows[0][2])
+	require.Equal(t, "k2", got.Rows[1][0])
+	require.Equal(t, "a, b", got.Rows[1][1])
+	require.EqualValues(t, 5, got.Rows[1][2])
+}

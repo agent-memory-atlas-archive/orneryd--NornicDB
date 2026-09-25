@@ -961,21 +961,22 @@ func (e *StorageExecutor) executeCompoundMatchUnwindMerge(ctx context.Context, c
 		}
 	}
 
-	// For each matched node context × each unwind item, substitute the variable
-	// and execute the MERGE.
+	// For each matched node context × each unwind item, execute the MERGE with
+	// the unwind value bound in the value scope (§6.2 bound child contexts —
+	// no query-text substitution).
 	for _, nodeContext := range matchedNodes {
 		for _, item := range items {
+			childCtx := withValueBindings(ctx, map[string]interface{}{unwindVar: item})
 			nodeContexts := []map[string]*storage.Node{nodeContext}
 			relContexts := []map[string]*storage.Edge{matchedRels}
 			if trailingMatch != "" {
-				substitutedMatch := replaceIdentifierOutsideQuotes(trailingMatch, unwindVar, valueToCypherLiteral(item))
 				var trailingNodes []map[string]*storage.Node
 				var trailingRels map[string]*storage.Edge
 				if preparedTrailingMatch {
-					trailingNodes = e.matchRepeatedSimpleNode(ctx, substitutedMatch, trailingCandidates)
+					trailingNodes = e.matchRepeatedSimpleNode(childCtx, trailingMatch, trailingCandidates)
 					trailingRels = map[string]*storage.Edge{}
 				} else {
-					trailingNodes, trailingRels, err = e.executeMatchForContext(ctx, substitutedMatch)
+					trailingNodes, trailingRels, err = e.executeMatchForContext(childCtx, trailingMatch)
 					if err != nil {
 						return nil, localizedError(localization.CypherMergeMatchExecutionFailed(err), nil)
 					}
@@ -1002,15 +1003,14 @@ func (e *StorageExecutor) executeCompoundMatchUnwindMerge(ctx context.Context, c
 				}
 			}
 
-			// Substitute the unwind variable in the merge clause with the concrete value.
-			substitutedMerge := e.replaceVariableInMutationQuery(mergeMutationPart, unwindVar, item)
-			fullMerge := substitutedMerge
+			// The merge clause runs un-substituted against the bound context.
+			fullMerge := mergeMutationPart
 			if returnPart != "" {
-				fullMerge = substitutedMerge + " " + returnPart
+				fullMerge = mergeMutationPart + " " + returnPart
 			}
 
 			for contextIdx, mergeContext := range nodeContexts {
-				mergeResult, err := e.executeMergeWithContext(ctx, fullMerge, mergeContext, relContexts[contextIdx])
+				mergeResult, err := e.executeMergeWithContext(childCtx, fullMerge, mergeContext, relContexts[contextIdx])
 				if err != nil {
 					return nil, err
 				}

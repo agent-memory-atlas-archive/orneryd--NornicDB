@@ -695,28 +695,30 @@ func (e *StorageExecutor) executeUnwind(ctx context.Context, cypher string) (*Ex
 					if returnPart != "" {
 						fullQuery += " " + returnPart
 					}
+					// Bound child context (§6.2): the row value travels as a
+					// value binding plus a parameter, never as query-text
+					// substitution.
+					callParams := make(map[string]interface{}, util.SafePreallocSum(len(params), 1))
+					for k, v := range params {
+						callParams[k] = v
+					}
+					callParams[variable] = item
+					childCtx := withValueBindings(ctx, map[string]interface{}{variable: item})
 					var mutationResult *ExecuteResult
 					var err error
 					if hasCall {
-						callParams := make(map[string]interface{}, util.SafePreallocSum(len(params), 1))
-						for k, v := range params {
-							callParams[k] = v
-						}
-						callParams[variable] = item
-						mutationResult, err = e.executeInternal(ctx, fullQuery, callParams)
+						mutationResult, err = e.executeInternal(childCtx, fullQuery, callParams)
 					} else if countReturnOnly {
-						substitutedMutation := e.replaceVariableInMutationQuery(withPrefix, variable, item)
-						mutationResult, err = e.executeInternal(ctx, substitutedMutation, params)
+						mutationResult, err = e.executeInternal(childCtx, withPrefix, callParams)
 						if err == nil {
 							processedRows++
 						}
 					} else {
-						substitutedMutation := e.replaceVariableInMutationQuery(mutationPart, variable, item)
-						substitutedFull := substitutedMutation
+						mutationFull := mutationPart
 						if returnPart != "" {
-							substitutedFull += " " + returnPart
+							mutationFull += " " + returnPart
 						}
-						mutationResult, err = e.executeInternal(ctx, substitutedFull, params)
+						mutationResult, err = e.executeInternal(childCtx, mutationFull, callParams)
 					}
 					if err != nil {
 						return nil, localizedError(localization.CypherMutationsUnwindMutationFailed(err), err)
@@ -802,31 +804,30 @@ func (e *StorageExecutor) executeUnwind(ctx context.Context, cypher string) (*Ex
 
 				var mutationResult *ExecuteResult
 				var err error
+				// Bound child context (§6.2): the row value travels as a value
+				// binding plus a parameter — the substituted-text branches are
+				// gone, so WITH/UNWIND row-alias guard hacks no longer apply.
+				callParams := make(map[string]interface{}, util.SafePreallocSum(len(params), 1))
+				for k, v := range params {
+					callParams[k] = v
+				}
+				callParams[variable] = item
+				childCtx := withValueBindings(ctx, map[string]interface{}{variable: item})
 				if useParamExecution {
-					callParams := make(map[string]interface{}, util.SafePreallocSum(len(params), 1))
-					for k, v := range params {
-						callParams[k] = v
-					}
-					callParams[variable] = item
 					if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(mutationPart)), "OPTIONAL MATCH") &&
 						findKeywordIndexInContext(mutationPart, "MERGE") > 0 &&
 						findKeywordIndexInContext(mutationPart, "CALL") < 0 {
-						substitutedMutation := e.replaceVariableInMutationQuery(mutationPart, variable, item)
-						substitutedFull := substitutedMutation
+						compoundFull := mutationPart
 						if returnPart != "" {
-							substitutedFull += " " + returnPart
+							compoundFull += " " + returnPart
 						}
-						mutationResult, err = e.executeCompoundMatchMerge(context.WithValue(ctx, paramsKey, params), substitutedFull)
+						mutationResult, err = e.executeCompoundMatchMerge(context.WithValue(childCtx, paramsKey, callParams), compoundFull)
 					} else {
-						mutationResult, err = e.executeInternal(ctx, fullQuery, callParams)
+						mutationResult, err = e.executeInternal(childCtx, fullQuery, callParams)
 					}
 				} else {
-					// Replace variable references ONLY in the mutation clause
-					mutationQuerySubstituted := e.replaceVariableInMutationQuery(mutationPart, variable, item)
-					substitutedFull := mutationQuerySubstituted
-					if returnPart != "" {
-						substitutedFull += " " + returnPart
-					}
+					// The un-substituted mutation text with the bound context.
+					substitutedFull := fullQuery
 					trimmed := strings.TrimSpace(substitutedFull)
 					// Route MERGE-heavy mutation chains through context-aware MERGE execution.
 					// This avoids brittle top-level MERGE parsing for shapes like:
@@ -837,12 +838,12 @@ func (e *StorageExecutor) executeUnwind(ctx context.Context, cypher string) (*Ex
 						// are better handled by the regular executor route so MATCH bindings are
 						// preserved for downstream relationship merges.
 						if findKeywordIndexInContext(trimmed, "MATCH") > 0 || complexMergeChain {
-							mutationResult, err = e.executeInternal(ctx, substitutedFull, params)
+							mutationResult, err = e.executeInternal(childCtx, substitutedFull, callParams)
 						} else {
-							mutationResult, err = e.executeMergeWithContext(ctx, trimmed, make(map[string]*storage.Node), make(map[string]*storage.Edge))
+							mutationResult, err = e.executeMergeWithContext(childCtx, trimmed, make(map[string]*storage.Node), make(map[string]*storage.Edge))
 						}
 					} else {
-						mutationResult, err = e.executeInternal(ctx, substitutedFull, params)
+						mutationResult, err = e.executeInternal(childCtx, substitutedFull, callParams)
 					}
 				}
 				if err != nil {
@@ -5432,59 +5433,6 @@ func (e *StorageExecutor) executeLoadCSV(ctx context.Context, cypher string) (*E
 // ========================================
 // Helper Functions
 // ========================================
-
-// replaceVariableInQuery replaces all occurrences of a variable with its value in a query.
-// replaceVariableInMutationQuery substitutes UNWIND row variables in mutation queries.
-// For map-shaped rows, standalone variable tokens inside WITH pipelines are collapsed to
-// "{}" to avoid parser ambiguity from large inline map literals, while row.property tokens
-// are still replaced with their concrete values.
-func (e *StorageExecutor) replaceVariableInMutationQuery(query string, variable string, value interface{}) string {
-	result := query
-	valueStr := e.valueToLiteral(value)
-	skipBareReplacement := false
-
-	if valueMap, ok := toStringAnyMap(value); ok {
-		for _, key := range sortedMapKeysByDescendingLength(valueMap) {
-			propVal := valueMap[key]
-			propValStr := e.valueToLiteral(propVal)
-			pattern := variable + "." + key
-			result = strings.ReplaceAll(result, pattern, propValStr)
-			backtickedPattern := variable + ".`" + strings.ReplaceAll(key, "`", "``") + "`"
-			result = strings.ReplaceAll(result, backtickedPattern, propValStr)
-		}
-		// When the mutation contains WITH (carrying the row forward) or a
-		// nested UNWIND over a row property, substituting bare `row` with the
-		// full map literal corrupts the query shape. Use an empty-map
-		// placeholder instead — the WITH/UNWIND bindings are recomputed by
-		// the executor anyway.
-		if findKeywordIndexInContext(query, "WITH") >= 0 &&
-			findKeywordIndexInContext(query, "UNWIND") >= 0 {
-			valueStr = "{}"
-		}
-		if findKeywordIndexInContext(query, "WITH") >= 0 &&
-			findKeywordIndexInContext(query, "UNWIND") < 0 {
-			skipBareReplacement = true
-		}
-	}
-	if skipBareReplacement {
-		return result
-	}
-	return replaceIdentifierOutsideQuotes(result, variable, valueStr)
-}
-
-func sortedMapKeysByDescendingLength(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.SliceStable(keys, func(i, j int) bool {
-		if len(keys[i]) == len(keys[j]) {
-			return keys[i] < keys[j]
-		}
-		return len(keys[i]) > len(keys[j])
-	})
-	return keys
-}
 
 func replaceIdentifierOutsideQuotes(input string, ident string, replacement string) string {
 	if ident == "" {
