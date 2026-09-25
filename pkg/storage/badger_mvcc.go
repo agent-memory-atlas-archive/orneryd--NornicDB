@@ -413,22 +413,105 @@ func (b *BadgerEngine) collectVisibleAdjacencyEdgeIDsInTxn(txn *badger.Txn, pref
 }
 
 func (b *BadgerEngine) writeNodeMVCCHeadInTxn(txn *badger.Txn, id NodeID, version MVCCVersion, tombstoned bool) error {
+	return writeMVCCHeadInTxn[nodeMVCCHeadKeyLookup, nodeMVCCHeadKeyWriter](b, txn, string(id), version, tombstoned)
+}
+
+// mvccHeadKeyLookup derives the MVCC head key for one entity kind without a
+// transaction (the fresh-read paths).
+type mvccHeadKeyLookup interface {
+	headKeyLookup(b *BadgerEngine, id string) []byte
+}
+
+type nodeMVCCHeadKeyLookup struct{}
+
+func (nodeMVCCHeadKeyLookup) headKeyLookup(b *BadgerEngine, id string) []byte {
+	return b.mvccNodeHeadKeyStringLookup(NodeID(id))
+}
+
+type edgeMVCCHeadKeyLookup struct{}
+
+func (edgeMVCCHeadKeyLookup) headKeyLookup(b *BadgerEngine, id string) []byte {
+	return b.mvccEdgeHeadKeyStringLookup(EdgeID(id))
+}
+
+// mvccHeadKeyWriter derives the MVCC head key for one entity kind within a
+// transaction (the write paths).
+type mvccHeadKeyWriter interface {
+	headKey(b *BadgerEngine, txn *badger.Txn, id string) ([]byte, error)
+}
+
+type nodeMVCCHeadKeyWriter struct{}
+
+func (nodeMVCCHeadKeyWriter) headKey(b *BadgerEngine, txn *badger.Txn, id string) ([]byte, error) {
+	return b.mvccNodeHeadKeyString(txn, NodeID(id))
+}
+
+type edgeMVCCHeadKeyWriter struct{}
+
+func (edgeMVCCHeadKeyWriter) headKey(b *BadgerEngine, txn *badger.Txn, id string) ([]byte, error) {
+	return b.mvccEdgeHeadKeyString(txn, EdgeID(id))
+}
+
+// loadMVCCHead reads one entity kind's MVCC head via a fresh read transaction.
+// The type argument selects the node or edge key lookup; the rest of the
+// read — key derivation, view, decode and not-found mapping — is shared, so
+// the node and edge head readers cannot drift apart.
+func loadMVCCHead[K mvccHeadKeyLookup](b *BadgerEngine, id string) (MVCCHead, error) {
+	var keyer K
+	key := keyer.headKeyLookup(b, id)
+	if key == nil {
+		return MVCCHead{}, ErrNotFound
+	}
+	var head MVCCHead
+	err := b.db.View(func(rtxn *badger.Txn) error {
+		item, err := rtxn.Get(key)
+		if err != nil {
+			return err
+		}
+		return item.Value(func(val []byte) error {
+			var decodeErr error
+			head, decodeErr = decodeMVCCHead(val)
+			return decodeErr
+		})
+	})
+	if err == badger.ErrKeyNotFound {
+		return MVCCHead{}, ErrNotFound
+	}
+	if err != nil {
+		return MVCCHead{}, err
+	}
+	return head, nil
+}
+
+// writeMVCCHeadInTxn writes one entity kind's head, carrying an existing
+// FloorVersion forward via a fresh read transaction so the lookup stays out
+// of the user txn's SSI read set (see the docs/plans consumer-pinned-error
+// contract rationale). The type arguments select the node or edge key
+// lookups; the node and edge head writers are one implementation.
+func writeMVCCHeadInTxn[KL mvccHeadKeyLookup, KW mvccHeadKeyWriter](b *BadgerEngine, txn *badger.Txn, id string, version MVCCVersion, tombstoned bool) error {
 	floorVersion := version
-	// Read the existing head via a SEPARATE read txn so the lookup does
-	// not enter the user txn's SSI read set. Without this, an OpUpdateNode
-	// targeting a peer-committed node (a MERGE that matched a node
-	// committed by a concurrent writer between this txn's begin and
-	// commit) would put the peer's mvcc-head key into the user txn's
-	// read set, causing Badger to reject the commit with a generic
-	// "Transaction Conflict" instead of letting the consumer-pinned
-	// constraint-violation shape surface (see
-	// docs/plans/consumer-pinned-error-contract-plan.md §2.1).
-	if existing, err := b.loadNodeMVCCHead(id); err == nil {
+	if existing, err := loadMVCCHead[KL](b, id); err == nil {
 		floorVersion = existing.FloorVersion
 	} else if err != ErrNotFound {
 		return err
 	}
-	return b.writeNodeMVCCHeadWithFloorInTxn(txn, id, version, tombstoned, floorVersion)
+	return writeMVCCHeadWithFloorInTxn[KW](b, txn, id, version, tombstoned, floorVersion)
+}
+
+// writeMVCCHeadWithFloorInTxn encodes and writes one entity kind's MVCC head
+// with an explicit floor version. The type argument selects the node or edge
+// key derivation; encoding and the set are shared.
+func writeMVCCHeadWithFloorInTxn[K mvccHeadKeyWriter](b *BadgerEngine, txn *badger.Txn, id string, version MVCCVersion, tombstoned bool, floorVersion MVCCVersion) error {
+	var keyer K
+	encoded, err := encodeMVCCHead(MVCCHead{Version: version, Tombstoned: tombstoned, FloorVersion: floorVersion})
+	if err != nil {
+		return err
+	}
+	key, err := keyer.headKey(b, txn, id)
+	if err != nil {
+		return err
+	}
+	return txn.Set(key, encoded)
 }
 
 // writeNodeMVCCHeadForFreshCreateInTxn skips the pre-read that carries an
@@ -621,44 +704,13 @@ func (b *BadgerEngine) archiveEdgeBodyInTxn(txn *badger.Txn, id EdgeID, body *Ed
 }
 
 func (b *BadgerEngine) writeEdgeMVCCHeadInTxn(txn *badger.Txn, id EdgeID, version MVCCVersion, tombstoned bool) error {
-	floorVersion := version
-	// Read via a fresh read txn so the lookup stays out of the user
-	// txn's SSI read set — see the doc on writeNodeMVCCHeadInTxn for
-	// the same rationale on the node side.
-	if existing, err := b.loadEdgeMVCCHead(id); err == nil {
-		floorVersion = existing.FloorVersion
-	} else if err != ErrNotFound {
-		return err
-	}
-	return b.writeEdgeMVCCHeadWithFloorInTxn(txn, id, version, tombstoned, floorVersion)
+	return writeMVCCHeadInTxn[edgeMVCCHeadKeyLookup, edgeMVCCHeadKeyWriter](b, txn, string(id), version, tombstoned)
 }
 
-// loadEdgeMVCCHead is the edge analogue of loadNodeMVCCHead. Reads the
-// edge MVCC head via a fresh read txn.
+// loadEdgeMVCCHead is the edge analogue of loadNodeMVCCHead: the same fresh-
+// transaction head read over the edge key lookup.
 func (b *BadgerEngine) loadEdgeMVCCHead(id EdgeID) (MVCCHead, error) {
-	key := b.mvccEdgeHeadKeyStringLookup(id)
-	if key == nil {
-		return MVCCHead{}, ErrNotFound
-	}
-	var head MVCCHead
-	err := b.db.View(func(rtxn *badger.Txn) error {
-		item, err := rtxn.Get(key)
-		if err != nil {
-			return err
-		}
-		return item.Value(func(val []byte) error {
-			var decodeErr error
-			head, decodeErr = decodeMVCCHead(val)
-			return decodeErr
-		})
-	})
-	if err == badger.ErrKeyNotFound {
-		return MVCCHead{}, ErrNotFound
-	}
-	if err != nil {
-		return MVCCHead{}, err
-	}
-	return head, nil
+	return loadMVCCHead[edgeMVCCHeadKeyLookup](b, string(id))
 }
 
 // writeEdgeMVCCHeadForFreshCreateInTxn is the edge analogue of
@@ -669,60 +721,22 @@ func (b *BadgerEngine) writeEdgeMVCCHeadForFreshCreateInTxn(txn *badger.Txn, id 
 }
 
 func (b *BadgerEngine) writeNodeMVCCHeadWithFloorInTxn(txn *badger.Txn, id NodeID, version MVCCVersion, tombstoned bool, floorVersion MVCCVersion) error {
-	encoded, err := encodeMVCCHead(MVCCHead{Version: version, Tombstoned: tombstoned, FloorVersion: floorVersion})
-	if err != nil {
-		return err
-	}
-	key, err := b.mvccNodeHeadKeyString(txn, id)
-	if err != nil {
-		return err
-	}
-	return txn.Set(key, encoded)
+	return writeMVCCHeadWithFloorInTxn[nodeMVCCHeadKeyWriter](b, txn, string(id), version, tombstoned, floorVersion)
 }
 
 func (b *BadgerEngine) writeEdgeMVCCHeadWithFloorInTxn(txn *badger.Txn, id EdgeID, version MVCCVersion, tombstoned bool, floorVersion MVCCVersion) error {
-	encoded, err := encodeMVCCHead(MVCCHead{Version: version, Tombstoned: tombstoned, FloorVersion: floorVersion})
-	if err != nil {
-		return err
-	}
-	key, err := b.mvccEdgeHeadKeyString(txn, id)
-	if err != nil {
-		return err
-	}
-	return txn.Set(key, encoded)
+	return writeMVCCHeadWithFloorInTxn[edgeMVCCHeadKeyWriter](b, txn, string(id), version, tombstoned, floorVersion)
 }
 
 // loadNodeMVCCHead reads the MVCC head record via a fresh read-only
 // transaction. Use this on the writer-side commit path to keep the
 // FloorVersion-carry-forward read out of the user txn's SSI read set
-// (see writeNodeMVCCHeadInTxn). Read-after-write within the SAME
+// (see writeMVCCHeadInTxn). Read-after-write within the SAME
 // transaction is rare for MVCC heads in practice — the user txn writes
 // the head once at materialize time — but if you need it, use
 // loadNodeMVCCHeadInTxn instead.
 func (b *BadgerEngine) loadNodeMVCCHead(id NodeID) (MVCCHead, error) {
-	key := b.mvccNodeHeadKeyStringLookup(id)
-	if key == nil {
-		return MVCCHead{}, ErrNotFound
-	}
-	var head MVCCHead
-	err := b.db.View(func(rtxn *badger.Txn) error {
-		item, err := rtxn.Get(key)
-		if err != nil {
-			return err
-		}
-		return item.Value(func(val []byte) error {
-			var decodeErr error
-			head, decodeErr = decodeMVCCHead(val)
-			return decodeErr
-		})
-	})
-	if err == badger.ErrKeyNotFound {
-		return MVCCHead{}, ErrNotFound
-	}
-	if err != nil {
-		return MVCCHead{}, err
-	}
-	return head, nil
+	return loadMVCCHead[nodeMVCCHeadKeyLookup](b, string(id))
 }
 
 func (b *BadgerEngine) loadNodeMVCCHeadInTxn(txn *badger.Txn, id NodeID) (MVCCHead, error) {
