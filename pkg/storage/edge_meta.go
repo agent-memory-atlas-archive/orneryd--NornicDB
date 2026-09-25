@@ -214,20 +214,27 @@ func (s *EdgeMetaStore) GetLatest(ctx context.Context, src, dst, label string) (
 	return history[len(history)-1], nil
 }
 
+// filterMetasLocked scans allMetas newest-first, collecting copies of every
+// record matching keep until limit records are collected (limit <= 0 means
+// unlimited). The caller holds the read lock.
+func (s *EdgeMetaStore) filterMetasLocked(limit int, keep func(*EdgeMeta) bool) []*EdgeMeta {
+	result := make([]*EdgeMeta, 0)
+	for i := len(s.allMetas) - 1; i >= 0 && (limit <= 0 || len(result) < limit); i-- {
+		meta := s.allMetas[i]
+		if keep(meta) {
+			metaCopy := *meta
+			result = append(result, &metaCopy)
+		}
+	}
+	return result
+}
+
 // GetBySignalType filters by how edges were created.
 func (s *EdgeMetaStore) GetBySignalType(ctx context.Context, signalType string, limit int) ([]*EdgeMeta, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*EdgeMeta, 0)
-	for i := len(s.allMetas) - 1; i >= 0 && (limit <= 0 || len(result) < limit); i-- {
-		meta := s.allMetas[i]
-		if meta.SignalType == signalType {
-			metaCopy := *meta
-			result = append(result, &metaCopy)
-		}
-	}
-	return result, nil
+	return s.filterMetasLocked(limit, func(meta *EdgeMeta) bool { return meta.SignalType == signalType }), nil
 }
 
 // GetMaterialized returns all materialized edges.
@@ -235,15 +242,7 @@ func (s *EdgeMetaStore) GetMaterialized(ctx context.Context, limit int) ([]*Edge
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*EdgeMeta, 0)
-	for i := len(s.allMetas) - 1; i >= 0 && (limit <= 0 || len(result) < limit); i-- {
-		meta := s.allMetas[i]
-		if meta.Materialized {
-			metaCopy := *meta
-			result = append(result, &metaCopy)
-		}
-	}
-	return result, nil
+	return s.filterMetasLocked(limit, func(meta *EdgeMeta) bool { return meta.Materialized }), nil
 }
 
 // GetByTimeRange returns provenance records within a time range.
@@ -251,16 +250,10 @@ func (s *EdgeMetaStore) GetByTimeRange(ctx context.Context, start, end time.Time
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*EdgeMeta, 0)
-	for i := len(s.allMetas) - 1; i >= 0 && (limit <= 0 || len(result) < limit); i-- {
-		meta := s.allMetas[i]
-		if (meta.Timestamp.After(start) || meta.Timestamp.Equal(start)) &&
-			(meta.Timestamp.Before(end) || meta.Timestamp.Equal(end)) {
-			metaCopy := *meta
-			result = append(result, &metaCopy)
-		}
-	}
-	return result, nil
+	return s.filterMetasLocked(limit, func(meta *EdgeMeta) bool {
+		return (meta.Timestamp.After(start) || meta.Timestamp.Equal(start)) &&
+			(meta.Timestamp.Before(end) || meta.Timestamp.Equal(end))
+	}), nil
 }
 
 // GetByOrigin returns provenance records by origin (agent/commit ID).
@@ -268,15 +261,7 @@ func (s *EdgeMetaStore) GetByOrigin(ctx context.Context, origin string, limit in
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*EdgeMeta, 0)
-	for i := len(s.allMetas) - 1; i >= 0 && (limit <= 0 || len(result) < limit); i-- {
-		meta := s.allMetas[i]
-		if meta.Origin == origin {
-			metaCopy := *meta
-			result = append(result, &metaCopy)
-		}
-	}
-	return result, nil
+	return s.filterMetasLocked(limit, func(meta *EdgeMeta) bool { return meta.Origin == origin }), nil
 }
 
 // GetBySession returns provenance records by session.
@@ -284,15 +269,7 @@ func (s *EdgeMetaStore) GetBySession(ctx context.Context, sessionID string, limi
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*EdgeMeta, 0)
-	for i := len(s.allMetas) - 1; i >= 0 && (limit <= 0 || len(result) < limit); i-- {
-		meta := s.allMetas[i]
-		if meta.SessionID == sessionID {
-			metaCopy := *meta
-			result = append(result, &metaCopy)
-		}
-	}
-	return result, nil
+	return s.filterMetasLocked(limit, func(meta *EdgeMeta) bool { return meta.SessionID == sessionID }), nil
 }
 
 // HasHistory returns true if any provenance records exist for this edge.

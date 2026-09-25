@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -576,4 +577,82 @@ func TestEdgeMetaStore_GetLatest_WithError(t *testing.T) {
 	latest, err := store.GetLatest(ctx, "nonexistent", "edge", "label")
 	require.NoError(t, err)
 	assert.Nil(t, latest)
+}
+
+// TestEdgeMetaStore_FilterSemantics pins the shared newest-first filtered-scan
+// kernel (filterMetasLocked): newest-first result order, limit application,
+// and copy-on-escape (mutating a returned record must not touch the store).
+func TestEdgeMetaStore_FilterSemantics(t *testing.T) {
+	cleanup := config.WithEdgeProvenanceEnabled()
+	defer cleanup()
+
+	store := NewEdgeMetaStore()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		require.NoError(t, store.Append(ctx, EdgeMeta{
+			EdgeID:       fmt.Sprintf("edge-%d", i),
+			Src:          "s",
+			Dst:          "d",
+			Label:        "label",
+			SignalType:   string(SignalSimilarity),
+			Timestamp:    time.Now().Add(time.Duration(i) * time.Second),
+			Origin:       fmt.Sprintf("origin-%d", i),
+			SessionID:    fmt.Sprintf("session-%d", i),
+			Materialized: true,
+		}))
+	}
+
+	// Newest-first: the last appended origin comes first.
+	results, err := store.GetByOrigin(ctx, "origin-0", 0)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+
+	all, err := store.GetBySignalType(ctx, string(SignalSimilarity), 0)
+	require.NoError(t, err)
+	require.Len(t, all, 5)
+	require.Equal(t, "origin-4", all[0].Origin, "filterMetasLocked must scan newest-first")
+	require.Equal(t, "origin-0", all[4].Origin)
+
+	// Limit applies before the copy loop ends.
+	limited, err := store.GetBySignalType(ctx, string(SignalSimilarity), 2)
+	require.NoError(t, err)
+	require.Len(t, limited, 2)
+	require.Equal(t, []string{"origin-4", "origin-3"}, []string{limited[0].Origin, limited[1].Origin})
+
+	// Copy-on-escape: mutating a returned record leaves the store untouched.
+	limited[0].Origin = "mutated"
+	recheck, err := store.GetByOrigin(ctx, "origin-4", 0)
+	require.NoError(t, err)
+	require.Len(t, recheck, 1)
+	require.Equal(t, "origin-4", recheck[0].Origin)
+}
+
+// BenchmarkEdgeMetaStore_GetBySignalType pins the filtered-scan cost on a
+// populated store (1000 records, full scan).
+func BenchmarkEdgeMetaStore_GetBySignalType(b *testing.B) {
+	store := NewEdgeMetaStore()
+	ctx := context.Background()
+	for i := 0; i < 1000; i++ {
+		if err := store.Append(ctx, EdgeMeta{
+			EdgeID:       fmt.Sprintf("edge-%d", i),
+			Src:          "s",
+			Dst:          "d",
+			Label:        "label",
+			SignalType:   string(SignalSimilarity),
+			Timestamp:    time.Now().Add(time.Duration(i) * time.Second),
+			Origin:       fmt.Sprintf("origin-%d", i),
+			SessionID:    "session",
+			Materialized: true,
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := store.GetBySignalType(ctx, string(SignalSimilarity), 0); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
