@@ -16,6 +16,24 @@ import (
 // Router Setup
 // =============================================================================
 
+// routeSpec declares one authenticated endpoint: path, required permission
+// and handler. registerRouteTable wires every entry through withAuth, so an
+// endpoint can never be registered without its permission check.
+type routeSpec struct {
+	path    string
+	perm    auth.Permission
+	handler http.HandlerFunc
+}
+
+// registerRouteTable registers each authenticated endpoint on mux. The
+// NornicDB, admin, GDPR and retention registrars are route tables over this
+// helper, so the path/permission/handler shape cannot drift between them.
+func (s *Server) registerRouteTable(mux *http.ServeMux, routes []routeSpec) {
+	for _, route := range routes {
+		mux.HandleFunc(route.path, s.withAuth(route.handler, route.perm))
+	}
+}
+
 func (s *Server) buildRouter() http.Handler {
 	mux := http.NewServeMux()
 
@@ -126,85 +144,88 @@ func (s *Server) registerAuthRoutes(mux *http.ServeMux) {
 	// ==========================================================================
 	mux.HandleFunc("/auth/token", s.handleToken)
 	mux.HandleFunc("/auth/logout", s.handleLogout)
-	mux.HandleFunc("/auth/me", s.withAuth(s.handleMe, auth.PermRead))
-	mux.HandleFunc("/auth/password", s.withAuth(s.handleChangePassword, auth.PermRead))     // Users can change their own password
-	mux.HandleFunc("/auth/profile", s.withAuth(s.handleUpdateProfile, auth.PermRead))       // Users can update their own profile
-	mux.HandleFunc("/auth/api-token", s.withAuth(s.handleGenerateAPIToken, auth.PermAdmin)) // Admin only - generate API tokens
+
+	s.registerRouteTable(mux, []routeSpec{
+		{"/auth/me", auth.PermRead, s.handleMe},
+		{"/auth/password", auth.PermRead, s.handleChangePassword},     // Users can change their own password
+		{"/auth/profile", auth.PermRead, s.handleUpdateProfile},       // Users can update their own profile
+		{"/auth/api-token", auth.PermAdmin, s.handleGenerateAPIToken}, // Admin only - generate API tokens
+	})
 
 	// OAuth endpoints
 	mux.HandleFunc("/auth/oauth/redirect", s.handleOAuthRedirect)
 	mux.HandleFunc("/auth/oauth/callback", s.handleOAuthCallback)
 
-	// User management (admin only)
-	mux.HandleFunc("/auth/users", s.withAuth(s.handleUsers, auth.PermUserManage))
-	mux.HandleFunc("/auth/users/", s.withAuth(s.handleUserByID, auth.PermUserManage))
-
-	// User-defined roles (admin only)
-	mux.HandleFunc("/auth/roles", s.withAuth(s.handleRoles, auth.PermAdmin))
-	mux.HandleFunc("/auth/roles/", s.withAuth(s.handleRoleByID, auth.PermAdmin))
-
-	// Per-database access allowlist (admin only, Phase 3 RBAC)
-	mux.HandleFunc("/auth/access/databases", s.withAuth(s.handleAccessDatabases, auth.PermAdmin))
-	// Per-database read/write privileges (admin only, Phase 4 RBAC)
-	mux.HandleFunc("/auth/access/privileges", s.withAuth(s.handleAccessPrivileges, auth.PermAdmin))
-	// Canonical list of entitlements (for UI and docs); read access sufficient
-	mux.HandleFunc("/auth/entitlements", s.withAuth(s.handleEntitlements, auth.PermRead))
-	// Per-role global entitlements (admin only); GET returns role→entitlements, PUT sets one role's entitlements
-	mux.HandleFunc("/auth/role-entitlements", s.withAuth(s.handleRoleEntitlements, auth.PermAdmin))
+	// User management, roles, database access and entitlements.
+	s.registerRouteTable(mux, []routeSpec{
+		{"/auth/users", auth.PermUserManage, s.handleUsers},
+		{"/auth/users/", auth.PermUserManage, s.handleUserByID},
+		{"/auth/roles", auth.PermAdmin, s.handleRoles},
+		{"/auth/roles/", auth.PermAdmin, s.handleRoleByID},
+		{"/auth/access/databases", auth.PermAdmin, s.handleAccessDatabases},
+		{"/auth/access/privileges", auth.PermAdmin, s.handleAccessPrivileges},
+		{"/auth/entitlements", auth.PermRead, s.handleEntitlements},
+		{"/auth/role-entitlements", auth.PermAdmin, s.handleRoleEntitlements},
+	})
 }
 
 func (s *Server) registerNornicDBRoutes(mux *http.ServeMux) {
 	// ==========================================================================
 	// NornicDB Extension Endpoints (additional features)
 	// ==========================================================================
+	s.registerRouteTable(mux, []routeSpec{
+		// Vector search (NornicDB-specific)
+		{"/nornicdb/search", auth.PermRead, s.handleSearch},
+		{"/nornicdb/similar", auth.PermRead, s.handleSimilar},
+		{"/nornicdb/graph/{database}/neighborhood", auth.PermRead, s.handleGraphNeighborhood},
+		{"/nornicdb/graph/{database}/expand", auth.PermRead, s.handleGraphExpand},
+		{"/nornicdb/graph/{database}/path", auth.PermRead, s.handleGraphPath},
+		{"/nornicdb/graph/{database}/temporal", auth.PermRead, s.handleGraphTemporal},
+		{"/nornicdb/graph/{database}/diff", auth.PermRead, s.handleGraphDiff},
 
-	// Vector search (NornicDB-specific)
-	mux.HandleFunc("/nornicdb/search", s.withAuth(s.handleSearch, auth.PermRead))
-	mux.HandleFunc("/nornicdb/similar", s.withAuth(s.handleSimilar, auth.PermRead))
-	mux.HandleFunc("/nornicdb/graph/{database}/neighborhood", s.withAuth(s.handleGraphNeighborhood, auth.PermRead))
-	mux.HandleFunc("/nornicdb/graph/{database}/expand", s.withAuth(s.handleGraphExpand, auth.PermRead))
-	mux.HandleFunc("/nornicdb/graph/{database}/path", s.withAuth(s.handleGraphPath, auth.PermRead))
-	mux.HandleFunc("/nornicdb/graph/{database}/temporal", s.withAuth(s.handleGraphTemporal, auth.PermRead))
-	mux.HandleFunc("/nornicdb/graph/{database}/diff", s.withAuth(s.handleGraphDiff, auth.PermRead))
+		// Memory decay (NornicDB-specific)
+		{"/nornicdb/decay", auth.PermRead, s.handleDecay},
 
-	// Memory decay (NornicDB-specific)
-	mux.HandleFunc("/nornicdb/decay", s.withAuth(s.handleDecay, auth.PermRead))
-
-	// Embedding control (NornicDB-specific)
-	mux.HandleFunc("/nornicdb/embed/trigger", s.withAuth(s.handleEmbedTrigger, auth.PermWrite))
-	mux.HandleFunc("/nornicdb/embed/stats", s.withAuth(s.handleEmbedStats, auth.PermRead))
-	mux.HandleFunc("/nornicdb/embed/failures", s.withAuth(s.handleEmbedFailures, auth.PermRead))
-	mux.HandleFunc("/nornicdb/embed/retry-failures", s.withAuth(s.handleEmbedFailureRetry, auth.PermWrite))
-	mux.HandleFunc("/nornicdb/embed/clear", s.withAuth(s.handleEmbedClear, auth.PermAdmin))
-	mux.HandleFunc("/nornicdb/search/rebuild", s.withAuth(s.handleSearchRebuild, auth.PermWrite))
+		// Embedding control (NornicDB-specific)
+		{"/nornicdb/embed/trigger", auth.PermWrite, s.handleEmbedTrigger},
+		{"/nornicdb/embed/stats", auth.PermRead, s.handleEmbedStats},
+		{"/nornicdb/embed/failures", auth.PermRead, s.handleEmbedFailures},
+		{"/nornicdb/embed/retry-failures", auth.PermWrite, s.handleEmbedFailureRetry},
+		{"/nornicdb/embed/clear", auth.PermAdmin, s.handleEmbedClear},
+		{"/nornicdb/search/rebuild", auth.PermWrite, s.handleSearchRebuild},
+	})
 }
 
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	// ==========================================================================
 	// Admin endpoints (NornicDB-specific)
 	// ==========================================================================
-	mux.HandleFunc("/admin/stats", s.withAuth(s.handleAdminStats, auth.PermAdmin))
-	mux.HandleFunc("/admin/config", s.withAuth(s.handleAdminConfig, auth.PermAdmin))
-	mux.HandleFunc("/admin/backup", s.withAuth(s.handleBackup, auth.PermAdmin))
-	mux.HandleFunc("/admin/restore", s.withAuth(s.handleRestore, auth.PermAdmin))
+	s.registerRouteTable(mux, []routeSpec{
+		{"/admin/stats", auth.PermAdmin, s.handleAdminStats},
+		{"/admin/config", auth.PermAdmin, s.handleAdminConfig},
+		{"/admin/backup", auth.PermAdmin, s.handleBackup},
+		{"/admin/restore", auth.PermAdmin, s.handleRestore},
 
-	// GPU control endpoints (NornicDB-specific)
-	mux.HandleFunc("/admin/gpu/status", s.withAuth(s.handleGPUStatus, auth.PermAdmin))
-	mux.HandleFunc("/admin/gpu/enable", s.withAuth(s.handleGPUEnable, auth.PermAdmin))
-	mux.HandleFunc("/admin/gpu/disable", s.withAuth(s.handleGPUDisable, auth.PermAdmin))
-	mux.HandleFunc("/admin/gpu/test", s.withAuth(s.handleGPUTest, auth.PermAdmin))
+		// GPU control endpoints (NornicDB-specific)
+		{"/admin/gpu/status", auth.PermAdmin, s.handleGPUStatus},
+		{"/admin/gpu/enable", auth.PermAdmin, s.handleGPUEnable},
+		{"/admin/gpu/disable", auth.PermAdmin, s.handleGPUDisable},
+		{"/admin/gpu/test", auth.PermAdmin, s.handleGPUTest},
 
-	// Per-database config overrides (admin only)
-	mux.HandleFunc("/admin/databases/config/keys", s.withAuth(s.handleDbConfigKeys, auth.PermAdmin))
-	mux.HandleFunc("/admin/databases/", s.withAuth(s.handleDbConfigPrefix, auth.PermAdmin))
+		// Per-database config overrides (admin only)
+		{"/admin/databases/config/keys", auth.PermAdmin, s.handleDbConfigKeys},
+		{"/admin/databases/", auth.PermAdmin, s.handleDbConfigPrefix},
+	})
 }
 
 func (s *Server) registerGDPRRoutes(mux *http.ServeMux) {
 	// ==========================================================================
 	// GDPR compliance endpoints (NornicDB-specific)
 	// ==========================================================================
-	mux.HandleFunc("/gdpr/export", s.withAuth(s.handleGDPRExport, auth.PermRead))
-	mux.HandleFunc("/gdpr/delete", s.withAuth(s.handleGDPRDelete, auth.PermDelete))
+	s.registerRouteTable(mux, []routeSpec{
+		{"/gdpr/export", auth.PermRead, s.handleGDPRExport},
+		{"/gdpr/delete", auth.PermDelete, s.handleGDPRDelete},
+	})
 }
 
 func (s *Server) registerMCPRoutes(mux *http.ServeMux) {

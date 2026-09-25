@@ -13,15 +13,17 @@ import (
 )
 
 func (s *Server) registerRetentionRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/admin/retention/policies", s.withAuth(s.handleRetentionPolicies, auth.PermAdmin))
-	mux.HandleFunc("/admin/retention/policies/{id}", s.withAuth(s.handleRetentionPolicyByID, auth.PermAdmin))
-	mux.HandleFunc("/admin/retention/policies/defaults", s.withAuth(s.handleRetentionPolicyDefaults, auth.PermAdmin))
-	mux.HandleFunc("/admin/retention/holds", s.withAuth(s.handleRetentionHolds, auth.PermAdmin))
-	mux.HandleFunc("/admin/retention/holds/{id}", s.withAuth(s.handleRetentionHoldByID, auth.PermAdmin))
-	mux.HandleFunc("/admin/retention/erasures", s.withAuth(s.handleRetentionErasures, auth.PermAdmin))
-	mux.HandleFunc("/admin/retention/erasures/{id}/process", s.withAuth(s.handleRetentionProcessErasure, auth.PermAdmin))
-	mux.HandleFunc("/admin/retention/sweep", s.withAuth(s.handleRetentionSweep, auth.PermAdmin))
-	mux.HandleFunc("/admin/retention/status", s.withAuth(s.handleRetentionStatus, auth.PermAdmin))
+	s.registerRouteTable(mux, []routeSpec{
+		{"/admin/retention/policies", auth.PermAdmin, s.handleRetentionPolicies},
+		{"/admin/retention/policies/{id}", auth.PermAdmin, s.handleRetentionPolicyByID},
+		{"/admin/retention/policies/defaults", auth.PermAdmin, s.handleRetentionPolicyDefaults},
+		{"/admin/retention/holds", auth.PermAdmin, s.handleRetentionHolds},
+		{"/admin/retention/holds/{id}", auth.PermAdmin, s.handleRetentionHoldByID},
+		{"/admin/retention/erasures", auth.PermAdmin, s.handleRetentionErasures},
+		{"/admin/retention/erasures/{id}/process", auth.PermAdmin, s.handleRetentionProcessErasure},
+		{"/admin/retention/sweep", auth.PermAdmin, s.handleRetentionSweep},
+		{"/admin/retention/status", auth.PermAdmin, s.handleRetentionStatus},
+	})
 }
 
 func (s *Server) retentionManagerOr503(w http.ResponseWriter, r *http.Request) *retention.Manager {
