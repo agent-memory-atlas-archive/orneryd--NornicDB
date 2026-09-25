@@ -569,7 +569,7 @@ func (e *StorageExecutor) resolveCreatePropertyReferences(
 	nodes map[string]*storage.Node,
 	relationships map[string]*storage.Edge,
 ) {
-	if len(nodes) == 0 && len(relationships) == 0 {
+	if len(nodes) == 0 && len(relationships) == 0 && valueBindingsFromContext(ctx) == nil {
 		return // no variable in scope that a property could reference
 	}
 	open := indexByteOutsideBackticks(pattern, '{')
@@ -596,7 +596,12 @@ func (e *StorageExecutor) resolveCreatePropertyReferences(
 		}
 		root := strings.TrimSpace(expression[:dot])
 		if nodes[root] == nil && relationships[root] == nil {
-			continue
+			// Bound loop variables (FOREACH x, UNWIND rows): a dotted
+			// reference whose root lives in the value scope resolves
+			// through the binding-aware evaluator.
+			if _, ok := e.boundValue(ctx, root); !ok {
+				continue
+			}
 		}
 		value := e.evaluateExpressionWithContext(ctx, expression, nodes, relationships)
 		if value == nil {

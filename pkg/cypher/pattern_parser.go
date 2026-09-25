@@ -476,6 +476,14 @@ func (e *StorageExecutor) parsePropertyValue(ctx context.Context, valueStr strin
 		return invalidPropertyValue{raw: valueStr}
 	}
 
+	// Bound loop variables (FOREACH x, UNWIND rows): a bare identifier that
+	// exists in the value scope resolves to its real Go value before the
+	// string fallback. This is the bound-child path; the query-text
+	// substitution path never leaves bare identifiers here.
+	if v, ok := e.boundValue(ctx, valueStr); ok {
+		return normalizePropValue(v)
+	}
+
 	// Otherwise return as string (handles unquoted identifiers, etc.)
 	return valueStr
 }
