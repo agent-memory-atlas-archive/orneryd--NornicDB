@@ -801,57 +801,84 @@ func (b *BadgerEngine) loadEdgeMVCCHeadByNumWithPhysicalVersionInTxn(txn *badger
 }
 
 func (b *BadgerEngine) loadNodeMVCCRecordExactInTxn(txn *badger.Txn, id NodeID, version MVCCVersion) (mvccNodeRecord, error) {
-	key := b.mvccNodeVersionKeyStringLookup(id, version)
+	return loadMVCCRecordExactInTxn[mvccNodeRecord, nodeMVCCVersionKeyer](b, txn, string(id), version, decodeMVCCNodeRecord)
+}
+
+// mvccVersionKeyer derives the exact version key and the version prefix for one
+// entity kind.
+type mvccVersionKeyer interface {
+	versionKeyLookup(b *BadgerEngine, id string, version MVCCVersion) []byte
+	versionPrefix(b *BadgerEngine, id string) []byte
+}
+
+type nodeMVCCVersionKeyer struct{}
+
+func (nodeMVCCVersionKeyer) versionKeyLookup(b *BadgerEngine, id string, version MVCCVersion) []byte {
+	return b.mvccNodeVersionKeyStringLookup(NodeID(id), version)
+}
+
+func (nodeMVCCVersionKeyer) versionPrefix(b *BadgerEngine, id string) []byte {
+	return b.mvccNodeVersionPrefixString(NodeID(id))
+}
+
+type edgeMVCCVersionKeyer struct{}
+
+func (edgeMVCCVersionKeyer) versionKeyLookup(b *BadgerEngine, id string, version MVCCVersion) []byte {
+	return b.mvccEdgeVersionKeyStringLookup(EdgeID(id), version)
+}
+
+func (edgeMVCCVersionKeyer) versionPrefix(b *BadgerEngine, id string) []byte {
+	return b.mvccEdgeVersionPrefixString(EdgeID(id))
+}
+
+// loadMVCCRecordExactInTxn reads one entity kind's MVCC record at an exact
+// version within txn. The record type parameter and the plain decode function
+// keep the instantiation allocation-free; the marker keyer selects the node or
+// edge keyspace, so the exact readers cannot drift apart.
+func loadMVCCRecordExactInTxn[R any, K mvccVersionKeyer](b *BadgerEngine, txn *badger.Txn, id string, version MVCCVersion, decode func([]byte) (R, error)) (R, error) {
+	var zero R
+	var keyer K
+	key := keyer.versionKeyLookup(b, id, version)
 	if key == nil {
-		return mvccNodeRecord{}, ErrNotFound
+		return zero, ErrNotFound
 	}
 	item, err := txn.Get(key)
 	if err == badger.ErrKeyNotFound {
-		return mvccNodeRecord{}, ErrNotFound
+		return zero, ErrNotFound
 	}
 	if err != nil {
-		return mvccNodeRecord{}, err
+		return zero, err
 	}
-	var record mvccNodeRecord
+	var record R
 	err = item.Value(func(val []byte) error {
 		var decodeErr error
-		record, decodeErr = decodeMVCCNodeRecord(val)
+		record, decodeErr = decode(val)
 		return decodeErr
 	})
 	if err != nil {
-		return mvccNodeRecord{}, err
+		return zero, err
 	}
 	return record, nil
 }
 
 func (b *BadgerEngine) loadEdgeMVCCRecordExactInTxn(txn *badger.Txn, id EdgeID, version MVCCVersion) (mvccEdgeRecord, error) {
-	key := b.mvccEdgeVersionKeyStringLookup(id, version)
-	if key == nil {
-		return mvccEdgeRecord{}, ErrNotFound
-	}
-	item, err := txn.Get(key)
-	if err == badger.ErrKeyNotFound {
-		return mvccEdgeRecord{}, ErrNotFound
-	}
-	if err != nil {
-		return mvccEdgeRecord{}, err
-	}
-	var record mvccEdgeRecord
-	err = item.Value(func(val []byte) error {
-		var decodeErr error
-		record, decodeErr = decodeMVCCEdgeRecord(val)
-		return decodeErr
-	})
-	if err != nil {
-		return mvccEdgeRecord{}, err
-	}
-	return record, nil
+	return loadMVCCRecordExactInTxn[mvccEdgeRecord, edgeMVCCVersionKeyer](b, txn, string(id), version, decodeMVCCEdgeRecord)
 }
 
 func (b *BadgerEngine) loadNodeMVCCRecordAtOrBeforeInTxn(txn *badger.Txn, id NodeID, version MVCCVersion) (mvccNodeRecord, MVCCVersion, error) {
-	prefix := b.mvccNodeVersionPrefixString(id)
+	return loadMVCCRecordAtOrBeforeInTxn[mvccNodeRecord, nodeMVCCVersionKeyer](b, txn, string(id), version, decodeMVCCNodeRecord)
+}
+
+// loadMVCCRecordAtOrBeforeInTxn reads one entity kind's MVCC record at or
+// before a version within txn, via a reverse prefix scan. The record type
+// parameter and the plain decode function keep the instantiation
+// allocation-free; the marker keyer selects the node or edge keyspace.
+func loadMVCCRecordAtOrBeforeInTxn[R any, K mvccVersionKeyer](b *BadgerEngine, txn *badger.Txn, id string, version MVCCVersion, decode func([]byte) (R, error)) (R, MVCCVersion, error) {
+	var zero R
+	var keyer K
+	prefix := keyer.versionPrefix(b, id)
 	if prefix == nil {
-		return mvccNodeRecord{}, MVCCVersion{}, ErrNotFound
+		return zero, MVCCVersion{}, ErrNotFound
 	}
 	seek := append(append([]byte{}, prefix...), encodeMVCCSortVersion(version)...)
 	opts := badger.DefaultIteratorOptions
@@ -865,51 +892,23 @@ func (b *BadgerEngine) loadNodeMVCCRecordAtOrBeforeInTxn(txn *badger.Txn, id Nod
 		key := append([]byte(nil), it.Item().Key()...)
 		parsedVersion, err := extractMVCCVersionFromKey(key)
 		if err != nil {
-			return mvccNodeRecord{}, MVCCVersion{}, err
+			return zero, MVCCVersion{}, err
 		}
-		var record mvccNodeRecord
+		var record R
 		if err := it.Item().Value(func(val []byte) error {
 			var decodeErr error
-			record, decodeErr = decodeMVCCNodeRecord(val)
+			record, decodeErr = decode(val)
 			return decodeErr
 		}); err != nil {
-			return mvccNodeRecord{}, MVCCVersion{}, err
+			return zero, MVCCVersion{}, err
 		}
 		return record, parsedVersion, nil
 	}
-	return mvccNodeRecord{}, MVCCVersion{}, ErrNotFound
+	return zero, MVCCVersion{}, ErrNotFound
 }
 
 func (b *BadgerEngine) loadEdgeMVCCRecordAtOrBeforeInTxn(txn *badger.Txn, id EdgeID, version MVCCVersion) (mvccEdgeRecord, MVCCVersion, error) {
-	prefix := b.mvccEdgeVersionPrefixString(id)
-	if prefix == nil {
-		return mvccEdgeRecord{}, MVCCVersion{}, ErrNotFound
-	}
-	seek := append(append([]byte{}, prefix...), encodeMVCCSortVersion(version)...)
-	opts := badger.DefaultIteratorOptions
-	opts.Prefix = prefix
-	opts.PrefetchValues = true
-	opts.Reverse = true
-	it := txn.NewIterator(opts)
-	defer it.Close()
-	it.Seek(seek)
-	if it.ValidForPrefix(prefix) {
-		key := append([]byte(nil), it.Item().Key()...)
-		parsedVersion, err := extractMVCCVersionFromKey(key)
-		if err != nil {
-			return mvccEdgeRecord{}, MVCCVersion{}, err
-		}
-		var record mvccEdgeRecord
-		if err := it.Item().Value(func(val []byte) error {
-			var decodeErr error
-			record, decodeErr = decodeMVCCEdgeRecord(val)
-			return decodeErr
-		}); err != nil {
-			return mvccEdgeRecord{}, MVCCVersion{}, err
-		}
-		return record, parsedVersion, nil
-	}
-	return mvccEdgeRecord{}, MVCCVersion{}, ErrNotFound
+	return loadMVCCRecordAtOrBeforeInTxn[mvccEdgeRecord, edgeMVCCVersionKeyer](b, txn, string(id), version, decodeMVCCEdgeRecord)
 }
 
 func (b *BadgerEngine) latestNodeMVCCVersionInTxn(txn *badger.Txn, id NodeID) (mvccNodeRecord, MVCCVersion, error) {
