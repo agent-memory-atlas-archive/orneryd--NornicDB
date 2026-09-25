@@ -363,7 +363,45 @@ func validateConstraintContractForEdgeEngine(engine Engine, contract ConstraintC
 	return nil
 }
 
+// constraintGraphView is the read surface the constraint-contract evaluators
+// need: adjacency and node lookup. Both an Engine and a locked Badger
+// transaction provide it, so the evaluator logic is written once and the two
+// call paths cannot drift apart.
+type constraintGraphView interface {
+	OutgoingEdges(id NodeID) ([]*Edge, error)
+	IncomingEdges(id NodeID) ([]*Edge, error)
+	Node(id NodeID) (*Node, error)
+}
+
+type engineConstraintView struct{ engine Engine }
+
+func (v engineConstraintView) OutgoingEdges(id NodeID) ([]*Edge, error) {
+	return v.engine.GetOutgoingEdges(id)
+}
+func (v engineConstraintView) IncomingEdges(id NodeID) ([]*Edge, error) {
+	return v.engine.GetIncomingEdges(id)
+}
+func (v engineConstraintView) Node(id NodeID) (*Node, error) {
+	return v.engine.GetNode(id)
+}
+
+type txConstraintView struct{ tx *BadgerTransaction }
+
+func (v txConstraintView) OutgoingEdges(id NodeID) ([]*Edge, error) {
+	return v.tx.currentOutgoingEdgesLocked(id)
+}
+func (v txConstraintView) IncomingEdges(id NodeID) ([]*Edge, error) {
+	return v.tx.currentIncomingEdgesLocked(id)
+}
+func (v txConstraintView) Node(id NodeID) (*Node, error) {
+	return v.tx.currentNodeLocked(id)
+}
+
 func evaluateNodeConstraintContractExpressionEngine(engine Engine, node *Node, expr string) (bool, error) {
+	return evaluateNodeConstraintContractExpression(engineConstraintView{engine}, node, expr)
+}
+
+func evaluateNodeConstraintContractExpression(view constraintGraphView, node *Node, expr string) (bool, error) {
 	if matched, values, property, err := parsePropertyInExpression(expr); err != nil {
 		return false, err
 	} else if matched {
@@ -379,7 +417,7 @@ func evaluateNodeConstraintContractExpressionEngine(engine Engine, node *Node, e
 	if matched, pattern, comparator, threshold, err := parseCountPatternExpression(expr); err != nil {
 		return false, err
 	} else if matched {
-		count, err := countMatchingPatternEdgesEngine(engine, node, pattern)
+		count, err := countMatchingPatternEdges(view, node, pattern)
 		if err != nil {
 			return false, err
 		}
@@ -389,7 +427,7 @@ func evaluateNodeConstraintContractExpressionEngine(engine Engine, node *Node, e
 	if matched, pattern, err := parseNotExistsPatternExpression(expr); err != nil {
 		return false, err
 	} else if matched {
-		count, err := countMatchingPatternEdgesEngine(engine, node, pattern)
+		count, err := countMatchingPatternEdges(view, node, pattern)
 		if err != nil {
 			return false, err
 		}
@@ -400,6 +438,10 @@ func evaluateNodeConstraintContractExpressionEngine(engine Engine, node *Node, e
 }
 
 func evaluateRelationshipConstraintContractExpressionEngine(engine Engine, edge *Edge, expr string) (bool, error) {
+	return evaluateRelationshipConstraintContractExpression(engineConstraintView{engine}, edge, expr)
+}
+
+func evaluateRelationshipConstraintContractExpression(view constraintGraphView, edge *Edge, expr string) (bool, error) {
 	if matched, property, values, err := parseRelationshipPropertyInExpression(expr); err != nil {
 		return false, err
 	} else if matched {
@@ -411,11 +453,11 @@ func evaluateRelationshipConstraintContractExpressionEngine(engine Engine, edge 
 	}
 
 	if matched, leftProp, rightProp := parseEndpointPropertyEqualityExpression(expr); matched {
-		startNode, err := engine.GetNode(edge.StartNode)
+		startNode, err := view.Node(edge.StartNode)
 		if err != nil {
 			return false, err
 		}
-		endNode, err := engine.GetNode(edge.EndNode)
+		endNode, err := view.Node(edge.EndNode)
 		if err != nil {
 			return false, err
 		}
@@ -1093,12 +1135,16 @@ func compareInt(actual int, comparator string, expected int) bool {
 }
 
 func countMatchingPatternEdgesEngine(engine Engine, node *Node, pattern contractPattern) (int, error) {
+	return countMatchingPatternEdges(engineConstraintView{engine}, node, pattern)
+}
+
+func countMatchingPatternEdges(view constraintGraphView, node *Node, pattern contractPattern) (int, error) {
 	var edges []*Edge
 	var err error
 	if pattern.Direction == "INCOMING" {
-		edges, err = engine.GetIncomingEdges(node.ID)
+		edges, err = view.IncomingEdges(node.ID)
 	} else {
-		edges, err = engine.GetOutgoingEdges(node.ID)
+		edges, err = view.OutgoingEdges(node.ID)
 	}
 	if err != nil {
 		return 0, err
@@ -1113,7 +1159,7 @@ func countMatchingPatternEdgesEngine(engine Engine, node *Node, pattern contract
 			if pattern.Direction == "INCOMING" {
 				otherID = edge.StartNode
 			}
-			otherNode, err := engine.GetNode(otherID)
+			otherNode, err := view.Node(otherID)
 			if err != nil {
 				return 0, err
 			}
@@ -1302,100 +1348,15 @@ func (tx *BadgerTransaction) validateConstraintContractsForEdgeLocked(edge *Edge
 }
 
 func (tx *BadgerTransaction) evaluateNodeConstraintContractExpressionLocked(node *Node, expr string) (bool, error) {
-	if matched, values, property, err := parsePropertyInExpression(expr); err != nil {
-		return false, err
-	} else if matched {
-		return evaluatePropertyInExpression(node.Properties[property], values), nil
-	}
-	if matched, property, comparator, value, err := parseRelationshipPropertyComparisonExpression(expr); err != nil {
-		return false, err
-	} else if matched {
-		return compareConstraintExpressionValue(node.Properties[property], comparator, value), nil
-	}
-	if matched, pattern, comparator, threshold, err := parseCountPatternExpression(expr); err != nil {
-		return false, err
-	} else if matched {
-		count, err := tx.countMatchingPatternEdgesLocked(node, pattern)
-		if err != nil {
-			return false, err
-		}
-		return compareInt(count, comparator, threshold), nil
-	}
-	if matched, pattern, err := parseNotExistsPatternExpression(expr); err != nil {
-		return false, err
-	} else if matched {
-		count, err := tx.countMatchingPatternEdgesLocked(node, pattern)
-		if err != nil {
-			return false, err
-		}
-		return count == 0, nil
-	}
-	return false, localizedError(localization.StorageSchemaUnsupportedNodePredicate(), nil)
+	return evaluateNodeConstraintContractExpression(txConstraintView{tx}, node, expr)
 }
 
 func (tx *BadgerTransaction) evaluateRelationshipConstraintContractExpressionLocked(edge *Edge, expr string) (bool, error) {
-	if matched, property, values, err := parseRelationshipPropertyInExpression(expr); err != nil {
-		return false, err
-	} else if matched {
-		return evaluatePropertyInExpression(edge.Properties[property], values), nil
-	}
-	if isDistinctEndpointsExpression(expr) {
-		return edge.StartNode != edge.EndNode, nil
-	}
-	if matched, leftProp, rightProp := parseEndpointPropertyEqualityExpression(expr); matched {
-		startNode, err := tx.currentNodeLocked(edge.StartNode)
-		if err != nil {
-			return false, err
-		}
-		endNode, err := tx.currentNodeLocked(edge.EndNode)
-		if err != nil {
-			return false, err
-		}
-		if startNode == nil || endNode == nil {
-			return false, localizedError(localization.StorageSchemaMissingRelationshipEndpoint(), nil)
-		}
-		return compareValues(startNode.Properties[leftProp], endNode.Properties[rightProp]), nil
-	}
-	if matched, property, comparator, value, err := parseRelationshipPropertyComparisonExpression(expr); err != nil {
-		return false, err
-	} else if matched {
-		return compareConstraintExpressionValue(edge.Properties[property], comparator, value), nil
-	}
-	return false, localizedError(localization.StorageSchemaUnsupportedRelationshipPredicate(), nil)
+	return evaluateRelationshipConstraintContractExpression(txConstraintView{tx}, edge, expr)
 }
 
 func (tx *BadgerTransaction) countMatchingPatternEdgesLocked(node *Node, pattern contractPattern) (int, error) {
-	var edges []*Edge
-	var err error
-	if pattern.Direction == "INCOMING" {
-		edges, err = tx.currentIncomingEdgesLocked(node.ID)
-	} else {
-		edges, err = tx.currentOutgoingEdgesLocked(node.ID)
-	}
-	if err != nil {
-		return 0, err
-	}
-	count := 0
-	for _, edge := range edges {
-		if edge.Type != pattern.RelationType {
-			continue
-		}
-		if len(pattern.TargetLabels) > 0 {
-			otherID := edge.EndNode
-			if pattern.Direction == "INCOMING" {
-				otherID = edge.StartNode
-			}
-			otherNode, err := tx.currentNodeLocked(otherID)
-			if err != nil {
-				return 0, err
-			}
-			if otherNode == nil || !hasAllLabels(otherNode.Labels, pattern.TargetLabels) {
-				continue
-			}
-		}
-		count++
-	}
-	return count, nil
+	return countMatchingPatternEdges(txConstraintView{tx}, node, pattern)
 }
 
 func (tx *BadgerTransaction) currentNodeLocked(nodeID NodeID) (*Node, error) {

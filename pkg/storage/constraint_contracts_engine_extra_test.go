@@ -178,3 +178,124 @@ func TestNodeConstraintComparisonExpressions_EvaluatedInEngineAndTransaction(t *
 		require.True(t, ok)
 	})
 }
+
+// TestConstraintContractEvaluation_EngineAndTransactionViewsAgree pins the
+// shared constraintGraphView kernel: on committed data the Engine view and
+// the locked-transaction view must return identical results and errors for
+// every expression shape.
+func TestConstraintContractEvaluation_EngineAndTransactionViewsAgree(t *testing.T) {
+	engine := newTestEngine(t)
+	_, err := engine.CreateNode(&Node{ID: "test:alice", Labels: []string{"Person"}, Properties: map[string]any{"state": "active", "age": int64(30), "team": "core"}})
+	require.NoError(t, err)
+	_, err = engine.CreateNode(&Node{ID: "test:bob", Labels: []string{"Person"}, Properties: map[string]any{"state": "banned", "team": "platform"}})
+	require.NoError(t, err)
+	for i, ep := range []string{"test:i1", "test:i2", "test:i3"} {
+		_, err = engine.CreateNode(&Node{ID: NodeID(ep), Labels: []string{"Item"}, Properties: map[string]any{}})
+		require.NoError(t, err)
+		require.NoError(t, engine.CreateEdge(&Edge{
+			ID: EdgeID("test:o-" + string(rune('1'+i))), StartNode: "test:alice",
+			EndNode: NodeID(ep), Type: "OWNS", Properties: map[string]any{},
+		}))
+	}
+	require.NoError(t, engine.CreateEdge(&Edge{ID: "test:k", StartNode: "test:alice", EndNode: "test:bob", Type: "KNOWS", Properties: map[string]any{"v": "active", "score": int64(75)}}))
+
+	alice, err := engine.GetNode("test:alice")
+	require.NoError(t, err)
+	bob, err := engine.GetNode("test:bob")
+	require.NoError(t, err)
+	edge, err := engine.GetEdge("test:k")
+	require.NoError(t, err)
+
+	tx, err := engine.BeginTransaction()
+	require.NoError(t, err)
+	require.NoError(t, tx.SetNamespace("test"))
+	defer tx.Rollback()
+
+	type outcome struct {
+		ok      bool
+		errText string
+	}
+	evalNode := func(view func() (bool, error)) outcome {
+		ok, err := view()
+		text := ""
+		if err != nil {
+			text = err.Error()
+		}
+		return outcome{ok: ok, errText: text}
+	}
+	engineNode := func(node *Node, expr string) outcome {
+		return evalNode(func() (bool, error) {
+			return evaluateNodeConstraintContractExpressionEngine(engine, node, expr)
+		})
+	}
+	txNode := func(node *Node, expr string) outcome {
+		return evalNode(func() (bool, error) {
+			return tx.evaluateNodeConstraintContractExpressionLocked(node, expr)
+		})
+	}
+	engineEdge := func(expr string) outcome {
+		return evalNode(func() (bool, error) {
+			return evaluateRelationshipConstraintContractExpressionEngine(engine, edge, expr)
+		})
+	}
+	txEdge := func(expr string) outcome {
+		return evalNode(func() (bool, error) {
+			return tx.evaluateRelationshipConstraintContractExpressionLocked(edge, expr)
+		})
+	}
+
+	for _, expr := range []string{
+		"n.state IN ['active', 'pending']",
+		"n.age >= 18",
+		"n.team = 'core'",
+		"COUNT { (n)-[:OWNS]->(:Item) } <= 5",
+		"COUNT { (n)-[:OWNS]->(:Item) } < 3",
+		"NOT EXISTS { (n)-[:OWNS]->() }",
+		"NOT EXISTS { (n)-[:KNOWS]->() }",
+		"something_weird()",
+	} {
+		require.Equal(t, engineNode(alice, expr), txNode(alice, expr), "node expr %q", expr)
+		require.Equal(t, engineNode(bob, expr), txNode(bob, expr), "node expr %q on bob", expr)
+	}
+
+	for _, expr := range []string{
+		"r.v IN ['active', 'pending']",
+		"startNode(r) <> endNode(r)",
+		"startNode(r).team = endNode(r).team",
+		"r.score > 50",
+		"r.score < 50",
+		"something_weird()",
+	} {
+		require.Equal(t, engineEdge(expr), txEdge(expr), "edge expr %q", expr)
+	}
+}
+
+// BenchmarkConstraintContractEvaluation_EngineView pins the converged
+// evaluator cost (shared constraintGraphView kernel, count-pattern shape).
+func BenchmarkConstraintContractEvaluation_EngineView(b *testing.B) {
+	engine := NewMemoryEngine()
+	defer engine.Close()
+	if _, err := engine.CreateNode(&Node{ID: "test:alice", Labels: []string{"Person"}, Properties: map[string]any{}}); err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := engine.CreateNode(&Node{ID: NodeID("test:item-" + string(rune('1'+i))), Labels: []string{"Item"}, Properties: map[string]any{}}); err != nil {
+			b.Fatal(err)
+		}
+		if err := engine.CreateEdge(&Edge{ID: EdgeID("test:o-" + string(rune('1'+i))), StartNode: "test:alice", EndNode: NodeID("test:item-" + string(rune('1'+i))), Type: "OWNS"}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	alice, err := engine.GetNode("test:alice")
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ok, err := evaluateNodeConstraintContractExpressionEngine(engine, alice, "COUNT { (n)-[:OWNS]->(:Item) } <= 5")
+		if err != nil || !ok {
+			b.Fatalf("eval failed: %v ok=%v", err, ok)
+		}
+	}
+}
