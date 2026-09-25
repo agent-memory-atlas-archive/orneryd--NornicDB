@@ -6,10 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
-	cypherfn "github.com/orneryd/nornicdb/pkg/cypher/fn"
-	cyphertext "github.com/orneryd/nornicdb/pkg/cypher/internal/text"
 	"github.com/orneryd/nornicdb/pkg/localization"
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
@@ -766,401 +763,104 @@ func (e *StorageExecutor) evaluateWhereOnComputedRow(ctx context.Context, whereC
 	return true
 }
 
-// evaluateExpressionFromValues evaluates an expression using computed values map
+// evaluateExpressionFromValues evaluates an expression over a computed values
+// map (CALL projections, UNWIND rows, YIELD values, SET expressions, collect
+// transforms). The values scope is carried as context bindings and evaluation
+// runs through the shared evaluator, so property access, keys(), properties(),
+// labels(), type checks, temporal constructors and function dispatch see the
+// real values. Node/relationship values are additionally mirrored into the
+// entity scopes so legacy handlers that resolve variables there keep working.
+//
+// The terminal contract is unchanged from the legacy evaluator: expression
+// text the shared evaluator does not recognize round-trips to the caller, so
+// callers can tell "unrecognized" apart from "evaluated to null" and raise the
+// proper statement error (or route to the EXISTS-subquery machinery).
 func (e *StorageExecutor) evaluateExpressionFromValues(expr string, values map[string]interface{}) interface{} {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
 		return nil
 	}
-
 	if isCaseExpression(expr) {
 		return e.evaluateCaseExpressionFromValues(expr, values)
 	}
 
-	// Direct lookup
+	// Direct lookup: callers store pre-computed values under the expression
+	// text itself (call-tail plans set values["max(length(p))"] per row), and
+	// plain variable references are the hot path.
 	if val, ok := values[expr]; ok {
 		return val
 	}
 
-	if strings.HasPrefix(strings.ToUpper(expr), "COALESCE(") && strings.HasSuffix(expr, ")") {
-		nodeMap := make(map[string]*storage.Node)
-		for key, raw := range values {
-			if node, ok := raw.(*storage.Node); ok && node != nil {
-				nodeMap[key] = node
-			}
-		}
-		return e.evaluateCoalesceInContext(expr, nodeMap, nil, values)
-	}
-
-	// Handle property access on computed values (e.g., x.property where x is a node)
-	if idx := strings.Index(expr, "."); idx > 0 {
-		varName := expr[:idx]
-		propName := expr[idx+1:]
-		if val, ok := values[varName]; ok {
-			// Handle *storage.Node (direct node reference)
-			if node, ok := val.(*storage.Node); ok {
-				return node.Properties[propName]
-			}
-			// Handle *storage.Edge (direct relationship reference)
-			if rel, ok := val.(*storage.Edge); ok {
-				return rel.Properties[propName]
-			}
-			// Handle map[string]interface{} (node converted to map)
-			if nodeMap, ok := val.(map[string]interface{}); ok {
-				// Check properties sub-map first
-				if props, ok := nodeMap["properties"].(map[string]interface{}); ok {
-					if propVal, ok := props[propName]; ok {
-						return propVal
-					}
-				}
-				// Check top-level map for the property
-				if propVal, ok := nodeMap[propName]; ok {
-					return propVal
+	// Legacy FromValues precedence for a node projected as a map: a
+	// "properties" sub-map wins over a same-named top-level key.
+	if dot := strings.IndexByte(expr, '.'); dot > 0 {
+		if base, ok := values[expr[:dot]].(map[string]interface{}); ok {
+			if props, propsOK := base["properties"].(map[string]interface{}); propsOK {
+				if property, propertyOK := props[expr[dot+1:]]; propertyOK {
+					return property
 				}
 			}
 		}
 	}
 
-	// Handle map literal expressions {...}
-	if strings.HasPrefix(expr, "{") && strings.HasSuffix(expr, "}") {
-		return e.evaluateMapLiteralFromValues(expr, values)
+	// Relationship-pattern fragments are not scalar expressions: leave them
+	// for the pattern machinery (WHERE exists-patterns and friends). The
+	// shared recognition heuristics would otherwise misread "--" as
+	// arithmetic operators and a lone ">()" arrow fragment as a comparison,
+	// evaluating the fragment to null instead of round-tripping it.
+	if looksLikeRowRelationshipPattern(expr) && !strings.ContainsAny(expr, "'\"") {
+		return expr
+	}
+	if len(expr) > 0 && (expr[0] == '>' || expr[0] == '<') {
+		return expr
 	}
 
-	// Handle function calls
-	if strings.Contains(expr, "(") && strings.Contains(expr, ")") {
-		if value, handled := e.evaluateTemporalConstructor(func(argument string) interface{} {
-			value, evaluated := e.evaluateRowExpression(argument, values)
-			if !evaluated {
-				return nil
-			}
-			return value
-		}, expr); handled {
-			return value
-		}
-
-		if name, inner, ok := parseFunctionCallWS(expr); ok &&
-			(strings.EqualFold(name, "toLower") || strings.EqualFold(name, "toUpper")) {
-			nodeCtx, edgeCtx := withWhereValueContext(values)
-			functionCtx := cypherfn.Context{
-				Nodes:    nodeCtx,
-				Rels:     edgeCtx,
-				Database: e.databaseName(),
-				Eval: func(argExpr string) (interface{}, error) {
-					value := e.evaluateExpressionFromValues(argExpr, values)
-					if literal, ok := value.(string); ok && literal == strings.TrimSpace(argExpr) {
-						if parsed, parsedOK := parseLiteralValueFromComputedRow(argExpr); parsedOK {
-							value = parsed
-						}
-					}
-					return value, nil
-				},
-				Now: time.Now,
-			}
-			if value, found, err := cypherfn.EvaluateFunction(name, e.splitFunctionArgs(inner), functionCtx); found {
-				if err != nil {
-					return nil
-				}
-				return value
-			}
-		}
-
-		if strings.EqualFold(expr, "localdatetime()") {
-			return CypherLocalDateTime{Time: time.Now()}
-		}
-
-		// elementId(n) / id(n). elementId() is an opaque, typed identifier;
-		// keep it distinct from the storage identifier returned by id().
-		isElementID := matchFuncStartAndSuffix(expr, "elementid")
-		if isElementID || matchFuncStartAndSuffix(expr, "id") {
-			inner := extractFuncArgs(expr, "id")
-			if isElementID {
-				inner = extractFuncArgs(expr, "elementid")
-			}
-			inner = strings.TrimSpace(inner)
-			if val, ok := values[inner]; ok {
-				if node, ok := val.(*storage.Node); ok && node != nil {
-					if isElementID {
-						return storage.NodeElementID(e.databaseName(), node.ID)
-					}
-					return string(node.ID)
-				}
-				if rel, ok := val.(*storage.Edge); ok && rel != nil {
-					if isElementID {
-						return storage.RelationshipElementID(e.databaseName(), rel.ID)
-					}
-					return string(rel.ID)
-				}
-				if nodeMap, ok := val.(map[string]interface{}); ok {
-					if isElementID {
-						if elementID, ok := nodeMap["elementId"]; ok {
-							return elementID
-						}
-					}
-					if id, ok := nodeMap["id"]; ok {
-						return id
-					}
-					if id, ok := nodeMap["_id"]; ok {
-						return id
-					}
-				}
-			}
-		}
-
-		if matchFuncStartAndSuffix(expr, "type") {
-			inner := strings.TrimSpace(extractFuncArgs(expr, "type"))
-			if val, ok := values[inner]; ok {
-				if rel, ok := val.(*storage.Edge); ok && rel != nil {
-					return rel.Type
-				}
-				if relMap, ok := val.(map[string]interface{}); ok {
-					if relType, ok := relMap["type"]; ok {
-						return relType
-					}
-				}
-			}
-			return nil
-		}
-
-		if matchFuncStartAndSuffix(expr, "properties") {
-			inner := strings.TrimSpace(extractFuncArgs(expr, "properties"))
-			if val, ok := values[inner]; ok {
-				if node, ok := val.(*storage.Node); ok && node != nil {
-					out := make(map[string]interface{}, len(node.Properties))
-					for k, v := range node.Properties {
-						out[k] = v
-					}
-					return out
-				}
-				if rel, ok := val.(*storage.Edge); ok && rel != nil {
-					out := make(map[string]interface{}, len(rel.Properties))
-					for k, v := range rel.Properties {
-						out[k] = v
-					}
-					return out
-				}
-				if m, ok := val.(map[string]interface{}); ok {
-					if props, ok := m["properties"].(map[string]interface{}); ok {
-						out := make(map[string]interface{}, len(props))
-						for k, v := range props {
-							out[k] = v
-						}
-						return out
-					}
-					out := make(map[string]interface{}, len(m))
-					for k, v := range m {
-						if strings.HasPrefix(k, "_") {
-							continue
-						}
-						out[k] = v
-					}
-					return out
-				}
-			}
-			return nil
-		}
-
-		if matchFuncStartAndSuffix(expr, "keys") {
-			inner := strings.TrimSpace(extractFuncArgs(expr, "keys"))
-			if keys, ok := cypherfn.PropertyKeys(values[inner]); ok {
-				return keys
-			}
-			return []interface{}{}
-		}
-
-		// For labels(connected), we need to extract the node and get labels
-		if matchFuncStartAndSuffix(expr, "labels") {
-			inner := extractFuncArgs(expr, "labels")
-			if val, ok := values[inner]; ok {
-				if nodeMap, ok := val.(map[string]interface{}); ok {
-					if labels, ok := nodeMap["labels"]; ok {
-						return labels
-					}
-				}
-				if node, ok := val.(*storage.Node); ok {
-					result := make([]interface{}, len(node.Labels))
-					for i, label := range node.Labels {
-						result[i] = label
-					}
-					return result
-				}
-			}
-		}
-
-		// For length(path), extract the path length from a path map
-		if matchFuncStartAndSuffix(expr, "length") {
-			inner := extractFuncArgs(expr, "length")
-			if val, ok := values[inner]; ok {
-				if pathMap, ok := val.(map[string]interface{}); ok {
-					if length, ok := pathMap["length"]; ok {
-						return length
-					}
-				}
-			}
-		}
-
-		// For nodes(path), preserve the native nodes stored in a path map.
-		if matchFuncStartAndSuffix(expr, "nodes") {
-			inner := extractFuncArgs(expr, "nodes")
-			if val, ok := values[inner]; ok {
-				if pathMap, ok := val.(map[string]interface{}); ok {
-					if nodes, _, hasNodes, _ := pathValueParts(pathMap); hasNodes {
-						return nodes
-					}
-				}
-			}
-		}
-
-		// For relationships(path), extract the relationships from a path map
-		if matchFuncStartAndSuffix(expr, "relationships") {
-			inner := extractFuncArgs(expr, "relationships")
-			if val, ok := values[inner]; ok {
-				if pathMap, ok := val.(map[string]interface{}); ok {
-					// Native relationship values, so Bolt encodes the list with
-					// relationship structure and expressions keep relationship
-					// property/type semantics.
-					if _, relationships, _, hasRelationships := pathValueParts(pathMap); hasRelationships {
-						return relationships
-					}
-				}
-			}
-		}
-
-		// For size(list), get the count of elements in a list or variable
-		if matchFuncStartAndSuffix(expr, "size") {
-			inner := extractFuncArgs(expr, "size")
-			if val, ok := values[inner]; ok {
-				switch v := val.(type) {
-				case []interface{}:
-					return int64(len(v))
-				case []*storage.Node:
-					return int64(len(v))
-				case []*storage.Edge:
-					return int64(len(v))
-				case []string:
-					return int64(len(v))
-				case string:
-					return int64(cyphertext.Length(v))
-				}
-			}
-			// Recursively evaluate the inner expression first
-			innerVal := e.evaluateExpressionFromValues(inner, values)
-			switch v := innerVal.(type) {
-			case []interface{}:
-				return int64(len(v))
-			case []*storage.Node:
-				return int64(len(v))
-			case []*storage.Edge:
-				return int64(len(v))
-			case []string:
-				return int64(len(v))
-			case string:
-				return int64(cyphertext.Length(v))
-			}
-			return int64(0)
-		}
-	}
-
-	if result := e.evaluateArithmeticExprFromValues(expr, values); result != nil {
-		return result
-	}
-
-	// Handle list comprehension [r IN relationships(path) | type(r)]
-	if strings.HasPrefix(expr, "[") && strings.HasSuffix(expr, "]") && strings.Contains(expr, " IN ") && strings.Contains(expr, " | ") {
-		inner := strings.TrimSpace(expr[1 : len(expr)-1])
-		inIdx := strings.Index(strings.ToUpper(inner), " IN ")
-		if inIdx > 0 {
-			// varName is the iterator variable (e.g., "r" in "[r IN ... | ...]")
-			varName := strings.TrimSpace(inner[:inIdx])
-			rest := inner[inIdx+4:]
-			pipeIdx := strings.Index(rest, " | ")
-			if pipeIdx > 0 {
-				listExpr := strings.TrimSpace(rest[:pipeIdx])
-				transform := strings.TrimSpace(rest[pipeIdx+3:])
-
-				// Evaluate the list expression
-				list := e.evaluateExpressionFromValues(listExpr, values)
-				listVal, ok := list.([]interface{})
-				if !ok {
-					return []interface{}{}
-				}
-
-				result := make([]interface{}, len(listVal))
-				for i, item := range listVal {
-					itemValues := make(map[string]interface{}, len(values)+1)
-					for name, value := range values {
-						itemValues[name] = value
-					}
-					itemValues[varName] = item
-					result[i] = e.evaluateExpressionFromValues(transform, itemValues)
-				}
-				return result
-			}
-		}
-	}
-
-	// Final fallback: try evaluating with bound node/relationship variables.
-	// This covers function forms like properties(e) or type(e) after WITH projection.
-	nodes := make(map[string]*storage.Node)
-	rels := make(map[string]*storage.Edge)
-	for name, val := range values {
-		if n, ok := val.(*storage.Node); ok && n != nil {
-			nodes[name] = n
-		}
-		if r, ok := val.(*storage.Edge); ok && r != nil {
-			rels[name] = r
-		}
-	}
-	if len(nodes) > 0 || len(rels) > 0 {
-		if evaluated := e.evaluateExpressionWithContext(context.Background(), expr, nodes, rels); evaluated != nil {
-			if s, ok := evaluated.(string); !ok || s != expr {
-				return evaluated
-			}
-		}
-	}
-
-	return expr // Return as literal if not found
-}
-
-func (e *StorageExecutor) evaluateArithmeticExprFromValues(expr string, values map[string]interface{}) interface{} {
-	if !e.hasArithmeticOperator(expr) {
-		return nil
-	}
-	resolve := func(part string) interface{} {
-		part = strings.TrimSpace(part)
-		value := e.evaluateExpressionFromValues(part, values)
-		if literal, ok := value.(string); ok && literal == part {
-			if parsed, parsedOK := parseLiteralValueFromComputedRow(part); parsedOK {
-				value = parsed
-			}
-		}
+	ctx := withValueBindings(context.Background(), values)
+	nodes, rels := entityScopesFromValues(values)
+	if value, recognized := e.evaluateExpressionWithContextDefined(ctx, expr, nodes, rels); recognized {
 		return value
 	}
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " + ", true, false); ok {
-		return e.add(resolve(leftExpr), resolve(rightExpr))
-	}
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "+", true, false); ok {
-		return e.add(resolve(leftExpr), resolve(rightExpr))
-	}
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "*", true, false); ok {
-		return e.multiply(resolve(leftExpr), resolve(rightExpr))
-	}
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "/", true, false); ok {
-		return e.divide(resolve(leftExpr), resolve(rightExpr))
-	}
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "%", true, false); ok {
-		return e.modulo(resolve(leftExpr), resolve(rightExpr))
-	}
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " - ", true, false); ok {
-		return e.subtract(resolve(leftExpr), resolve(rightExpr))
-	}
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "-", true, false); ok && strings.TrimSpace(leftExpr) != "" {
-		left := resolve(leftExpr)
-		right := resolve(rightExpr)
-		if left != nil && right != nil {
-			return e.subtract(left, right)
+	// The shared recognition heuristics do not know about value bindings; a
+	// bound-map property access is evaluable even when the plain node/rel
+	// scopes are empty.
+	if bindings := valueBindingsFromContext(ctx); bindings != nil {
+		if dot := strings.IndexByte(expr, '.'); dot > 0 {
+			if _, ok := bindings[expr[:dot]]; ok {
+				return e.evaluateExpressionWithContextFull(ctx, expr, nodes, rels, nil, nil, nil, 0)
+			}
 		}
 	}
-	return nil
+	return expr
+}
+
+// entityScopesFromValues extracts the *storage.Node and *storage.Edge entries of
+// a computed values map into node/relationship scopes for the shared evaluator.
+// Rows without entities keep nil scopes, so the common scalar row path stays
+// allocation-free.
+func entityScopesFromValues(values map[string]interface{}) (map[string]*storage.Node, map[string]*storage.Edge) {
+	var nodes map[string]*storage.Node
+	var rels map[string]*storage.Edge
+	for name, val := range values {
+		switch entity := val.(type) {
+		case *storage.Node:
+			if entity == nil {
+				continue
+			}
+			if nodes == nil {
+				nodes = make(map[string]*storage.Node, 1)
+			}
+			nodes[name] = entity
+		case *storage.Edge:
+			if entity == nil {
+				continue
+			}
+			if rels == nil {
+				rels = make(map[string]*storage.Edge, 1)
+			}
+			rels[name] = entity
+		}
+	}
+	return nodes, rels
 }
 
 func (e *StorageExecutor) evaluateCaseExpressionFromValues(expr string, values map[string]interface{}) interface{} {

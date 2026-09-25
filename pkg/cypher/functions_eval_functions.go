@@ -275,6 +275,22 @@ skipArrayIndexing:
 			return int64(cyphertext.Length(v))
 		case []interface{}:
 			return int64(len(v))
+		case map[string]interface{}:
+			// A path carried as a computed-row map (WITH p AS path): read the
+			// recorded length, then the node list as a fallback.
+			if length, ok := v["length"]; ok {
+				switch distance := length.(type) {
+				case int:
+					return int64(distance)
+				case int64:
+					return distance
+				case float64:
+					return int64(distance)
+				}
+			}
+			if nodesList, _, hasNodes, _ := pathValueParts(v); hasNodes {
+				return int64(len(nodesList))
+			}
 		}
 		return int64(0)
 	}

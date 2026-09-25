@@ -47,7 +47,10 @@ func TestEvaluateExpressionFromValues_AdditionalBranches(t *testing.T) {
 	require.Equal(t, int64(2), exec.evaluateExpressionFromValues("length(path)", values))
 	require.Equal(t, int64(3), exec.evaluateExpressionFromValues("size(xs)", values))
 	require.Equal(t, int64(4), exec.evaluateExpressionFromValues("size(asText)", values))
-	require.Equal(t, int64(7), exec.evaluateExpressionFromValues("size(missing)", values))
+	// size(null) is null: the legacy evaluator returned the length of the
+	// literal word "missing" (text-fallthrough), which broke size(null)
+	// semantics in computed rows.
+	require.Nil(t, exec.evaluateExpressionFromValues("size(missing)", values))
 
 	labels := exec.evaluateExpressionFromValues("labels(nodeMap)", values).([]interface{})
 	require.Equal(t, []interface{}{"A", "B"}, labels)
@@ -174,6 +177,33 @@ func BenchmarkEvaluateCaseExpressionFromValues(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		exec.evaluateCaseExpressionFromValues(exprs[i%len(exprs)], values)
+	}
+}
+
+func BenchmarkEvaluateExpressionFromValues(b *testing.B) {
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(b), "match_with_rel_expr_bench"))
+	node := &storage.Node{ID: "n1", Labels: []string{"Person"}, Properties: map[string]interface{}{"name": "alice"}}
+	path := map[string]interface{}{
+		"length": int64(2),
+		"nodes": []*storage.Node{
+			{ID: "n1"}, {ID: "n2"},
+		},
+		"rels": []*storage.Edge{
+			{ID: "e1", Type: "KNOWS", StartNode: "n1", EndNode: "n2"},
+		},
+	}
+	values := map[string]interface{}{
+		"n":    node,
+		"path": path,
+		"xs":   []interface{}{int64(1), int64(2), int64(3)},
+		"a":    int64(3),
+		"b":    int64(2),
+	}
+	exprs := []string{"n", "n.name", "length(path)", "size(xs)", "a + b", "coalesce(missing, n.name)"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		exec.evaluateExpressionFromValues(exprs[i%len(exprs)], values)
 	}
 }
 

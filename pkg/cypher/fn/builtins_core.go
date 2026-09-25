@@ -44,6 +44,15 @@ func evalID(ctx Context, args []string) (interface{}, error) {
 		if vv != nil {
 			return string(vv.ID), nil
 		}
+	case map[string]interface{}:
+		// A node or relationship projected as a computed-row map.
+		for _, key := range []string{"id", "_id"} {
+			if id, ok := vv[key]; ok {
+				if text, isString := id.(string); isString {
+					return text, nil
+				}
+			}
+		}
 	case interface{ GetID() string }:
 		return vv.GetID(), nil
 	}
@@ -60,6 +69,13 @@ func evalElementID(ctx Context, args []string) (interface{}, error) {
 	}
 	if rel, ok := ctx.Rels[inner]; ok && rel != nil {
 		return storage.RelationshipElementID(ctx.Database, rel.ID), nil
+	}
+	v, _ := ctx.Eval(inner)
+	if m, ok := v.(map[string]interface{}); ok {
+		// A node projected as a computed-row map carries its elementId.
+		if elementID, present := m["elementId"]; present {
+			return elementID, nil
+		}
 	}
 	return nil, nil
 }
@@ -90,7 +106,11 @@ func evalLabels(ctx Context, args []string) (interface{}, error) {
 		}
 		return result, nil
 	case map[string]interface{}:
-		// A node projected as a map (nodeToMap: _nodeId + labels).
+		// A node projected as a map: the projected label list is the
+		// contract, with or without the nodeToMap _nodeId marker.
+		if labels, ok := value["labels"]; ok {
+			return labels, nil
+		}
 		if _, isNode := value["_nodeId"]; isNode {
 			return value["labels"], nil
 		}
@@ -204,6 +224,11 @@ func evalProperties(ctx Context, args []string) (interface{}, error) {
 	}
 	value, _ := ctx.Eval(inner)
 	if object, ok := value.(map[string]interface{}); ok {
+		// A node projected as a map: properties live in the "properties"
+		// sub-map, which takes precedence over same-named top-level keys.
+		if props, nested := object["properties"].(map[string]interface{}); nested {
+			return props, nil
+		}
 		return object, nil
 	}
 	return nil, nil
