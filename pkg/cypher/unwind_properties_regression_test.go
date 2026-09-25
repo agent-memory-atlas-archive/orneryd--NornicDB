@@ -3,7 +3,6 @@ package cypher
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -623,48 +622,4 @@ RETURN n._mongo_collection
 	if len(result.Rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(result.Rows))
 	}
-}
-
-func TestReplaceVariableInQuery_ForNestedMapPropertyAccess(t *testing.T) {
-	baseStore := newTestMemoryEngine(t)
-	store := storage.NewNamespacedEngine(baseStore, "test")
-	exec := NewStorageExecutor(store)
-
-	query := "CREATE (n:MongoRecord) SET n = row.properties"
-	out := exec.replaceVariableInQuery(query, "row", map[string]interface{}{
-		"properties": map[string]interface{}{
-			"_mongo_id":         "m7",
-			"_mongo_collection": "nornic_translation",
-		},
-	})
-
-	if strings.Contains(out, "row.properties") {
-		t.Fatalf("expected row.properties to be substituted, got: %s", out)
-	}
-	if !strings.Contains(out, "SET n = {") {
-		t.Fatalf("expected map literal substitution in query, got: %s", out)
-	}
-}
-
-func TestReplaceVariableInQuery_ReplacesScalarAcrossNewlinesAndPunctuation(t *testing.T) {
-	baseStore := newTestMemoryEngine(t)
-	store := storage.NewNamespacedEngine(baseStore, "test")
-	exec := NewStorageExecutor(store)
-
-	query := "MATCH (o:OriginalText {__tmpJoinKey: k})\nMATCH (t:TranslatedText {__tmpJoinKey: k})\nRETURN count(*) AS c"
-	out := exec.replaceVariableInQuery(query, "k", "k1")
-	require.Contains(t, out, "__tmpJoinKey: 'k1'")
-	require.NotContains(t, out, "__tmpJoinKey: k")
-}
-
-func TestReplaceVariableInQuery_DoesNotReplaceMapKeysOrPropertyNames(t *testing.T) {
-	baseStore := newTestMemoryEngine(t)
-	store := storage.NewNamespacedEngine(baseStore, "test")
-	exec := NewStorageExecutor(store)
-
-	query := "CREATE (n:TestNode {name: name}) RETURN n.name AS nodeName"
-	out := exec.replaceVariableInQuery(query, "name", "A")
-	require.Contains(t, out, "{name: 'A'}")
-	require.Contains(t, out, "RETURN n.name AS nodeName")
-	require.NotContains(t, out, "{'A':")
 }

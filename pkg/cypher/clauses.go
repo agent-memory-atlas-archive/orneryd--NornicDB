@@ -941,13 +941,17 @@ func (e *StorageExecutor) executeUnwind(ctx context.Context, cypher string) (*Ex
 		}
 
 		for _, item := range items {
-			substitutedQuery := e.replaceVariableInQuery(normalizedRestQuery, variable, item)
+			// Bound child context (§6.2): the unwound value travels as a value
+			// binding and a parameter, never as query-text substitution. MATCH
+			// property maps and expression evaluation resolve the binding
+			// through the same scope as CREATE/MERGE.
 			callParams := make(map[string]interface{}, util.SafePreallocSum(len(params), 1))
 			for k, v := range params {
 				callParams[k] = v
 			}
 			callParams[variable] = item
-			subResult, err := e.Execute(ctx, substitutedQuery, callParams)
+			childCtx := withValueBindings(ctx, map[string]interface{}{variable: item})
+			subResult, err := e.Execute(childCtx, normalizedRestQuery, callParams)
 			if err != nil {
 				return nil, localizedError(localization.CypherMutationsUnwindMatchFailed(err), err)
 			}
@@ -5430,44 +5434,6 @@ func (e *StorageExecutor) executeLoadCSV(ctx context.Context, cypher string) (*E
 // ========================================
 
 // replaceVariableInQuery replaces all occurrences of a variable with its value in a query.
-func (e *StorageExecutor) replaceVariableInQuery(query string, variable string, value interface{}) string {
-	result := query
-	skipBareReplacement := false
-
-	// Handle property access patterns first (variable.property)
-	// For maps, replace variable.key with the actual value.
-	if valueMap, ok := toStringAnyMap(value); ok {
-		// Find all property access patterns
-		for _, key := range sortedMapKeysByDescendingLength(valueMap) {
-			propVal := valueMap[key]
-			propValStr := e.valueToLiteral(propVal)
-			pattern := variable + "." + key
-			result = strings.ReplaceAll(result, pattern, propValStr)
-			backtickedPattern := variable + ".`" + strings.ReplaceAll(key, "`", "``") + "`"
-			result = strings.ReplaceAll(result, backtickedPattern, propValStr)
-		}
-		// Also handle standalone variable references (e.g. SET n = row).
-		value = valueMap
-	}
-
-	// Convert to a Cypher literal so maps/lists remain valid expressions.
-	valueStr := e.valueToLiteral(value)
-	// Guard against corrupting clauses like `WITH o, row` or
-	// `UNWIND row.xs AS x` where bare `row` must survive substitution —
-	// injecting a full map literal breaks the parser because `{...}` is
-	// parsed as a node-property map.
-	if _, ok := toStringAnyMap(value); ok {
-		if findKeywordIndexInContext(query, "WITH") >= 0 &&
-			findKeywordIndexInContext(query, "UNWIND") >= 0 {
-			valueStr = "{}"
-		}
-	}
-	if skipBareReplacement {
-		return result
-	}
-	return replaceIdentifierOutsideQuotes(result, variable, valueStr)
-}
-
 // replaceVariableInMutationQuery substitutes UNWIND row variables in mutation queries.
 // For map-shaped rows, standalone variable tokens inside WITH pipelines are collapsed to
 // "{}" to avoid parser ambiguity from large inline map literals, while row.property tokens
