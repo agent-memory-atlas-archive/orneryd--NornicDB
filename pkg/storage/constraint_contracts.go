@@ -1294,27 +1294,53 @@ func (tx *BadgerTransaction) validateConstraintContractsForNodeLocked(node *Node
 	if !ok {
 		return nil
 	}
+	return tx.validateConstraintContractsLocked(dbName, ConstraintEntityNode, node.Labels, ConstraintContractKindBooleanNode, node, nil)
+}
+
+// validateConstraintContractsLocked is the shared validation core for node and
+// edge contract checks: namespace/schema resolution, contract collection
+// (name-deduplicated across the entity's targets in target order, with each
+// target's contracts in the schema's name-sorted order — deterministic, and
+// the single-target edge path preserves its previous evaluation order),
+// boolean-kind filtering, evaluation and the invalid/violated error wrapping
+// are one implementation. Exactly one of node/edge is non-nil and selects the
+// entity-specific evaluator; the per-entry dispatch keeps the kernel
+// allocation-free on the commit path.
+func (tx *BadgerTransaction) validateConstraintContractsLocked(dbName string, entity ConstraintEntityType, targets []string, kind string, node *Node, edge *Edge) error {
 	schema := tx.engine.GetSchemaForNamespace(dbName)
 	if schema == nil {
 		return nil
 	}
-	contractsByName := make(map[string]ConstraintContract)
-	for _, label := range node.Labels {
-		for _, contract := range schema.GetConstraintContractsForTarget(ConstraintEntityNode, label) {
-			contractsByName[contract.Name] = contract
-		}
-	}
-	for _, contract := range contractsByName {
-		for _, entry := range contract.Entries {
-			if entry.Kind != ConstraintContractKindBooleanNode {
+	// Single pass: collect and validate in target order (label order for
+	// nodes, the single relationship type for edges) with each target's
+	// contracts in the schema's name-sorted order — deterministic, and the
+	// single-target edge path preserves its previous evaluation order.
+	// Name dedup keeps the first occurrence of a contract that applies to
+	// several of the entity's targets.
+	seen := make(map[string]struct{})
+	for _, target := range targets {
+		for _, contract := range schema.GetConstraintContractsForTarget(entity, target) {
+			if _, dup := seen[contract.Name]; dup {
 				continue
 			}
-			ok, err := tx.evaluateNodeConstraintContractExpressionLocked(node, entry.Expression)
-			if err != nil {
-				return localizedError(localization.StorageSchemaConstraintContractInvalid(contract.Name, entry.Expression, err), err)
-			}
-			if !ok {
-				return localizedError(localization.StorageSchemaConstraintContractViolated(contract.Name, entry.Expression), nil)
+			seen[contract.Name] = struct{}{}
+			for _, entry := range contract.Entries {
+				if entry.Kind != kind {
+					continue
+				}
+				var ok bool
+				var err error
+				if node != nil {
+					ok, err = tx.evaluateNodeConstraintContractExpressionLocked(node, entry.Expression)
+				} else {
+					ok, err = tx.evaluateRelationshipConstraintContractExpressionLocked(edge, entry.Expression)
+				}
+				if err != nil {
+					return localizedError(localization.StorageSchemaConstraintContractInvalid(contract.Name, entry.Expression, err), err)
+				}
+				if !ok {
+					return localizedError(localization.StorageSchemaConstraintContractViolated(contract.Name, entry.Expression), nil)
+				}
 			}
 		}
 	}
@@ -1326,25 +1352,7 @@ func (tx *BadgerTransaction) validateConstraintContractsForEdgeLocked(edge *Edge
 	if !ok {
 		return nil
 	}
-	schema := tx.engine.GetSchemaForNamespace(dbName)
-	if schema == nil {
-		return nil
-	}
-	for _, contract := range schema.GetConstraintContractsForTarget(ConstraintEntityRelationship, edge.Type) {
-		for _, entry := range contract.Entries {
-			if entry.Kind != ConstraintContractKindBooleanRelationship {
-				continue
-			}
-			ok, err := tx.evaluateRelationshipConstraintContractExpressionLocked(edge, entry.Expression)
-			if err != nil {
-				return localizedError(localization.StorageSchemaConstraintContractInvalid(contract.Name, entry.Expression, err), err)
-			}
-			if !ok {
-				return localizedError(localization.StorageSchemaConstraintContractViolated(contract.Name, entry.Expression), nil)
-			}
-		}
-	}
-	return nil
+	return tx.validateConstraintContractsLocked(dbName, ConstraintEntityRelationship, []string{edge.Type}, ConstraintContractKindBooleanRelationship, nil, edge)
 }
 
 func (tx *BadgerTransaction) evaluateNodeConstraintContractExpressionLocked(node *Node, expr string) (bool, error) {
