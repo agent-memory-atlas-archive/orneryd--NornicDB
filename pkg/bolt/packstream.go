@@ -1005,26 +1005,30 @@ func extractPathFromMap(val map[string]any) (*cypher.PathResult, bool) {
 	}, true
 }
 
-func coercePathNodes(val any) []*storage.Node {
-	switch nodes := val.(type) {
-	case []*storage.Node:
-		return nodes
-	case []storage.Node:
-		converted := make([]*storage.Node, 0, len(nodes))
-		for i := range nodes {
-			node := nodes[i]
-			converted = append(converted, &node)
+// coercePathRecords is the shared kernel behind coercePathNodes and
+// coercePathRels: it normalizes a slice of records that may arrive as
+// []*T, []T, or a mixed []any of pointers and values into []*T. Items of
+// any other type are skipped; a non-slice input yields nil.
+func coercePathRecords[T any](val any) []*T {
+	switch records := val.(type) {
+	case []*T:
+		return records
+	case []T:
+		converted := make([]*T, 0, len(records))
+		for i := range records {
+			record := records[i]
+			converted = append(converted, &record)
 		}
 		return converted
 	case []any:
-		converted := make([]*storage.Node, 0, len(nodes))
-		for _, item := range nodes {
-			switch node := item.(type) {
-			case *storage.Node:
-				converted = append(converted, node)
-			case storage.Node:
-				n := node
-				converted = append(converted, &n)
+		converted := make([]*T, 0, len(records))
+		for _, item := range records {
+			switch record := item.(type) {
+			case *T:
+				converted = append(converted, record)
+			case T:
+				r := record
+				converted = append(converted, &r)
 			}
 		}
 		return converted
@@ -1033,32 +1037,12 @@ func coercePathNodes(val any) []*storage.Node {
 	}
 }
 
+func coercePathNodes(val any) []*storage.Node {
+	return coercePathRecords[storage.Node](val)
+}
+
 func coercePathRels(val any) []*storage.Edge {
-	switch rels := val.(type) {
-	case []*storage.Edge:
-		return rels
-	case []storage.Edge:
-		converted := make([]*storage.Edge, 0, len(rels))
-		for i := range rels {
-			rel := rels[i]
-			converted = append(converted, &rel)
-		}
-		return converted
-	case []any:
-		converted := make([]*storage.Edge, 0, len(rels))
-		for _, item := range rels {
-			switch rel := item.(type) {
-			case *storage.Edge:
-				converted = append(converted, rel)
-			case storage.Edge:
-				r := rel
-				converted = append(converted, &r)
-			}
-		}
-		return converted
-	default:
-		return nil
-	}
+	return coercePathRecords[storage.Edge](val)
 }
 
 // encodeNode encodes a node as a proper Bolt Node structure (signature 0x4E).

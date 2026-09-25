@@ -373,6 +373,10 @@ func TestBoltCoverage_PackStreamPathAndWrapperHelpers(t *testing.T) {
 
 		assert.Len(t, coercePathNodes([]any{*nodeA, nodeB, "skip"}), 2)
 		assert.Len(t, coercePathRels([]any{*edge, edge, "skip"}), 2)
+		assert.Len(t, coercePathNodes([]*storage.Node{nodeA}), 1)
+		assert.Len(t, coercePathNodes([]storage.Node{*nodeA}), 1)
+		assert.Len(t, coercePathRels([]*storage.Edge{edge}), 1)
+		assert.Len(t, coercePathRels([]storage.Edge{*edge}), 1)
 		assert.Nil(t, coercePathNodes("not-a-list"))
 		assert.Nil(t, coercePathRels("not-a-list"))
 	})
