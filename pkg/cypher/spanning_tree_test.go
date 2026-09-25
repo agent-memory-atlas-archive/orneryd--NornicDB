@@ -2,9 +2,11 @@ package cypher
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/orneryd/nornicdb/pkg/storage"
+	"github.com/stretchr/testify/require"
 )
 
 // TestApocPathSpanningTreeBasic tests basic spanning tree functionality
@@ -297,4 +299,87 @@ func TestApocPathSpanningTreeDirection(t *testing.T) {
 	if len(result.Rows) != 2 {
 		t.Errorf("Expected 2 edges with outgoing filter, got %d", len(result.Rows))
 	}
+}
+
+// TestSpanningTreeKernel_BFSAndDFSShareFrontierInvariants pins the shared
+// frontier walk (spanningTreeFrom): on a tree graph both modes visit every
+// node and return the same edge set; on a cyclic graph both return a
+// connected spanning forest (nodeCount - 1 edges for the reachable part).
+func TestSpanningTreeKernel_BFSAndDFSShareFrontierInvariants(t *testing.T) {
+	baseStore := newTestMemoryEngine(t)
+	store := storage.NewNamespacedEngine(baseStore, "spanning_kernel")
+	e := NewStorageExecutor(store)
+
+	for i := 0; i < 6; i++ {
+		_, err := store.CreateNode(&storage.Node{ID: storage.NodeID(fmt.Sprintf("n%d", i)), Labels: []string{"Node"}})
+		require.NoError(t, err)
+	}
+	// A tree: n0 -> n1, n0 -> n2, n1 -> n3, n1 -> n4, n2 -> n5
+	treeEdges := []*storage.Edge{
+		{ID: "t0", Type: "LINK", StartNode: "n0", EndNode: "n1"},
+		{ID: "t1", Type: "LINK", StartNode: "n0", EndNode: "n2"},
+		{ID: "t2", Type: "LINK", StartNode: "n1", EndNode: "n3"},
+		{ID: "t3", Type: "LINK", StartNode: "n1", EndNode: "n4"},
+		{ID: "t4", Type: "LINK", StartNode: "n2", EndNode: "n5"},
+	}
+	for _, edge := range treeEdges {
+		require.NoError(t, store.CreateEdge(edge))
+	}
+
+	start, err := store.GetNode("n0")
+	require.NoError(t, err)
+
+	bfs := e.spanningTreeFrom(start, apocPathConfig{direction: "both", maxLevel: -1}, false)
+	dfs := e.spanningTreeFrom(start, apocPathConfig{direction: "both", maxLevel: -1}, true)
+	require.Len(t, bfs, 5)
+	require.Len(t, dfs, 5)
+	require.ElementsMatch(t, []storage.EdgeID{"t0", "t1", "t2", "t3", "t4"},
+		[]storage.EdgeID{bfs[0].ID, bfs[1].ID, bfs[2].ID, bfs[3].ID, bfs[4].ID})
+	require.ElementsMatch(t, []storage.EdgeID{"t0", "t1", "t2", "t3", "t4"},
+		[]storage.EdgeID{dfs[0].ID, dfs[1].ID, dfs[2].ID, dfs[3].ID, dfs[4].ID})
+
+	// A cycle: n1 -extra-> n2. Both walks still span all reachable nodes
+	// with exactly nodeCount-1 edges.
+	require.NoError(t, store.CreateEdge(&storage.Edge{ID: "cycle", Type: "LINK", StartNode: "n1", EndNode: "n2"}))
+	bfs = e.spanningTreeFrom(start, apocPathConfig{direction: "both", maxLevel: -1}, false)
+	dfs = e.spanningTreeFrom(start, apocPathConfig{direction: "both", maxLevel: -1}, true)
+	require.Len(t, bfs, 5)
+	require.Len(t, dfs, 5)
+}
+
+// BenchmarkSpanningTreeKernel pins the shared frontier-walk cost on a 100-node
+// synthetic tree for both modes.
+func BenchmarkSpanningTreeKernel(b *testing.B) {
+	baseStore := newTestMemoryEngine(b)
+	store := storage.NewNamespacedEngine(baseStore, "spanning_bench")
+	e := NewStorageExecutor(store)
+	for i := 0; i < 100; i++ {
+		if _, err := store.CreateNode(&storage.Node{ID: storage.NodeID(fmt.Sprintf("n%d", i)), Labels: []string{"Node"}}); err != nil {
+			b.Fatal(err)
+		}
+		if i > 0 {
+			parent := storage.NodeID(fmt.Sprintf("n%d", (i-1)/2))
+			child := storage.NodeID(fmt.Sprintf("n%d", i))
+			if err := store.CreateEdge(&storage.Edge{ID: storage.EdgeID(fmt.Sprintf("e%d", i)), Type: "LINK", StartNode: parent, EndNode: child}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	start, err := store.GetNode("n0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	cfg := apocPathConfig{direction: "both", maxLevel: -1}
+	b.Run("bfs", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = e.spanningTreeFrom(start, cfg, false)
+		}
+	})
+	b.Run("dfs", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = e.spanningTreeFrom(start, cfg, true)
+		}
+	})
 }

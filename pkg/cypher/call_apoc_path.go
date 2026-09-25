@@ -764,22 +764,33 @@ func (e *StorageExecutor) callApocPathSpanningTree(cypher string) (*ExecuteResul
 }
 
 // bfsSpanningTree builds a spanning tree using breadth-first search
-func (e *StorageExecutor) bfsSpanningTree(startNode *storage.Node, config apocPathConfig) []*storage.Edge {
+// spanningTreeFrom builds a spanning tree from startNode with a shared
+// frontier walk. BFS pops from the front (queue) and scans edges in list
+// order; DFS pops from the back (stack) and scans edges in reverse so the
+// first edge in list order is still explored first. Everything else — level
+// window, terminate labels, direction, relationship/label filters and the
+// visited set — is identical for both walks.
+func (e *StorageExecutor) spanningTreeFrom(startNode *storage.Node, config apocPathConfig, depthFirst bool) []*storage.Edge {
 	var treeEdges []*storage.Edge
 	visited := make(map[string]bool)
 
-	// Queue: (node, level, parentEdge)
-	type queueItem struct {
+	type frontierItem struct {
 		node       *storage.Node
 		level      int
 		parentEdge *storage.Edge
 	}
-	queue := []queueItem{{node: startNode, level: 0, parentEdge: nil}}
+	frontier := []frontierItem{{node: startNode, level: 0, parentEdge: nil}}
 	visited[string(startNode.ID)] = true
 
-	for len(queue) > 0 {
-		item := queue[0]
-		queue = queue[1:]
+	for len(frontier) > 0 {
+		var item frontierItem
+		if depthFirst {
+			item = frontier[len(frontier)-1]
+			frontier = frontier[:len(frontier)-1]
+		} else {
+			item = frontier[0]
+			frontier = frontier[1:]
+		}
 
 		node := item.node
 		level := item.level
@@ -813,8 +824,13 @@ func (e *StorageExecutor) bfsSpanningTree(startNode *storage.Node, config apocPa
 			edges = append(out, in...)
 		}
 
-		// Process each edge
-		for _, edge := range edges {
+		// Process each edge; DFS scans in reverse so list order is explored first.
+		for idx := 0; idx < len(edges); idx++ {
+			edge := edges[idx]
+			if depthFirst {
+				edge = edges[len(edges)-1-idx]
+			}
+
 			// Check relationship type filter
 			if len(config.relationshipTypes) > 0 {
 				found := false
@@ -854,8 +870,7 @@ func (e *StorageExecutor) bfsSpanningTree(startNode *storage.Node, config apocPa
 				continue
 			}
 
-			// Add to queue with this edge
-			queue = append(queue, queueItem{
+			frontier = append(frontier, frontierItem{
 				node:       nextNode,
 				level:      level + 1,
 				parentEdge: edge,
@@ -866,108 +881,11 @@ func (e *StorageExecutor) bfsSpanningTree(startNode *storage.Node, config apocPa
 	return treeEdges
 }
 
+func (e *StorageExecutor) bfsSpanningTree(startNode *storage.Node, config apocPathConfig) []*storage.Edge {
+	return e.spanningTreeFrom(startNode, config, false)
+}
+
 // dfsSpanningTree builds a spanning tree using depth-first search
 func (e *StorageExecutor) dfsSpanningTree(startNode *storage.Node, config apocPathConfig) []*storage.Edge {
-	var treeEdges []*storage.Edge
-	visited := make(map[string]bool)
-
-	// Stack: (node, level, parentEdge)
-	type stackItem struct {
-		node       *storage.Node
-		level      int
-		parentEdge *storage.Edge
-	}
-	stack := []stackItem{{node: startNode, level: 0, parentEdge: nil}}
-	visited[string(startNode.ID)] = true
-
-	for len(stack) > 0 {
-		// Pop from stack
-		item := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-
-		node := item.node
-		level := item.level
-
-		// Add the edge that got us here (if any) and if level > minLevel
-		// Note: edges connect level N to level N+1, so check level > minLevel not level >= minLevel
-		if item.parentEdge != nil && level > config.minLevel {
-			treeEdges = append(treeEdges, item.parentEdge)
-		}
-
-		// Check if we should terminate at this node
-		if isTerminateNode(node, config.terminateLabels) {
-			continue
-		}
-
-		// Check if we've reached max level
-		if config.maxLevel >= 0 && level >= config.maxLevel {
-			continue
-		}
-
-		// Get edges based on direction
-		var edges []*storage.Edge
-		switch config.direction {
-		case "outgoing":
-			edges, _ = e.storage.GetOutgoingEdges(node.ID)
-		case "incoming":
-			edges, _ = e.storage.GetIncomingEdges(node.ID)
-		default: // "both"
-			out, _ := e.storage.GetOutgoingEdges(node.ID)
-			in, _ := e.storage.GetIncomingEdges(node.ID)
-			edges = append(out, in...)
-		}
-
-		// Process each edge (in reverse for DFS to maintain order)
-		for i := len(edges) - 1; i >= 0; i-- {
-			edge := edges[i]
-
-			// Check relationship type filter
-			if len(config.relationshipTypes) > 0 {
-				found := false
-				for _, t := range config.relationshipTypes {
-					if edge.Type == t {
-						found = true
-						break
-					}
-				}
-				if !found {
-					continue
-				}
-			}
-
-			// Get the other node
-			var nextNodeID storage.NodeID
-			if edge.StartNode == node.ID {
-				nextNodeID = edge.EndNode
-			} else {
-				nextNodeID = edge.StartNode
-			}
-
-			// Skip if already visited (no cycles in spanning tree)
-			if visited[string(nextNodeID)] {
-				continue
-			}
-			visited[string(nextNodeID)] = true
-
-			// Get the node
-			nextNode, err := e.storage.GetNode(nextNodeID)
-			if err != nil || nextNode == nil {
-				continue
-			}
-
-			// Check label filters
-			if !passesLabelFilter(nextNode, config.includeLabels, config.excludeLabels) {
-				continue
-			}
-
-			// Push to stack with this edge
-			stack = append(stack, stackItem{
-				node:       nextNode,
-				level:      level + 1,
-				parentEdge: edge,
-			})
-		}
-	}
-
-	return treeEdges
+	return e.spanningTreeFrom(startNode, config, true)
 }
