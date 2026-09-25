@@ -266,30 +266,7 @@ func buildEdgeFulltextDoc(edge *storage.Edge, properties []string) *ftDoc {
 	if edge == nil {
 		return nil
 	}
-	props := make(map[string]string, len(edge.Properties))
-	rawProps := make(map[string]string, len(edge.Properties))
-	for k, v := range edge.Properties {
-		if v == nil {
-			continue
-		}
-		raw := fmt.Sprintf("%v", v)
-		if raw == "" {
-			continue
-		}
-		props[strings.ToLower(k)] = strings.ToLower(raw)
-		rawProps[strings.ToLower(k)] = raw
-	}
-	content := extractEdgeTextContent(edge, properties)
-	if content == "" {
-		return nil
-	}
-	contentLower := strings.ToLower(content)
-	return &ftDoc{
-		properties:    props,
-		rawProperties: rawProps,
-		contentLower:  contentLower,
-		contentTokenN: len(strings.Fields(content)),
-	}
+	return buildFulltextDocFromProperties(edge.Properties, extractEdgeTextContent(edge, properties))
 }
 
 // edgeHasNonEmptyProperty mirrors nodeHasNonEmptyProperty: the

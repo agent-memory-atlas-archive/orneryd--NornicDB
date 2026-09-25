@@ -241,9 +241,17 @@ func buildNodeFulltextDoc(node *storage.Node, properties []string) *ftDoc {
 	if node == nil {
 		return nil
 	}
-	props := make(map[string]string, len(node.Properties))
-	rawProps := make(map[string]string, len(node.Properties))
-	for k, v := range node.Properties {
+	return buildFulltextDocFromProperties(node.Properties, extractTextContent(node, properties))
+}
+
+// buildFulltextDocFromProperties builds the shared ftDoc: every non-empty
+// property becomes a lowercased search field with its raw value preserved,
+// and the entity-specific content string supplies the searchable body. The
+// node and edge builders differ only in how they extract that content.
+func buildFulltextDocFromProperties(properties map[string]interface{}, content string) *ftDoc {
+	props := make(map[string]string, len(properties))
+	rawProps := make(map[string]string, len(properties))
+	for k, v := range properties {
 		if v == nil {
 			continue
 		}
@@ -254,7 +262,6 @@ func buildNodeFulltextDoc(node *storage.Node, properties []string) *ftDoc {
 		props[strings.ToLower(k)] = strings.ToLower(raw)
 		rawProps[strings.ToLower(k)] = raw
 	}
-	content := extractTextContent(node, properties)
 	if content == "" {
 		return nil
 	}
