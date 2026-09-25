@@ -54,7 +54,9 @@ func (e *StorageExecutor) unregisterVectorSpace(indexName string) {
 
 func (e *StorageExecutor) databaseName() string {
 	engine := e.storage
-	for engine != nil {
+	visited := make(map[storage.Engine]bool)
+	for engine != nil && !visited[engine] {
+		visited[engine] = true
 		if namespaceProvider, ok := engine.(interface{ Namespace() string }); ok {
 			if namespace := strings.TrimSpace(namespaceProvider.Namespace()); namespace != "" {
 				return namespace

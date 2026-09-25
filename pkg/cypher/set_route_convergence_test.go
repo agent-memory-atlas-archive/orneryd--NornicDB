@@ -245,9 +245,13 @@ func normalizeSetRouteRows(rows [][]interface{}) [][]interface{} {
 func newSetRouteServerStackExecutor(t *testing.T) *StorageExecutor {
 	t.Helper()
 	dir := t.TempDir()
-	badger, err := storage.NewBadgerEngine(dir)
+	// In-memory Badger keeps the full production chain (Badger -> WAL -> Async
+	// -> Namespaced) while skipping per-case on-disk database opens, which
+	// dominated the suite runtime (profiled: ~30% CPU in badger.Open plus
+	// fsync wall-clock per build).
+	badger, err := storage.NewBadgerEngineInMemory()
 	require.NoError(t, err)
-	wal, err := storage.NewWAL(dir+"/wal", nil)
+	wal, err := storage.NewWAL(dir+"/wal", &storage.WALConfig{SyncMode: "none"})
 	require.NoError(t, err)
 	async := storage.NewAsyncEngine(storage.NewWALEngine(badger, wal), nil)
 	t.Cleanup(func() {

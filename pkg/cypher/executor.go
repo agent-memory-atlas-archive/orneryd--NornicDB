@@ -2513,8 +2513,10 @@ func (e *StorageExecutor) getStorage(ctx context.Context) storage.Engine {
 func (e *StorageExecutor) resolveWALAndDatabase() (*storage.WAL, string) {
 	engine := e.storage
 	var dbName string
+	visited := make(map[storage.Engine]bool)
 
-	for engine != nil {
+	for engine != nil && !visited[engine] {
+		visited[engine] = true
 		if ns, ok := engine.(interface{ Namespace() string }); ok && dbName == "" {
 			dbName = ns.Namespace()
 		}
