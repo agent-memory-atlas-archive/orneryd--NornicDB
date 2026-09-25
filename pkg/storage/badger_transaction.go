@@ -1814,80 +1814,76 @@ func (tx *BadgerTransaction) HasPendingNodeMutations() bool {
 	return len(tx.pendingNodes) > 0 || len(tx.deletedNodes) > 0
 }
 
-func (tx *BadgerTransaction) mergePendingNodesLocked(committed []*Node, includePending func(*Node) bool) []*Node {
-	merged := make([]*Node, 0, util.SafePreallocSum(len(committed), len(tx.pendingNodes)))
-	seen := make(map[NodeID]struct{}, util.SafePreallocSum(len(committed), len(tx.pendingNodes)))
-
-	for _, node := range committed {
-		if node == nil {
+// mergePendingLocked merges committed records with the transaction's pending
+// overlay. It is the shared kernel behind the node and edge twins: a pending
+// record shadows a committed record with the same ID, a deleted ID drops its
+// committed record, and every surviving record is copied before it escapes so
+// callers can never mutate overlay state. Nil records are skipped (idOf
+// returns the zero ID for them). When there is no overlay, the committed
+// slice is returned unchanged.
+func mergePendingLocked[ID comparable, T any](
+	committed []T,
+	pending map[ID]T,
+	deleted map[ID]struct{},
+	includePending func(T) bool,
+	idOf func(T) ID,
+	copyOf func(T) T,
+) []T {
+	if len(pending) == 0 && len(deleted) == 0 {
+		return committed
+	}
+	merged := make([]T, 0, util.SafePreallocSum(len(committed), len(pending)))
+	seen := make(map[ID]struct{}, util.SafePreallocSum(len(committed), len(pending)))
+	var zero ID
+	for _, record := range committed {
+		id := idOf(record)
+		if id == zero {
+			continue // nil record
+		}
+		if _, deleted := deleted[id]; deleted {
 			continue
 		}
-		if _, deleted := tx.deletedNodes[node.ID]; deleted {
-			continue
-		}
-		if pending, exists := tx.pendingNodes[node.ID]; exists {
-			if includePending(pending) {
-				merged = append(merged, copyNode(pending))
-				seen[node.ID] = struct{}{}
+		if pendingRecord, exists := pending[id]; exists {
+			if includePending(pendingRecord) {
+				merged = append(merged, copyOf(pendingRecord))
+				seen[id] = struct{}{}
 			}
 			continue
 		}
-		if includePending(node) {
-			merged = append(merged, copyNode(node))
-			seen[node.ID] = struct{}{}
+		if includePending(record) {
+			merged = append(merged, copyOf(record))
+			seen[id] = struct{}{}
 		}
 	}
 
-	for id, node := range tx.pendingNodes {
+	for id, record := range pending {
 		if _, exists := seen[id]; exists {
 			continue
 		}
-		if includePending(node) {
-			merged = append(merged, copyNode(node))
+		if includePending(record) {
+			merged = append(merged, copyOf(record))
 		}
 	}
 
 	return merged
 }
 
+func (tx *BadgerTransaction) mergePendingNodesLocked(committed []*Node, includePending func(*Node) bool) []*Node {
+	return mergePendingLocked(committed, tx.pendingNodes, tx.deletedNodes, includePending, func(node *Node) NodeID {
+		if node == nil {
+			return ""
+		}
+		return node.ID
+	}, copyNode)
+}
+
 func (tx *BadgerTransaction) mergePendingEdgesLocked(committed []*Edge, includePending func(*Edge) bool) []*Edge {
-	if len(tx.pendingEdges) == 0 && len(tx.deletedEdges) == 0 {
-		return committed
-	}
-
-	merged := make([]*Edge, 0, util.SafePreallocSum(len(committed), len(tx.pendingEdges)))
-	seen := make(map[EdgeID]struct{}, util.SafePreallocSum(len(committed), len(tx.pendingEdges)))
-
-	for _, edge := range committed {
+	return mergePendingLocked(committed, tx.pendingEdges, tx.deletedEdges, includePending, func(edge *Edge) EdgeID {
 		if edge == nil {
-			continue
+			return ""
 		}
-		if _, deleted := tx.deletedEdges[edge.ID]; deleted {
-			continue
-		}
-		if pending, exists := tx.pendingEdges[edge.ID]; exists {
-			if includePending(pending) {
-				merged = append(merged, copyEdge(pending))
-				seen[edge.ID] = struct{}{}
-			}
-			continue
-		}
-		if includePending(edge) {
-			merged = append(merged, copyEdge(edge))
-			seen[edge.ID] = struct{}{}
-		}
-	}
-
-	for id, edge := range tx.pendingEdges {
-		if _, exists := seen[id]; exists {
-			continue
-		}
-		if includePending(edge) {
-			merged = append(merged, copyEdge(edge))
-		}
-	}
-
-	return merged
+		return edge.ID
+	}, copyEdge)
 }
 
 // Commit applies all changes atomically with full constraint validation.

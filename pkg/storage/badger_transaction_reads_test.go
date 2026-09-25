@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -712,6 +713,64 @@ func TestTxReads_MergePendingEdgesLocked(t *testing.T) {
 func TestTxReads_GetAllNodes_ClosedTransactionReturnsNil(t *testing.T) {
 	tx := &BadgerTransaction{Status: TxStatusCommitted}
 	require.Nil(t, tx.GetAllNodes())
+}
+
+func BenchmarkTxReads_MergePendingNodesLocked_NoOverlay(b *testing.B) {
+	committed := make([]*Node, 512)
+	for i := range committed {
+		committed[i] = &Node{ID: NodeID("test:n" + strconv.Itoa(i)), Labels: []string{"Person"}}
+	}
+	tx := &BadgerTransaction{Status: TxStatusActive}
+	include := func(node *Node) bool { return node != nil && len(node.Labels) > 0 && node.Labels[0] == "Person" }
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := tx.mergePendingNodesLocked(committed, include); len(got) != 512 {
+			b.Fatalf("expected 512 nodes, got %d", len(got))
+		}
+	}
+}
+
+func BenchmarkTxReads_MergePendingNodesLocked_WithOverlay(b *testing.B) {
+	committed := make([]*Node, 512)
+	pending := make(map[NodeID]*Node, 64)
+	for i := range committed {
+		committed[i] = &Node{ID: NodeID("test:n" + strconv.Itoa(i)), Labels: []string{"Person"}}
+	}
+	for i := 0; i < 64; i++ {
+		id := NodeID("test:n" + strconv.Itoa(i))
+		pending[id] = &Node{ID: id, Labels: []string{"Person", "Engineer"}}
+	}
+	tx := &BadgerTransaction{Status: TxStatusActive, pendingNodes: pending}
+	include := func(node *Node) bool { return node != nil && len(node.Labels) > 0 && node.Labels[0] == "Person" }
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := tx.mergePendingNodesLocked(committed, include); len(got) != 512 {
+			b.Fatalf("expected 512 nodes, got %d", len(got))
+		}
+	}
+}
+
+func BenchmarkTxReads_MergePendingEdgesLocked_WithOverlay(b *testing.B) {
+	committed := make([]*Edge, 512)
+	pending := make(map[EdgeID]*Edge, 64)
+	for i := range committed {
+		committed[i] = &Edge{ID: EdgeID("test:e" + strconv.Itoa(i)), StartNode: "test:a", EndNode: "test:b", Type: "KNOWS"}
+	}
+	for i := 0; i < 64; i++ {
+		id := EdgeID("test:e" + strconv.Itoa(i))
+		pending[id] = &Edge{ID: id, StartNode: "test:a", EndNode: "test:b", Type: "KNOWS"}
+	}
+	tx := &BadgerTransaction{Status: TxStatusActive, pendingEdges: pending}
+	include := func(edge *Edge) bool { return edge != nil && edge.Type == "KNOWS" }
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := tx.mergePendingEdgesLocked(committed, include); len(got) != 512 {
+			b.Fatalf("expected 512 edges, got %d", len(got))
+		}
+	}
 }
 
 func TestTxReads_BulkCreateEdges_Success(t *testing.T) {
