@@ -46,8 +46,14 @@ func isCaseExpression(expr string) bool {
 // atomic operand without allowing operators inside WHEN predicates to escape.
 func leadingCaseExpressionEnd(expr string) int {
 	expr = strings.TrimSpace(expr)
-	depth := 0
-	for index := 0; index < len(expr); {
+	// The first identifier token must be CASE itself; a CASE keyword nested
+	// inside a compound expression (acc + CASE … END) is not a leading CASE.
+	firstWord, firstNext, firstOK := scanIdentifierToken(expr, 0)
+	if !firstOK || !strings.EqualFold(firstWord, "case") {
+		return -1
+	}
+	depth := 1
+	for index := firstNext; index < len(expr); {
 		if expr[index] == '\'' || expr[index] == '"' || expr[index] == '`' {
 			index = numericValidationSkipQuoted(expr, index)
 			continue
@@ -234,6 +240,49 @@ func parseWhenClause(section string, isSimple bool) (caseWhenClause, error) {
 	}
 
 	return clause, nil
+}
+
+// caseBlockSpan is the [start, end) text range of one CASE … END expression.
+type caseBlockSpan struct {
+	start int
+	end   int
+}
+
+// caseBlockSpans returns the text spans of the outermost CASE … END blocks in
+// expr, outside quoted literals. Nested CASE blocks are contained in their
+// outer span. It returns nil (no allocation) when there are no CASE blocks.
+// A keyword preceded by a dot is a property access, not a CASE keyword.
+func caseBlockSpans(expr string) []caseBlockSpan {
+	var spans []caseBlockSpan
+	stack := make([]int, 0, 2)
+	quote := byte(0)
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if quote != 0 {
+			if ch == quote && !isBackslashEscaped(expr, i) {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' || ch == '`' {
+			quote = ch
+			continue
+		}
+		if i == 0 || expr[i-1] != '.' {
+			if (ch == 'C' || ch == 'c') && matchKeywordAt(expr, i, "CASE") {
+				stack = append(stack, i)
+				continue
+			}
+			if (ch == 'E' || ch == 'e') && matchKeywordAt(expr, i, "END") && len(stack) > 0 {
+				start := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				if len(stack) == 0 {
+					spans = append(spans, caseBlockSpan{start: start, end: i + 3})
+				}
+			}
+		}
+	}
+	return spans
 }
 
 // evaluateCaseExpression evaluates a CASE expression and returns the result.

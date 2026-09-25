@@ -13,6 +13,30 @@ import (
 // evaluateRowExpression resolves an expression against a heterogeneous Cypher
 // row. Unlike the graph-only evaluator, a row may also contain scalar, map,
 // and list bindings introduced by WITH or UNWIND.
+
+// containsCASEKeyword reports whether expr contains the CASE keyword outside
+// quoted literals. The row evaluator delegates compound CASE-containing
+// expressions to the shared evaluator, whose operator scanner is CASE-aware.
+func containsCASEKeyword(expr string) bool {
+	quote := byte(0)
+	for i := 0; i+4 <= len(expr); i++ {
+		ch := expr[i]
+		if quote != 0 {
+			if ch == quote && !isBackslashEscaped(expr, i) {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if matchKeywordAt(expr, i, "CASE") {
+			return true
+		}
+	}
+	return false
+}
 func (e *StorageExecutor) evaluateRowExpression(expr string, values map[string]interface{}) (interface{}, bool) {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
@@ -52,6 +76,18 @@ func (e *StorageExecutor) evaluateRowExpression(expr string, values map[string]i
 	}
 	if isCaseExpression(expr) {
 		return e.evaluateRowCaseExpression(expr, values)
+	}
+	// A CASE nested inside a compound expression (acc + CASE … END): the row
+	// comparison chain would misread the `>` inside WHEN conditions as a
+	// top-level comparison. Delegate the whole expression to the shared
+	// evaluator, whose operator scans are CASE-aware. When the shared
+	// evaluator does not recognize the shape, fall through to the row
+	// branches (reduce over a CASE reduction and friends).
+	if containsCASEKeyword(expr) {
+		value := e.evaluateExpressionFromValues(expr, values)
+		if text, ok := value.(string); !ok || text != expr || isWholeCypherQuotedString(expr) {
+			return value, true
+		}
 	}
 	if value, matched, resolved := e.evaluateRowMapProjection(expr, values); matched {
 		return value, resolved
@@ -125,10 +161,17 @@ func (e *StorageExecutor) evaluateRowExpression(expr string, values map[string]i
 		case "reduce":
 			return e.evaluateRowReduce(argument, values)
 		case "coalesce":
+			// Undefined operands behave as null, matching the shared/fn-level
+			// coalesce: only the first non-null, resolved operand wins. EXISTS
+			// subqueries are non-null booleans and end coalesce immediately.
 			for _, expression := range splitTopLevelComma(argument) {
-				value, resolved := e.evaluateRowExpression(strings.TrimSpace(expression), values)
+				trimmed := strings.TrimSpace(expression)
+				if matched, recognized := e.evaluateRowExistsPredicate(context.Background(), trimmed, values); recognized {
+					return matched, true
+				}
+				value, resolved := e.evaluateRowExpression(trimmed, values)
 				if !resolved {
-					return nil, false
+					continue
 				}
 				if value != nil {
 					return value, true

@@ -123,9 +123,35 @@ func (e *StorageExecutor) evaluateExpressionWithContextFull(ctx context.Context,
 		return v
 	}
 	if hasTopLevelExpressionOperator(expr) {
+		// The operator scanners are CASE-unaware (keeping the hot scan cheap):
+		// a CASE nested in a compound expression would have the `>` of its WHEN
+		// conditions misread as a top-level comparison. Evaluate the CASE
+		// blocks once and substitute them as literals, then run the normal
+		// operator pipeline.
+		if spans := caseBlockSpans(expr); len(spans) > 0 {
+			return e.evaluateExpressionWithCASESubstituted(ctx, expr, spans, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
+		}
 		return e.evaluateExpressionWithContextFullOperators(ctx, expr, "", nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
 	}
 	return e.evaluateExpressionWithContextFullFunctions(ctx, expr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
+}
+
+// evaluateExpressionWithCASESubstituted evaluates the CASE … END blocks of expr
+// (their spans come from caseBlockSpans) and substitutes each with its literal
+// value before running the shared evaluator over the remainder. It is the
+// CASE-aware complement of the allocation-conscious operator scanners.
+func (e *StorageExecutor) evaluateExpressionWithCASESubstituted(ctx context.Context, expr string, spans []caseBlockSpan, nodes map[string]*storage.Node, rels map[string]*storage.Edge, paths map[string]*PathResult, allPathEdges []*storage.Edge, allPathNodes []*storage.Node, pathLength int) interface{} {
+	var builder strings.Builder
+	builder.Grow(len(expr))
+	last := 0
+	for _, span := range spans {
+		builder.WriteString(expr[last:span.start])
+		value := e.evaluateCaseExpression(ctx, expr[span.start:span.end], nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
+		builder.WriteString(e.valueToLiteral(value))
+		last = span.end
+	}
+	builder.WriteString(expr[last:])
+	return e.evaluateExpressionWithContextFull(ctx, builder.String(), nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
 }
 
 func splitPostfixPropertyAccess(expr string) (string, string, bool) {
