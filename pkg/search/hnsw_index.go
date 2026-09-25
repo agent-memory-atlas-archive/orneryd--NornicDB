@@ -1142,94 +1142,8 @@ func (h *HNSWIndex) searchLayer(query []float32, entryID uint32, ef int, level i
 }
 
 func (h *HNSWIndex) searchLayerHeap(query []float32, entryID uint32, ef int, level int) []uint32 {
-	visited := h.visitedPool.Get().(*visitedGenState)
-	defer h.visitedPool.Put(visited)
-	if len(visited.gen) < len(h.nodeLevel) {
-		oldLen := len(visited.gen)
-		if cap(visited.gen) < len(h.nodeLevel) {
-			next := make([]uint16, len(h.nodeLevel))
-			copy(next, visited.gen)
-			visited.gen = next
-		} else {
-			visited.gen = visited.gen[:len(h.nodeLevel)]
-			clear(visited.gen[oldLen:])
-		}
-	}
-	visited.cur++
-	if visited.cur == 0 {
-		clear(visited.gen)
-		visited.cur = 1
-	}
-	curGen := visited.cur
-	visited.gen[entryID] = curGen
-
-	candidates := h.heapPool.Get().(*distHeap)
-	candidates.Reset(false, ef*2)
-	defer h.heapPool.Put(candidates)
-
-	results := h.heapPool.Get().(*distHeap)
-	results.Reset(true, ef*2)
-	defer h.heapPool.Put(results)
-
-	entryDist := float32(1.0) - vector.DotProductSIMD(query, h.vectorAtLocked(entryID))
-	candidates.Push(hnswDistItem{id: entryID, dist: entryDist})
-	results.Push(hnswDistItem{id: entryID, dist: entryDist})
-
-	for candidates.Len() > 0 {
-		closest := candidates.Pop()
-
-		if results.Len() >= ef {
-			furthest := results.Peek()
-			if closest.dist > furthest.dist {
-				break
-			}
-		}
-
-		nodeID := closest.id
-		if !validHNSWIndex(nodeID, len(h.nodeLevel)) || h.deleted[nodeID] {
-			continue
-		}
-		neighbors, ok := h.neighborsAtLevelLocked(nodeID, level)
-		if !ok {
-			continue
-		}
-
-		// Reverse iteration: order doesn't matter when checking all neighbors
-		for i := len(neighbors) - 1; i >= 0; i-- {
-			neighborID := neighbors[i]
-			if !validHNSWIndex(neighborID, len(h.nodeLevel)) || h.deleted[neighborID] {
-				continue
-			}
-			if visited.gen[neighborID] == curGen {
-				continue
-			}
-			visited.gen[neighborID] = curGen
-
-			dist := float32(1.0) - vector.DotProductSIMD(query, h.vectorAtLocked(neighborID))
-
-			if results.Len() < ef || dist < results.Peek().dist {
-				candidates.Push(hnswDistItem{id: neighborID, dist: dist})
-				results.Push(hnswDistItem{id: neighborID, dist: dist})
-
-				if results.Len() > ef {
-					_ = results.Pop()
-				}
-			}
-		}
-	}
-
-	resultList := h.idsPool.Get().([]uint32)
-	if cap(resultList) < results.Len() {
-		resultList = make([]uint32, results.Len())
-	} else {
-		resultList = resultList[:results.Len()]
-	}
-	for i := results.Len() - 1; i >= 0; i-- {
-		item := results.Pop()
-		resultList[i] = item.id
-	}
-
-	return resultList
+	ids, _, _ := searchLayerHeapKernel[layerNoCtx](h, nil, query, entryID, nil, ef, level, true)
+	return ids
 }
 
 func (h *HNSWIndex) releaseCandidateIDs(ids []uint32) {
@@ -1242,6 +1156,52 @@ func (h *HNSWIndex) searchLayerHeapPooledFromEntriesWithContext(ctx context.Cont
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if len(entryIDs) == 0 {
+		return nil, nil
+	}
+	_, items, err := searchLayerHeapKernel[layerWithCtx](h, ctx, query, entryIDs[0], entryIDs[1:], ef, level, false)
+	return items, err
+}
+
+// layerCtxMode selects the context-probe policy of searchLayerHeapKernel at
+// compile time: layerNoCtx compiles without any probe (the build hot path),
+// layerWithCtx probes once per candidate pop and once per 32 neighbors (the
+// query path).
+type layerCtxMode interface {
+	popProbe(ctx context.Context) error
+	neighborProbe(ctx context.Context) error
+}
+
+type layerNoCtx struct{}
+
+func (layerNoCtx) popProbe(ctx context.Context) error      { return nil }
+func (layerNoCtx) neighborProbe(ctx context.Context) error { return nil }
+
+type layerWithCtx struct{}
+
+func (layerWithCtx) popProbe(ctx context.Context) error      { return ctx.Err() }
+func (layerWithCtx) neighborProbe(ctx context.Context) error { return ctx.Err() }
+
+// searchLayerHeapKernel expands one graph layer from the given entry points
+// with the shared visited-state and candidate/result heap machinery. It is the
+// single implementation behind searchLayerHeap (build path) and
+// searchLayerHeapPooledFromEntriesWithContext (query path); a recall fix such
+// as #433 can no longer land in only one copy.
+//
+// The type argument M selects the context-probe policy at compile time (see
+// layerCtxMode): layerNoCtx has every probe dead-code-eliminated so the build
+// hot path stays branch-free, layerWithCtx probes once per candidate pop and
+// once per 32 neighbors. wantIDs selects the output shape once per call:
+// caller IDs via idsPool, or distance items via itemsPool (both
+// closest-first; the returned slice belongs to its pool until the caller
+// releases it).
+//
+// Entry seeding validates validity, deletion, prior visits and vector
+// dimensions. The build path always passes a live entry point, so those
+// probes never fire there; on the query path they guard the caller-supplied
+// entry IDs.
+func searchLayerHeapKernel[M layerCtxMode](h *HNSWIndex, ctx context.Context, query []float32, entryID uint32, extraEntries []uint32, ef int, level int, wantIDs bool) (ids []uint32, items []hnswDistItem, err error) {
+	var mode M
 	visited := h.visitedPool.Get().(*visitedGenState)
 	defer h.visitedPool.Put(visited)
 	if len(visited.gen) < len(h.nodeLevel) {
@@ -1261,6 +1221,7 @@ func (h *HNSWIndex) searchLayerHeapPooledFromEntriesWithContext(ctx context.Cont
 		visited.cur = 1
 	}
 	curGen := visited.cur
+
 	candidates := h.heapPool.Get().(*distHeap)
 	candidates.Reset(false, ef*2)
 	defer h.heapPool.Put(candidates)
@@ -1269,27 +1230,14 @@ func (h *HNSWIndex) searchLayerHeapPooledFromEntriesWithContext(ctx context.Cont
 	results.Reset(true, ef*2)
 	defer h.heapPool.Put(results)
 
-	for _, entryID := range entryIDs {
-		if !validHNSWIndex(entryID, len(h.nodeLevel)) || h.deleted[entryID] || visited.gen[entryID] == curGen {
-			continue
-		}
-		entryVector := h.vectorAtLocked(entryID)
-		if len(entryVector) != h.dimensions {
-			continue
-		}
-		visited.gen[entryID] = curGen
-		entryDist := float32(1.0) - vector.DotProductSIMD(query, entryVector)
-		item := hnswDistItem{id: entryID, dist: entryDist}
-		candidates.Push(item)
-		results.Push(item)
-		if results.Len() > ef {
-			_ = results.Pop()
-		}
+	h.seedLayerEntry(candidates, results, visited, curGen, query, ef, entryID)
+	for _, id := range extraEntries {
+		h.seedLayerEntry(candidates, results, visited, curGen, query, ef, id)
 	}
 
 	for candidates.Len() > 0 {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if err := mode.popProbe(ctx); err != nil {
+			return nil, nil, err
 		}
 		closest := candidates.Pop()
 
@@ -1312,8 +1260,8 @@ func (h *HNSWIndex) searchLayerHeapPooledFromEntriesWithContext(ctx context.Cont
 		// Reverse iteration: order doesn't matter when checking all neighbors
 		for i := len(neighbors) - 1; i >= 0; i-- {
 			if i&31 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, err
+				if err := mode.neighborProbe(ctx); err != nil {
+					return nil, nil, err
 				}
 			}
 			neighborID := neighbors[i]
@@ -1338,6 +1286,20 @@ func (h *HNSWIndex) searchLayerHeapPooledFromEntriesWithContext(ctx context.Cont
 		}
 	}
 
+	if wantIDs {
+		resultList := h.idsPool.Get().([]uint32)
+		if cap(resultList) < results.Len() {
+			resultList = make([]uint32, results.Len())
+		} else {
+			resultList = resultList[:results.Len()]
+		}
+		for i := results.Len() - 1; i >= 0; i-- {
+			item := results.Pop()
+			resultList[i] = item.id
+		}
+		return resultList, nil, nil
+	}
+
 	n := results.Len()
 	bufAny := h.itemsPool.Get()
 	buf := bufAny.([]hnswDistItem)
@@ -1350,7 +1312,28 @@ func (h *HNSWIndex) searchLayerHeapPooledFromEntriesWithContext(ctx context.Cont
 		item := results.Pop() // furthest first
 		buf[i] = item         // closest ends up at index 0
 	}
-	return buf, nil
+	return nil, buf, nil
+}
+
+// seedLayerEntry validates and seeds one entry point into the candidate and
+// result heaps. It is a small helper (one call per entry point, not per
+// neighbor) shared by the single- and multi-entry instantiations.
+func (h *HNSWIndex) seedLayerEntry(candidates, results *distHeap, visited *visitedGenState, curGen uint16, query []float32, ef int, entryID uint32) {
+	if !validHNSWIndex(entryID, len(h.nodeLevel)) || h.deleted[entryID] || visited.gen[entryID] == curGen {
+		return
+	}
+	entryVector := h.vectorAtLocked(entryID)
+	if len(entryVector) != h.dimensions {
+		return
+	}
+	visited.gen[entryID] = curGen
+	entryDist := float32(1.0) - vector.DotProductSIMD(query, entryVector)
+	item := hnswDistItem{id: entryID, dist: entryDist}
+	candidates.Push(item)
+	results.Push(item)
+	if results.Len() > ef {
+		_ = results.Pop()
+	}
 }
 
 func (h *HNSWIndex) selectNeighborsInto(query []float32, candidates []uint32, m int, out []uint32) []uint32 {
