@@ -130,9 +130,17 @@ func TestBackwardsCompatibility_NoBreakingChanges(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 
-	// DeleteByPrefix - new method, should exist but not work on NamespacedEngine
-	_, _, err = namespaced.DeleteByPrefix("test:")
-	assert.Error(t, err) // Expected - not supported on NamespacedEngine
+	// DeleteByPrefix - namespace-scoped deletion now works through the engine.
+	_, err = namespaced.CreateNode(&storage.Node{ID: "del:temp", Labels: []string{"Test"}})
+	require.NoError(t, err)
+	deletedNodes, _, err := namespaced.DeleteByPrefix("del:")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), deletedNodes)
+	_, err = namespaced.GetNode("del:temp")
+	assert.Error(t, err) // Scoped record is gone.
+	retrieved, err = namespaced.GetNode(storage.NodeID("test"))
+	require.NoError(t, err)
+	assert.NotNil(t, retrieved) // Out-of-scope record survives.
 }
 
 // TestBackwardsCompatibility_ConfigurationPrecedence verifies that

@@ -53,14 +53,42 @@ func (ae *AsyncEngine) PruneTemporalHistory(ctx context.Context, opts TemporalPr
 	return 0, nil
 }
 
-// GetNodeLatestEffective returns the merged latest-visible node across pending, in-flight, and persisted state.
+// GetNodeLatestEffective returns the merged latest-visible node across pending, in-flight, and persisted state,
+// delegating the persisted read to the wrapped engine's MVCCLatestEffectiveEngine capability when available.
 func (ae *AsyncEngine) GetNodeLatestEffective(id NodeID) (*Node, error) {
-	return ae.GetNode(id)
+	ae.mu.RLock()
+	if ae.deleteNodes[id] {
+		ae.mu.RUnlock()
+		return nil, ErrNotFound
+	}
+	if node, ok := ae.nodeCache[id]; ok && node != nil {
+		ae.mu.RUnlock()
+		return CopyNode(node), nil
+	}
+	ae.mu.RUnlock()
+	if provider, ok := ae.engine.(MVCCLatestEffectiveEngine); ok {
+		return provider.GetNodeLatestEffective(id)
+	}
+	return ae.engine.GetNode(id)
 }
 
-// GetEdgeLatestEffective returns the merged latest-visible edge across pending, in-flight, and persisted state.
+// GetEdgeLatestEffective returns the merged latest-visible edge across pending, in-flight, and persisted state,
+// delegating the persisted read to the wrapped engine's MVCCLatestEffectiveEngine capability when available.
 func (ae *AsyncEngine) GetEdgeLatestEffective(id EdgeID) (*Edge, error) {
-	return ae.GetEdge(id)
+	ae.mu.RLock()
+	if ae.deleteEdges[id] {
+		ae.mu.RUnlock()
+		return nil, ErrNotFound
+	}
+	if edge, ok := ae.edgeCache[id]; ok && edge != nil {
+		ae.mu.RUnlock()
+		return CopyEdge(edge), nil
+	}
+	ae.mu.RUnlock()
+	if provider, ok := ae.engine.(MVCCLatestEffectiveEngine); ok {
+		return provider.GetEdgeLatestEffective(id)
+	}
+	return ae.engine.GetEdge(id)
 }
 
 // GetNodeLatestVisible resolves the latest persisted-or-effective node.
@@ -221,46 +249,67 @@ func (ae *AsyncEngine) TopLifecycleDebtKeys(limit int) []MVCCLifecycleDebtKey {
 	return nil
 }
 
-// OnNodeCreated sets a callback to be invoked when nodes are created.
+// OnNodeCreated sets a callback to be invoked when nodes are created. The
+// registration is both stored locally (for cache-only emissions) and forwarded
+// to the inner engine so events that originate below the async layer reach the
+// caller.
 func (ae *AsyncEngine) OnNodeCreated(callback NodeEventCallback) {
 	ae.callbackMu.Lock()
-	defer ae.callbackMu.Unlock()
 	ae.onNodeCreated = callback
+	ae.callbackMu.Unlock()
+	if notifier, ok := ae.engine.(StorageEventNotifier); ok {
+		notifier.OnNodeCreated(callback)
+	}
 }
 
 // OnNodeUpdated sets a callback to be invoked when nodes are updated.
 func (ae *AsyncEngine) OnNodeUpdated(callback NodeEventCallback) {
 	ae.callbackMu.Lock()
-	defer ae.callbackMu.Unlock()
 	ae.onNodeUpdated = callback
+	ae.callbackMu.Unlock()
+	if notifier, ok := ae.engine.(StorageEventNotifier); ok {
+		notifier.OnNodeUpdated(callback)
+	}
 }
 
 // OnNodeDeleted sets a callback to be invoked when nodes are deleted.
 func (ae *AsyncEngine) OnNodeDeleted(callback NodeDeleteCallback) {
 	ae.callbackMu.Lock()
-	defer ae.callbackMu.Unlock()
 	ae.onNodeDeleted = callback
+	ae.callbackMu.Unlock()
+	if notifier, ok := ae.engine.(StorageEventNotifier); ok {
+		notifier.OnNodeDeleted(callback)
+	}
 }
 
 // OnEdgeCreated sets a callback to be invoked when edges are created.
 func (ae *AsyncEngine) OnEdgeCreated(callback EdgeEventCallback) {
 	ae.callbackMu.Lock()
-	defer ae.callbackMu.Unlock()
 	ae.onEdgeCreated = callback
+	ae.callbackMu.Unlock()
+	if notifier, ok := ae.engine.(StorageEventNotifier); ok {
+		notifier.OnEdgeCreated(callback)
+	}
 }
 
 // OnEdgeUpdated sets a callback to be invoked when edges are updated.
 func (ae *AsyncEngine) OnEdgeUpdated(callback EdgeEventCallback) {
 	ae.callbackMu.Lock()
-	defer ae.callbackMu.Unlock()
 	ae.onEdgeUpdated = callback
+	ae.callbackMu.Unlock()
+	if notifier, ok := ae.engine.(StorageEventNotifier); ok {
+		notifier.OnEdgeUpdated(callback)
+	}
 }
 
 // OnEdgeDeleted sets a callback to be invoked when edges are deleted.
 func (ae *AsyncEngine) OnEdgeDeleted(callback EdgeDeleteCallback) {
 	ae.callbackMu.Lock()
-	defer ae.callbackMu.Unlock()
 	ae.onEdgeDeleted = callback
+	ae.callbackMu.Unlock()
+	if notifier, ok := ae.engine.(StorageEventNotifier); ok {
+		notifier.OnEdgeDeleted(callback)
+	}
 }
 
 func (ae *AsyncEngine) notifyNodeDeleted(nodeID NodeID) {
@@ -283,13 +332,6 @@ func DefaultAsyncEngineConfig() *AsyncEngineConfig {
 		MaxFlushInterval: 200 * time.Millisecond,
 		TargetFlushSize:  1000,
 	}
-}
-
-// GetUnderlying returns the underlying storage engine.
-// This is used for transaction support when the underlying engine
-// supports ACID transactions (e.g., BadgerEngine).
-func (ae *AsyncEngine) GetUnderlying() Engine {
-	return ae.engine
 }
 
 // Stats returns async engine statistics.

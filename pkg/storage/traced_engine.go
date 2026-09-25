@@ -38,9 +38,9 @@ func (t *TracedEngine) getCtx() context.Context {
 	return ctx
 }
 
-// Unwrap returns the underlying Engine (for type assertions by callers that
-// need access to the concrete engine, e.g. AsyncEngine).
-func (t *TracedEngine) Unwrap() Engine { return t.Engine }
+// GetInnerEngine returns the underlying Engine so capability checks can peer
+// through the tracing decorator via the canonical EngineUnwrapper accessor.
+func (t *TracedEngine) GetInnerEngine() Engine { return t.Engine }
 
 // depositLink records the current span context on the inner AsyncEngine (if
 // present) so the flush span can link back to the originating request (TRC-23).

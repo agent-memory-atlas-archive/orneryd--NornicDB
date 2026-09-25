@@ -842,12 +842,6 @@ func rebaseNodeUpdate(base, pending, latest *Node) *Node {
 	return rebased
 }
 
-// GetEngine returns the underlying storage engine.
-// Used for transaction support which needs direct access.
-func (ae *AsyncEngine) GetEngine() Engine {
-	return ae.engine
-}
-
 func (ae *AsyncEngine) addNodeToLabelIndexLocked(node *Node) {
 	if node == nil {
 		return
@@ -2993,310 +2987,103 @@ func (ae *AsyncEngine) IterateNodes(fn func(*Node) bool) error {
 
 // StreamNodes implements StreamingEngine.StreamNodes by delegating to the underlying engine.
 // It merges cached nodes with the underlying stream for consistency.
-func (ae *AsyncEngine) StreamNodes(ctx context.Context, fn func(node *Node) error) error {
-	ae.mu.RLock()
+// StreamNodesWithOptions merges pending cache entries with an options-driven
+// scan of the underlying engine. Staged writes are emitted first (with the
+// per-option copy transform), then engine rows shadowed by cached or deleted
+// IDs are skipped.
+func (ae *AsyncEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(node *Node) error) error {
+	if fn == nil {
+		return ErrInvalidData
+	}
 
-	// First, stream cached nodes (not yet flushed)
+	ae.mu.RLock()
+	cachedIDs := make(map[NodeID]bool, len(ae.nodeCache))
+	deletedIDs := make(map[NodeID]bool, len(ae.deleteNodes))
+	cachedCopies := make([]*Node, 0, len(ae.nodeCache))
 	for id, node := range ae.nodeCache {
+		cachedIDs[id] = true
+		if ae.deleteNodes[id] {
+			continue
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(id), opts.Prefix) {
+			continue
+		}
+		cachedCopies = append(cachedCopies, asyncStreamNodeCopy(opts, node))
+	}
+	for id := range ae.deleteNodes {
+		deletedIDs[id] = true
+	}
+	ae.mu.RUnlock()
+
+	for _, node := range cachedCopies {
 		select {
 		case <-ctx.Done():
-			ae.mu.RUnlock()
 			return ctx.Err()
 		default:
 		}
-		if ae.deleteNodes[id] {
-			continue // Skip if marked for deletion
-		}
-		ae.mu.RUnlock()
 		if err := fn(node); err != nil {
 			if err == ErrIterationStopped {
 				return nil // Normal early termination
 			}
 			return err
 		}
-		ae.mu.RLock()
 	}
 
-	// Build set of cached node IDs to skip in underlying stream
-	cachedIDs := make(map[NodeID]bool, len(ae.nodeCache))
-	for id := range ae.nodeCache {
-		cachedIDs[id] = true
-	}
-	deletedIDs := make(map[NodeID]bool, len(ae.deleteNodes))
-	for id := range ae.deleteNodes {
-		deletedIDs[id] = true
-	}
-	ae.mu.RUnlock()
-
-	// Then stream from underlying engine, skipping cached/deleted nodes
-	if streamer, ok := ae.engine.(StreamingEngine); ok {
-		return streamer.StreamNodes(ctx, func(node *Node) error {
-			// Skip if we already returned this from cache or it's deleted
-			if cachedIDs[node.ID] || deletedIDs[node.ID] {
-				return nil
-			}
-			return fn(node)
-		})
-	}
-
-	// Fallback: load all from underlying engine
-	nodes, err := ae.engine.AllNodes()
-	if err != nil {
-		return err
-	}
-	for _, node := range nodes {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
+	visit := func(node *Node) error {
 		if cachedIDs[node.ID] || deletedIDs[node.ID] {
-			continue
+			return nil
 		}
-		if err := fn(node); err != nil {
-			if err == ErrIterationStopped {
-				return nil
-			}
-			return err
-		}
+		return fn(node)
 	}
-	return nil
+	return ae.engine.StreamNodesWithOptions(ctx, opts, visit)
+}
+
+// asyncStreamNodeCopy applies the per-option copy transform used for staged
+// cache entries, preserving each historical variant's aliasing behavior.
+func asyncStreamNodeCopy(opts StreamNodesOptions, node *Node) *Node {
+	switch {
+	case opts.WithEmbeddings && opts.ApplyDecayFilter && opts.Prefix != "":
+		return CopyNode(node)
+	case opts.Projection != nil:
+		return copyNodeProjectedWithoutEmbeddings(node, opts.Projection)
+	case opts.StripEmbeddings:
+		return copyNodeProjectedWithoutEmbeddings(node, []string{})
+	case !opts.WithEmbeddings && !opts.ApplyDecayFilter:
+		return copyNodeWithoutEmbeddings(node)
+	default:
+		return node
+	}
+}
+
+func (ae *AsyncEngine) StreamNodes(ctx context.Context, fn func(node *Node) error) error {
+	return ae.StreamNodesWithOptions(ctx, StreamNodesOptions{WithEmbeddings: true, ApplyDecayFilter: true}, fn)
 }
 
 // StreamNodesWithoutEmbeddings merges pending nodes with an embedding-free
 // stream from the wrapped engine while retaining all user properties.
 func (ae *AsyncEngine) StreamNodesWithoutEmbeddings(ctx context.Context, fn func(node *Node) error) error {
-	if fn == nil {
-		return ErrInvalidData
-	}
-	ae.mu.RLock()
-	cachedIDs := make(map[NodeID]bool, len(ae.nodeCache))
-	deletedIDs := make(map[NodeID]bool, len(ae.deleteNodes))
-	cachedCopies := make([]*Node, 0, len(ae.nodeCache))
-	for id, node := range ae.nodeCache {
-		cachedIDs[id] = true
-		if !ae.deleteNodes[id] {
-			cachedCopies = append(cachedCopies, copyNodeWithoutEmbeddings(node))
-		}
-	}
-	for id := range ae.deleteNodes {
-		deletedIDs[id] = true
-	}
-	ae.mu.RUnlock()
-	for _, node := range cachedCopies {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if err := fn(node); err != nil {
-			if err == ErrIterationStopped {
-				return nil
-			}
-			return err
-		}
-	}
-	visit := func(node *Node) error {
-		if cachedIDs[node.ID] || deletedIDs[node.ID] {
-			return nil
-		}
-		return fn(node)
-	}
-	if streamer, ok := ae.engine.(NodeWithoutEmbeddingsStreamer); ok {
-		return streamer.StreamNodesWithoutEmbeddings(ctx, visit)
-	}
-	return ae.StreamNodes(ctx, func(node *Node) error {
-		if cachedIDs[node.ID] || deletedIDs[node.ID] {
-			return nil
-		}
-		return fn(copyNodeWithoutEmbeddings(node))
-	})
+	return ae.StreamNodesWithOptions(ctx, StreamNodesOptions{}, fn)
 }
 
 // StreamNodesByPrefix implements PrefixStreamingEngine by merging pending cache
 // entries with prefix-scoped streaming from the underlying engine.
 func (ae *AsyncEngine) StreamNodesByPrefix(ctx context.Context, prefix string, fn func(node *Node) error) error {
-	ae.mu.RLock()
-	cachedIDs := make(map[NodeID]bool, len(ae.nodeCache))
-	deletedIDs := make(map[NodeID]bool, len(ae.deleteNodes))
-	cachedCopies := make([]*Node, 0, len(ae.nodeCache))
-
-	for id, node := range ae.nodeCache {
-		cachedIDs[id] = true
-		if ae.deleteNodes[id] {
-			continue
-		}
-		if strings.HasPrefix(string(id), prefix) {
-			cachedCopies = append(cachedCopies, CopyNode(node))
-		}
-	}
-	for id := range ae.deleteNodes {
-		deletedIDs[id] = true
-	}
-	ae.mu.RUnlock()
-
-	for _, node := range cachedCopies {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if err := fn(node); err != nil {
-			if err == ErrIterationStopped {
-				return nil
-			}
-			return err
-		}
-	}
-
-	if prefixStreamer, ok := ae.engine.(PrefixStreamingEngine); ok {
-		return prefixStreamer.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
-			if cachedIDs[node.ID] || deletedIDs[node.ID] {
-				return nil
-			}
-			return fn(node)
-		})
-	}
-
-	// Fallback to full stream if underlying engine does not support prefix stream.
-	if streamer, ok := ae.engine.(StreamingEngine); ok {
-		return streamer.StreamNodes(ctx, func(node *Node) error {
-			if cachedIDs[node.ID] || deletedIDs[node.ID] {
-				return nil
-			}
-			if !strings.HasPrefix(string(node.ID), prefix) {
-				return nil
-			}
-			return fn(node)
-		})
-	}
-
-	nodes, err := ae.engine.AllNodes()
-	if err != nil {
-		return err
-	}
-	for _, node := range nodes {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if cachedIDs[node.ID] || deletedIDs[node.ID] {
-			continue
-		}
-		if !strings.HasPrefix(string(node.ID), prefix) {
-			continue
-		}
-		if err := fn(node); err != nil {
-			if err == ErrIterationStopped {
-				return nil
-			}
-			return err
-		}
-	}
-	return nil
+	return ae.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, WithEmbeddings: true, ApplyDecayFilter: true}, fn)
 }
 
 // StreamNodesByPrefixProjected merges pending async writes with an
 // embedding-free projected scan from the wrapped engine.
 func (ae *AsyncEngine) StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, fn func(node *Node) error) error {
-	if fn == nil {
-		return ErrInvalidData
+	if properties == nil {
+		return ae.StreamNodesByPrefix(ctx, prefix, fn)
 	}
-	ae.mu.RLock()
-	cachedIDs := make(map[NodeID]bool, len(ae.nodeCache))
-	deletedIDs := make(map[NodeID]bool, len(ae.deleteNodes))
-	cachedCopies := make([]*Node, 0, len(ae.nodeCache))
-	for id, node := range ae.nodeCache {
-		cachedIDs[id] = true
-		if !ae.deleteNodes[id] && strings.HasPrefix(string(id), prefix) {
-			cachedCopies = append(cachedCopies, copyNodeProjectedWithoutEmbeddings(node, properties))
-		}
-	}
-	for id := range ae.deleteNodes {
-		deletedIDs[id] = true
-	}
-	ae.mu.RUnlock()
-
-	visit := func(node *Node) error {
-		if cachedIDs[node.ID] || deletedIDs[node.ID] {
-			return nil
-		}
-		return fn(node)
-	}
-	for _, node := range cachedCopies {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if err := fn(node); err != nil {
-			if err == ErrIterationStopped {
-				return nil
-			}
-			return err
-		}
-	}
-	if reader, ok := ae.engine.(ProjectedPrefixNodeReader); ok {
-		return reader.StreamNodesByPrefixProjected(ctx, prefix, properties, visit)
-	}
-	return ae.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
-		if cachedIDs[node.ID] || deletedIDs[node.ID] {
-			return nil
-		}
-		return fn(copyNodeProjectedWithoutEmbeddings(node, properties))
-	})
+	return ae.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, Projection: properties}, fn)
 }
 
 // StreamNodesByPrefixWithoutEmbeddings merges pending writes with the wrapped
 // engine's lightweight prefix scan.
 func (ae *AsyncEngine) StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, fn func(node *Node) error) error {
-	if fn == nil {
-		return ErrInvalidData
-	}
-	ae.mu.RLock()
-	cachedIDs := make(map[NodeID]bool, len(ae.nodeCache))
-	deletedIDs := make(map[NodeID]bool, len(ae.deleteNodes))
-	cachedCopies := make([]*Node, 0, len(ae.nodeCache))
-	for id, node := range ae.nodeCache {
-		cachedIDs[id] = true
-		if !ae.deleteNodes[id] && strings.HasPrefix(string(id), prefix) {
-			cachedCopies = append(cachedCopies, copyNodeProjectedWithoutEmbeddings(node, []string{}))
-		}
-	}
-	for id := range ae.deleteNodes {
-		deletedIDs[id] = true
-	}
-	ae.mu.RUnlock()
-
-	for _, node := range cachedCopies {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if err := fn(node); err != nil {
-			if err == ErrIterationStopped {
-				return nil
-			}
-			return err
-		}
-	}
-	visit := func(node *Node) error {
-		if cachedIDs[node.ID] || deletedIDs[node.ID] {
-			return nil
-		}
-		return fn(node)
-	}
-	if reader, ok := ae.engine.(PrefixNodeWithoutEmbeddingsReader); ok {
-		return reader.StreamNodesByPrefixWithoutEmbeddings(ctx, prefix, visit)
-	}
-	return ae.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
-		if cachedIDs[node.ID] || deletedIDs[node.ID] {
-			return nil
-		}
-		return fn(copyNodeProjectedWithoutEmbeddings(node, []string{}))
-	})
+	return ae.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, Projection: []string{}, StripEmbeddings: true}, fn)
 }
 
 // StreamEdges implements StreamingEngine.StreamEdges by delegating to the underlying engine.

@@ -23,29 +23,11 @@ import (
 // not terminate at a BadgerEngine (e.g. MemoryEngine in tests, or a
 // future engine implementation).
 func unwrapBadgerEngine(engine storage.Engine) *storage.BadgerEngine {
-	for i := 0; i < 8; i++ { // safety bound; current depth is 3
-		if be, ok := engine.(*storage.BadgerEngine); ok {
-			return be
-		}
-		// NamespacedEngine
-		if ns, ok := engine.(*storage.NamespacedEngine); ok {
-			engine = ns.GetInnerEngine()
-			continue
-		}
-		// AsyncEngine
-		if ae, ok := engine.(*storage.AsyncEngine); ok {
-			engine = ae.GetEngine()
-			continue
-		}
-		// WALEngine
-		if we, ok := engine.(*storage.WALEngine); ok {
-			engine = we.GetEngine()
-			continue
-		}
-		// Anything else: bail.
+	badger, ok := storage.UnwrapEngine(engine).(*storage.BadgerEngine)
+	if !ok {
 		return nil
 	}
-	return nil
+	return badger
 }
 
 // badgerStorageProbe satisfies observability.StorageProbe.

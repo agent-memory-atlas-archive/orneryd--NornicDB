@@ -1,6 +1,7 @@
 package multidb
 
 import (
+	"context"
 	"strings"
 	"sync"
 
@@ -35,6 +36,52 @@ func newLegacyTestEngine() *legacyTestEngine {
 		incomingEdges: make(map[storage.NodeID]map[storage.EdgeID]struct{}),
 		edgeTypeIndex: make(map[string]map[storage.EdgeID]struct{}),
 	}
+}
+
+// StreamNodesWithOptions satisfies the Engine streaming contract over the
+// in-memory map with prefix scope and embedding stripping applied.
+func (e *legacyTestEngine) StreamNodesWithOptions(ctx context.Context, opts storage.StreamNodesOptions, fn func(*storage.Node) error) error {
+	if fn == nil {
+		return storage.ErrInvalidData
+	}
+	e.mu.RLock()
+	nodes := make([]*storage.Node, 0, len(e.nodes))
+	for _, node := range e.nodes {
+		nodes = append(nodes, node)
+	}
+	e.mu.RUnlock()
+	for _, node := range nodes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if node == nil {
+			continue
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		out := storage.CopyNode(node)
+		if opts.Projection != nil {
+			out.Properties = make(map[string]interface{}, len(opts.Projection))
+			for _, property := range opts.Projection {
+				if value, ok := node.Properties[property]; ok {
+					out.Properties[property] = value
+				}
+			}
+		} else if opts.StripEmbeddings || (!opts.WithEmbeddings && !opts.ApplyDecayFilter) {
+			out.ChunkEmbeddings = nil
+			out.NamedEmbeddings = nil
+		}
+		if err := fn(out); err != nil {
+			if err == storage.ErrIterationStopped {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *legacyTestEngine) CreateNode(node *storage.Node) (storage.NodeID, error) {

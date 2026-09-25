@@ -8,7 +8,7 @@ import (
 
 type namespacedStorageEngine interface {
 	Namespace() string
-	GetInnerEngine() storage.Engine
+	storage.EngineUnwrapper
 }
 
 func (e *StorageExecutor) storageFast() (engine storage.Engine, idPrefix string) {

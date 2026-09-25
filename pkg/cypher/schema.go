@@ -116,9 +116,7 @@ func flushPendingAsyncWritesBeforeSchemaDDL(engine storage.Engine) error {
 		}
 
 		switch wrapper := engine.(type) {
-		case interface{ GetEngine() storage.Engine }:
-			engine = wrapper.GetEngine()
-		case interface{ GetInnerEngine() storage.Engine }:
+		case storage.EngineUnwrapper:
 			engine = wrapper.GetInnerEngine()
 		default:
 			engine = nil

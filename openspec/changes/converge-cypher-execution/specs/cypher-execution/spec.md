@@ -1,7 +1,8 @@
 ## Purpose
 
-Make complete Cypher statements behave consistently across optimized and
-fallback execution without losing bindings, clauses or transaction context.
+Make complete Cypher statements behave consistently across every execution
+route without losing bindings, clauses or transaction context. Queries that
+cannot be handled return proper errors instead of alternate execution.
 
 ## ADDED Requirements
 
@@ -22,17 +23,37 @@ Unrecognized syntax SHALL NOT be discarded after a recognized prefix.
 - **WHEN** a statement has a recognized CREATE prefix and an invalid trailing clause
 - **THEN** it fails without committing partial mutations or reporting prefix-only success
 
-### Requirement: Safe fallback and terminal failures
+### Requirement: Unhandled valid syntax converges to the shared pipeline
 
-An uncovered shape or parsing rejection SHALL be eligible for fallback only
-before observable effects. Runtime, authorization, constraint, cancellation and
-storage failures SHALL terminate execution without parser replay. A supported
-fallback query SHALL satisfy the same observable behavior as an optimized route.
+A query with valid syntax that no route can handle SHALL be rejected with a
+proper unsupported or syntax error by the converged execution pipeline. It
+SHALL NOT succeed silently, dispatch to an alternate text executor, or replay.
+Whenever such a query is found (issue, report or TCK gap), a regression test
+SHALL be added recording the expected error and the absence of observable
+effects.
 
-#### Scenario: Effect-free shape miss
+#### Scenario: Valid but unhandled statement
 
-- **WHEN** the fast route cannot handle a valid query and has produced no observable effects
-- **THEN** the fallback executes it once with the same bindings and transaction context
+- **WHEN** a syntactically valid statement cannot be handled by any route
+- **THEN** execution returns a proper unsupported error, no rows are emitted and no mutations are committed
+
+#### Scenario: Regression coverage for a found unhandled shape
+
+- **WHEN** a new valid-but-unhandled query shape is discovered
+- **THEN** a regression test records the expected error class and effect-free execution for every transaction mode
+
+### Requirement: Terminal errors for uncovered shapes
+
+An uncovered shape or parsing rejection SHALL return a proper unsupported or
+syntax error of the same class Neo4j reports for that statement. There SHALL be
+no alternate execution, parser replay or retry. Runtime, authorization,
+constraint, cancellation and storage failures SHALL terminate execution without
+parser replay.
+
+#### Scenario: Unhandled query shape
+
+- **WHEN** a query cannot be handled and has produced no observable effects
+- **THEN** execution returns a proper unsupported or syntax error and the statement is not executed by another route
 
 #### Scenario: Failure after execution begins
 

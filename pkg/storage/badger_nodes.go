@@ -604,8 +604,12 @@ func (b *BadgerEngine) UpdateNodeEmbedding(node *Node) error {
 
 		// Update only the embedding and related metadata (stored in ChunkEmbeddings and EmbedMeta)
 		existing.ChunkEmbeddings = node.ChunkEmbeddings
-		// Copy embedding metadata from EmbedMeta (not Properties - avoids namespace pollution)
-		if node.EmbedMeta != nil {
+		// Copy embedding metadata from EmbedMeta (not Properties - avoids namespace pollution).
+		// A nil incoming map clears the stored metadata (e.g. embedding-failure
+		// markers removed by a retry), so the assignment is unconditional.
+		if node.EmbedMeta == nil {
+			existing.EmbedMeta = nil
+		} else {
 			existing.EmbedMeta = make(map[string]any, len(node.EmbedMeta))
 			for k, v := range node.EmbedMeta {
 				existing.EmbedMeta[k] = v

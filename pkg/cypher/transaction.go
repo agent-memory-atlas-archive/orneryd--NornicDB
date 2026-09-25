@@ -64,22 +64,12 @@ func (e *StorageExecutor) handleBegin() (*ExecuteResult, error) {
 	visited := map[storage.Engine]bool{}
 	for engine != nil && !visited[engine] {
 		visited[engine] = true
-		if asyncEngine, ok := engine.(*storage.AsyncEngine); ok {
-			engine = asyncEngine.GetEngine()
-			continue
-		}
-		if walEngine, ok := engine.(*storage.WALEngine); ok {
-			engine = walEngine.GetEngine()
-			continue
-		}
 		if namespacedEngine, ok := engine.(*storage.NamespacedEngine); ok {
 			if namespaceHint == "" {
 				namespaceHint = namespacedEngine.Namespace()
 			}
-			engine = namespacedEngine.GetInnerEngine()
-			continue
 		}
-		if wrapper, ok := engine.(interface{ GetInnerEngine() storage.Engine }); ok {
+		if wrapper, ok := engine.(storage.EngineUnwrapper); ok {
 			engine = wrapper.GetInnerEngine()
 			continue
 		}

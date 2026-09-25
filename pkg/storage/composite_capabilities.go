@@ -14,8 +14,101 @@ import (
 	"time"
 )
 
+// StreamNodesWithOptions broadcasts the options-driven scan across every
+// readable constituent, preserving early-stop semantics. Constituents without
+// the options kernel fall back to a materialized scan with the same transforms.
+func (c *CompositeEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(*Node) error) error {
+	if fn == nil {
+		return ErrInvalidData
+	}
+	stopped := false
+	for _, alias := range c.getConstituentsForRead() {
+		engine, err := c.getConstituent(alias)
+		if err != nil {
+			continue
+		}
+		if err := engine.StreamNodesWithOptions(ctx, opts, func(node *Node) error {
+			if stopped {
+				return nil
+			}
+			if err := fn(node); err != nil {
+				if err == ErrIterationStopped {
+					stopped = true
+					return nil
+				}
+				return err
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		if stopped {
+			return nil
+		}
+	}
+	return nil
+}
+
 // --- MVCC visibility: ID-scoped reads route to the first constituent that
 // resolves the ID, mirroring GetNode's search-all semantics.
+
+// GetNodeLatestEffective routes latest-effective node reads to the first
+// constituent that resolves the ID.
+func (c *CompositeEngine) GetNodeLatestEffective(id NodeID) (*Node, error) {
+	for _, alias := range c.getConstituentsForRead() {
+		engine, err := c.getConstituent(alias)
+		if err != nil {
+			continue
+		}
+		if provider, ok := engine.(MVCCLatestEffectiveEngine); ok {
+			node, err := provider.GetNodeLatestEffective(id)
+			if err == nil {
+				return node, nil
+			}
+			if !errors.Is(err, ErrNotFound) {
+				return nil, err
+			}
+			continue
+		}
+		node, err := engine.GetNode(id)
+		if err == nil {
+			return node, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// GetEdgeLatestEffective routes latest-effective edge reads to the first
+// constituent that resolves the ID.
+func (c *CompositeEngine) GetEdgeLatestEffective(id EdgeID) (*Edge, error) {
+	for _, alias := range c.getConstituentsForRead() {
+		engine, err := c.getConstituent(alias)
+		if err != nil {
+			continue
+		}
+		if provider, ok := engine.(MVCCLatestEffectiveEngine); ok {
+			edge, err := provider.GetEdgeLatestEffective(id)
+			if err == nil {
+				return edge, nil
+			}
+			if !errors.Is(err, ErrNotFound) {
+				return nil, err
+			}
+			continue
+		}
+		edge, err := engine.GetEdge(id)
+		if err == nil {
+			return edge, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	}
+	return nil, ErrNotFound
+}
 
 func (c *CompositeEngine) GetNodeLatestVisible(id NodeID) (*Node, error) {
 	for _, alias := range c.getConstituentsForRead() {

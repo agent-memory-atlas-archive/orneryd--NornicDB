@@ -24,8 +24,8 @@ func TestTracedEngine_DelegatesAllMethods(t *testing.T) {
 
 	traced := NewTracedEngine(inner)
 	require.NotNil(t, traced)
-	require.Same(t, Engine(inner), traced.Unwrap(),
-		"Unwrap must return the inner engine unchanged")
+	require.Same(t, Engine(inner), traced.GetInnerEngine(),
+		"GetInnerEngine must return the inner engine unchanged")
 
 	// SetContext stores the value; getCtx returns it. We can't observe
 	// span output without an SDK, but exercising the setter keeps the

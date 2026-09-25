@@ -399,6 +399,13 @@ type Engine interface {
 	AllEdges() ([]*Edge, error)
 	GetAllNodes() []*Node
 
+	// Streaming operations
+	// StreamNodesWithOptions iterates nodes one at a time without materializing
+	// them, honoring prefix scoping, property projection, embedding and decay
+	// options. Every engine must implement it; the legacy stream variants are
+	// thin wrappers over this kernel.
+	StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(node *Node) error) error
+
 	// Degree operations (for graph algorithms)
 	GetInDegree(nodeID NodeID) int
 	GetOutDegree(nodeID NodeID) int
@@ -1264,6 +1271,32 @@ type NodeVisitor func(node *Node) error
 
 // EdgeVisitor is a function called for each edge during streaming.
 type EdgeVisitor func(edge *Edge) error
+
+// EngineUnwrapper is implemented by storage engines that decorate another
+// Engine (WAL, Async, Namespaced, Composite, size-tracking and transaction
+// wrappers). GetInnerEngine is the single canonical accessor for the wrapped
+// engine. Callers that walk wrapper layers MUST use this interface (directly
+// or via UnwrapEngine) instead of type-switching over accessor variants.
+type EngineUnwrapper interface {
+	GetInnerEngine() Engine
+}
+
+// UnwrapEngine peels decorator layers until reaching an engine that does not
+// implement EngineUnwrapper. It returns the engine unchanged when it is not
+// wrapped and never loops on self-referencing wrappers.
+func UnwrapEngine(engine Engine) Engine {
+	for {
+		unwrapper, ok := engine.(EngineUnwrapper)
+		if !ok {
+			return engine
+		}
+		inner := unwrapper.GetInnerEngine()
+		if inner == nil || inner == engine {
+			return engine
+		}
+		engine = inner
+	}
+}
 
 // StreamNodesWithFallback provides streaming iteration with fallback.
 // If the engine supports StreamingEngine, it uses that.

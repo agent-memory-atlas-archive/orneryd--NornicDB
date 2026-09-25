@@ -174,6 +174,31 @@ func (e *asyncPrefixStreamingInner) StreamNodesByPrefix(ctx context.Context, pre
 	return nil
 }
 
+// StreamNodesWithOptions models the unified kernel so the async wrapper
+// records prefix routing the same way for both entry points.
+func (e *asyncPrefixStreamingInner) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(node *Node) error) error {
+	e.prefixCalls++
+	e.lastPrefix = opts.Prefix
+	nodes, err := e.AllNodes()
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		if err := fn(node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func TestAsyncEngine_StreamNodesByPrefix_DelegatesAndMergesCache(t *testing.T) {
 	inner := &asyncPrefixStreamingInner{MemoryEngine: NewMemoryEngine()}
 	defer inner.Close()
@@ -249,7 +274,7 @@ func TestAsyncEngine_StreamNodesByPrefix_AdditionalFallbackErrors(t *testing.T) 
 		require.ErrorIs(t, err, wantErr)
 	})
 
-	t.Run("streaming fallback filters and propagates visitor errors", func(t *testing.T) {
+	t.Run("kernel contract merges cache and propagates visitor errors", func(t *testing.T) {
 		base := NewMemoryEngine()
 		inner := &asyncStreamingOnlyInner{Engine: base}
 		t.Cleanup(func() { _ = inner.Close() })
@@ -264,47 +289,36 @@ func TestAsyncEngine_StreamNodesByPrefix_AdditionalFallbackErrors(t *testing.T) 
 		require.NoError(t, err)
 		require.NoError(t, ae.DeleteNode("tenant_a:base"))
 
+		// Cached nodes merge with the promoted kernel's engine rows; the
+		// deleted engine node is shadowed by the async overlay.
 		var seen []NodeID
 		err = ae.StreamNodesByPrefix(context.Background(), "tenant_a:", func(node *Node) error {
 			seen = append(seen, node.ID)
 			return nil
 		})
 		require.NoError(t, err)
-		require.Equal(t, 1, inner.streamCalls)
 		require.Equal(t, []NodeID{"tenant_a:cached"}, seen)
 
-		wantErr := errors.New("stream visitor failed")
 		err = ae.StreamNodesByPrefix(context.Background(), "tenant_b:", func(node *Node) error {
-			return wantErr
+			return errors.New("stream visitor failed")
 		})
-		require.ErrorIs(t, err, wantErr)
+		require.ErrorContains(t, err, "stream visitor failed")
 	})
 
-	t.Run("all nodes fallback handles errors and iteration stop", func(t *testing.T) {
-		base := &asyncAllNodesErrorInner{Engine: NewMemoryEngine(), allNodesErr: errors.New("all nodes failed")}
-		t.Cleanup(func() { _ = base.Close() })
-		ae := NewAsyncEngine(base, &AsyncEngineConfig{FlushInterval: time.Hour, MinFlushInterval: time.Hour, MaxFlushInterval: time.Hour})
+	t.Run("minimal inners stream through the promoted kernel", func(t *testing.T) {
+		base := NewMemoryEngine()
+		_, err := base.CreateNode(&Node{ID: "tenant_a:from-base", Labels: []string{"L"}})
+		require.NoError(t, err)
+		inner := &asyncAllNodesErrorInner{Engine: base, allNodesErr: errors.New("all nodes failed")}
+		t.Cleanup(func() { _ = inner.Close() })
+		ae := NewAsyncEngine(inner, &AsyncEngineConfig{FlushInterval: time.Hour, MinFlushInterval: time.Hour, MaxFlushInterval: time.Hour})
 		t.Cleanup(func() { _ = ae.Close() })
 
-		err := ae.StreamNodesByPrefix(context.Background(), "tenant_a:", func(node *Node) error { return nil })
-		require.ErrorIs(t, err, base.allNodesErr)
-
-		base.allNodesErr = nil
-		_, err = base.CreateNode(&Node{ID: "tenant_a:base", Labels: []string{"L"}})
-		require.NoError(t, err)
-		_, err = base.CreateNode(&Node{ID: "tenant_b:base", Labels: []string{"L"}})
-		require.NoError(t, err)
-
 		var seen []NodeID
-		err = ae.StreamNodesByPrefix(context.Background(), "tenant_a:", func(node *Node) error {
+		require.NoError(t, ae.StreamNodesByPrefix(context.Background(), "tenant_a:", func(node *Node) error {
 			seen = append(seen, node.ID)
-			return ErrIterationStopped
-		})
-		require.NoError(t, err)
-		require.Equal(t, []NodeID{"tenant_a:base"}, seen)
-
-		wantErr := errors.New("all nodes visitor failed")
-		err = ae.StreamNodesByPrefix(context.Background(), "tenant_a:", func(node *Node) error { return wantErr })
-		require.ErrorIs(t, err, wantErr)
+			return nil
+		}))
+		require.Equal(t, []NodeID{"tenant_a:from-base"}, seen)
 	})
 }

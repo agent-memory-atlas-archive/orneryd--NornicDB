@@ -1,6 +1,7 @@
 package nornicdb
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -17,6 +18,46 @@ type apocAdapterTestEngine struct {
 	nodes      map[storage.NodeID]*storage.Node
 	edges      map[storage.EdgeID]*storage.Edge
 	schema     *storage.SchemaManager
+}
+
+// StreamNodesWithOptions satisfies the Engine streaming contract over the
+// in-memory map with prefix scope, projection and embedding stripping applied.
+func (e *apocAdapterTestEngine) StreamNodesWithOptions(ctx context.Context, opts storage.StreamNodesOptions, fn func(*storage.Node) error) error {
+	if fn == nil {
+		return storage.ErrInvalidData
+	}
+	for _, node := range e.nodes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if node == nil {
+			continue
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		out := storage.CopyNode(node)
+		if opts.Projection != nil {
+			out.Properties = make(map[string]interface{}, len(opts.Projection))
+			for _, property := range opts.Projection {
+				if value, ok := node.Properties[property]; ok {
+					out.Properties[property] = value
+				}
+			}
+		} else if opts.StripEmbeddings || (!opts.WithEmbeddings && !opts.ApplyDecayFilter) {
+			out.ChunkEmbeddings = nil
+			out.NamedEmbeddings = nil
+		}
+		if err := fn(out); err != nil {
+			if err == storage.ErrIterationStopped {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 type apocCreateErrorEngine struct {

@@ -63,9 +63,7 @@ func namespaceForEngine(engine Engine) string {
 		}
 
 		switch wrapper := engine.(type) {
-		case interface{ GetEngine() Engine }:
-			engine = wrapper.GetEngine()
-		case interface{ GetInnerEngine() Engine }:
+		case EngineUnwrapper:
 			engine = wrapper.GetInnerEngine()
 		default:
 			engine = nil

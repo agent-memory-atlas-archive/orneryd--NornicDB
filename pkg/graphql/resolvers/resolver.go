@@ -67,13 +67,13 @@ func NewResolver(db *nornicdb.DB, dbManager *multidb.DatabaseManager) *Resolver 
 		}
 
 		// Unwrap WALEngine if present
-		if walEngine, ok := underlyingEngine.(interface{ GetEngine() storage.Engine }); ok {
-			underlyingEngine = walEngine.GetEngine()
+		if walEngine, ok := underlyingEngine.(storage.EngineUnwrapper); ok {
+			underlyingEngine = walEngine.GetInnerEngine()
 		}
 
 		// Unwrap AsyncEngine if present
-		if asyncEngine, ok := underlyingEngine.(interface{ GetEngine() storage.Engine }); ok {
-			underlyingEngine = asyncEngine.GetEngine()
+		if asyncEngine, ok := underlyingEngine.(storage.EngineUnwrapper); ok {
+			underlyingEngine = asyncEngine.GetInnerEngine()
 		}
 
 		if notifier, ok := underlyingEngine.(storage.StorageEventNotifier); ok {

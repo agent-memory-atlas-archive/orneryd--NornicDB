@@ -2,8 +2,7 @@
 
 Baseline: `a427a46815c607d0801331f4975e26cc941d125a`. The router merge already
 landed. Remaining divergence is in overlapping executors, evaluator scopes and
-storage capabilities. ANTLR currently validates syntax; a fallback execution
-adapter is still needed. Historical experiment results must be reproduced.
+storage capabilities. Historical experiment results must be reproduced.
 
 ## Goals / Non-Goals
 
@@ -26,12 +25,13 @@ deletion of public APIs based only on static reachability.
 3. Share preparation but retain public/internal lifecycle differences. Child
    fragments inherit context, bindings, database/auth and transaction state.
 4. Use a lightweight lexical cursor and complete shape recognition for fast
-   paths. On an effect-free miss, parse with ANTLR and lower typed rule contexts
-   to common operations. Never redispatch reconstructed query strings as the
-   fallback's implementation.
+   paths. Uncovered shapes surface as explicit unsupported or syntax errors;
+   there is no interpreter fallback. Never redispatch reconstructed query
+   strings as an execution path.
 5. Separate `Handled`, `NotApplicable`, `ParseRejected` and `Failed` outcomes.
-   Fallback is permitted only before observable effects. Runtime errors roll
-   back; they cannot become parser retries.
+   Unhandled shapes return proper unsupported or syntax errors; there is no
+   alternate execution path. Runtime errors roll back and cannot become parser
+   retries.
 6. Adopt one value/scope contract across assignments, computed rows, predicates
    and compiled optimizations. Undefined symbols are errors; bound null follows
    Cypher three-valued logic. Aggregate expressions use group results before
@@ -63,8 +63,8 @@ idempotent repair with dry-run and recovery evidence.
 
 - A self-written test comparator can conceal defects. Validate it with negative
   controls, official expected values and an independently pinned Neo4j server.
-- Fast-path partial execution makes fallback unsafe. Complete eligibility checks
-  before effects and stage writes in the atomic statement context.
+- Fast-path partial execution makes alternate routes unsafe. Complete eligibility
+  checks before effects and stage writes in the atomic statement context.
 - The current pipeline has reported semantic discrepancies. Use it as migration
   material, not the standard of correctness.
 - Pooling and shared state can leak bindings across requests or alias returned

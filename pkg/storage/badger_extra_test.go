@@ -1076,6 +1076,31 @@ func TestBadgerEngine_UpdateNodeEmbedding_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
+func TestBadgerEngine_UpdateNodeEmbedding_ClearsEmbedMeta(t *testing.T) {
+	engine := createTestBadgerEngine(t)
+
+	node := &Node{
+		ID:     NodeID(prefixTestID("emb-meta-n1")),
+		Labels: []string{"Document"},
+		EmbedMeta: map[string]any{
+			"embedding_failed": true,
+			"embedding_error":  "test returned 400",
+		},
+	}
+	_, err := engine.CreateNode(node)
+	require.NoError(t, err)
+
+	// A retry clears the failure markers: a nil incoming map must clear the
+	// stored metadata, not leave the old failure flags behind.
+	err = engine.UpdateNodeEmbedding(&Node{ID: node.ID})
+	require.NoError(t, err)
+
+	got, err := engine.GetNode(node.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.EmbedMeta, "UpdateNodeEmbedding with nil EmbedMeta must clear stored embedding metadata")
+	assert.True(t, NodeNeedsEmbedding(got), "cleared node must be embedding-eligible again")
+}
+
 func TestBadgerEngine_UpdateNode_UpsertNewNode(t *testing.T) {
 	engine := createTestBadgerEngine(t)
 

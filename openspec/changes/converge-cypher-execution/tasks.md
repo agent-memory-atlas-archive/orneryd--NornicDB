@@ -36,12 +36,14 @@
 - [ ] 3.5 Normalize typed property access and capability forwarding; cover #475's storage leg and individual/batch mutation equivalence.
 - [ ] 3.6 Verify own writes, stable snapshots, rollback, authorization, cache isolation and cancellation.
 
-## 4. Connect ANTLR fallback
+## 4. Proper errors for unhandled queries
 
-- [ ] 4.1 Audit grammar/AST representation and implement rule adapters for first RETURN/MATCH/WHERE/UNWIND/WITH/mutation slices.
-- [ ] 4.2 Execute fallback through shared operations without reentering the legacy text dispatcher.
-- [ ] 4.3 Add forced route selection for tests and extend the exact baseline with fallback results.
-- [ ] 4.4 Prove effect-free misses fall back and runtime failures never replay statements.
+Owner decision: no alternate execution path will be added.
+Unhandled queries must fail like Neo4j fails them, through the converged pipeline.
+
+- [ ] 4.1 Route valid-but-unhandled statements to a single terminal unsupported/syntax error in the converged execution pipeline; never a silent success, alternate text executor, or re-dispatch.
+- [ ] 4.2 Add a regression test for every found valid-but-unhandled query: assert the proper error class, no observable effects, and behavior parity across autocommit and explicit transaction modes.
+- [ ] 4.3 Verify the same error class and rollback semantics are returned from every route/mode (server, executor, transaction wrapper).
 
 ## 5. Converge expressions
 
@@ -71,6 +73,8 @@
 
 - [ ] 8.1 Converge non-policy DDL and relevant node/edge kernels with contract tests and benchmarks.
 	- Progress (HARD_CONVERGENCE.md item 5, read-only twins first): `BadgerEngine.NodeCountByPrefix`/`EdgeCountByPrefix` now share the `countByPrefix(prefix, keyType, cache)` kernel, and `namespaceForNodeIDs`/`namespaceForEdgeIDs` share the generic `namespaceForIDs[T ~string]` kernel with identical error text; each public twin is a thin wrapper. `BenchmarkBadgerEngine_(Node|Edge)CountByPrefix_Warm` measured 20.9–21.1 ns/op, 0 allocs before and 21.5–21.9 ns/op, 0 allocs after (within noise) on M2 Max. Remaining twin groups (StreamNodes/StreamEdges, mergePending*Locked, decode/coerce pairs, DDL parser families) stay open. The router/evaluator/§1–§3 report items were verified already collapsed (single router, evaluator funnels through WithContextFull); §2's 12 Badger-only methods are by-design unwrap-to-Badger operations (callers hold the concrete type).
+	- Progress (HARD_CONVERGENCE.md item 4, StreamNodes variants): the 24 StreamNodes* implementations across Badger/WAL/Async/Namespaced collapsed into one `StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix, Projection, WithEmbeddings, ApplyDecayFilter, StripEmbeddings}, fn)` kernel per engine, plus a broadcast dispatcher on CompositeEngine. The five legacy public methods remain as thin wrappers for the consumers that still assert the legacy interfaces (cypher `match_multi`/`traversal`, `search/text_catalog`, `snapshot_stream`, size-tracking). The kernel is part of the `storage.Engine` contract, so delegation is unconditional on every engine (the `NodeOptionsStreamer` capability and its fallback branches are deleted); `pkg/nornicdb/embed_queue.go` migrated to the unified API, `sizeTrackingEngine` gained `StreamNodesWithOptions` with a compile-time assertion, and the storage/multidb test fakes model the new contract. `BenchmarkStreamNodes_(Full|ByPrefix|ByPrefixProjected)` measured identical within noise before vs after the consolidation (Full ~1.54–1.58 ms/op 16806 allocs, ByPrefix ~1.14 ms/op 15767 allocs, Projected ~1.10 ms/op 13767 allocs per 1000 nodes); `TestStreamNodesOptionsParityAcrossStacks` runs the same battery over Memory/Badger/WAL/Async/Namespaced/Composite.
+	- Progress (wrapper contract): `storage.EngineUnwrapper` + `storage.UnwrapEngine` now provide the single canonical accessor for wrapped engines. The duplicate `GetEngine`/`GetUnderlying` accessors on Async/WAL and the `Unwrap`/`UnwrapEngine` variants were deleted and every accessor-variant type switch across cypher (`match`, `executor` ×2, `vector_registry`, `schema`, `reveal`, `transaction`), `storage/wal_ids`, `nornicdb/db`, `cmd/nornicdb/storage_metrics` and the GraphQL resolver now unwraps through the one interface. `TestWrapperDelegationContract_*` exercises every Engine method and every optional capability over Badger, WAL, Async, WAL+Async and Namespaced+WAL+Async stacks with a recording spy, asserting no `ErrNotImplemented` and delegation or documented composition. Gaps found and fixed: `NamespacedEngine.DeleteByPrefix` now performs a namespace-scoped delete instead of returning an unsupported error; `NamespacedEngine` gained `GetNodeLatestEffective`/`GetEdgeLatestEffective`; `AsyncEngine.On*` event registrations now forward to the inner notifier (they previously stored the callback and never fired); `AsyncEngine.Get(Node|Edge)LatestEffective` now overlay-checks the cache and delegates the persisted read to the inner `MVCCLatestEffectiveEngine`; `CompositeEngine` gained `Get(Node|Edge)LatestEffective`; `BadgerEngine.UpdateNodeEmbedding` now clears stored `EmbedMeta` when the incoming map is nil (retry-cleared embedding-failure markers persist). Compile-time assertions now pin `Engine` on every production engine type and `EngineUnwrapper` on every decorator.
 		- Progress: unsupported `DROP` statements now return syntax errors, and missing INDEX/CONSTRAINT behavior has regressions. Full DDL/kernel contract coverage and benchmarks remain open.
 - [ ] 8.2 Complete all remaining pinned-core TCK gaps and preserve Neo4j/Nornic extension suites.
 - [ ] 8.3 Remove superseded handlers/evaluators/text-substitution paths; document retained optimizations and public API adapters.
@@ -79,7 +83,7 @@
 ## 9. Qualify completion
 
 - [ ] 9.1 Pass full tests, race suite, coverage gates, lint, build and scoped performance/retrieval checks.
-- [ ] 9.2 Emit redacted informational fallback reports and a reproducible optimization backlog.
+- [ ] 9.2 Emit redacted informational rejection reports and a reproducible optimization backlog.
 - [ ] 9.3 Attach fixing commits/PRs and passing evidence to every scoped issue; verify closure criteria.
 - [ ] 9.4 Update compatibility/parser-mode docs, public API examples and CHANGELOG; synchronize verified OpenSpec contracts.
 - [ ] 9.5 Review final completion evidence, close verified issues through the normal repository workflow, and archive the completed program.

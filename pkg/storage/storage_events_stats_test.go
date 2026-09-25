@@ -17,11 +17,11 @@ func TestAsyncEngine_DefaultAsyncEngineConfig(t *testing.T) {
 	assert.Greater(t, cfg.FlushInterval, time.Duration(0))
 }
 
-func TestAsyncEngine_GetUnderlying(t *testing.T) {
+func TestAsyncEngine_GetInnerEngineReturnsWrappedEngine(t *testing.T) {
 	inner := createTestBadgerEngine(t)
 	ae := NewAsyncEngine(inner, nil)
 	defer ae.Close()
-	underlying := ae.GetUnderlying()
+	underlying := ae.GetInnerEngine()
 	assert.NotNil(t, underlying)
 }
 

@@ -113,6 +113,21 @@ func (e *sizeTrackingStreamingInner) StreamNodesByPrefix(_ context.Context, pref
 	return nil
 }
 
+// StreamNodesWithOptions models the unified kernel for prefix-scoped options.
+func (e *sizeTrackingStreamingInner) StreamNodesWithOptions(_ context.Context, opts storage.StreamNodesOptions, fn func(node *storage.Node) error) error {
+	e.streamPrefixCalls++
+	e.lastPrefix = opts.Prefix
+	for _, node := range e.nodes {
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		if err := fn(node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func TestSizeTrackingEngine_StreamNodesByPrefix_Delegates(t *testing.T) {
 	base := storage.NewMemoryEngine()
 	t.Cleanup(func() { _ = base.Close() })

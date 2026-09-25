@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +80,44 @@ func (e *exportableOnlyEngine) AllEdges() ([]*Edge, error) {
 		return nil, e.edgeErr
 	}
 	return e.allEdges, nil
+}
+
+func (e *exportableOnlyEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(*Node) error) error {
+	if e.nodeErr != nil {
+		return e.nodeErr
+	}
+	for _, node := range e.allNodes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if node == nil {
+			continue
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		out := CopyNode(node)
+		if opts.Projection != nil {
+			out.Properties = make(map[string]any, len(opts.Projection))
+			for _, property := range opts.Projection {
+				if value, ok := node.Properties[property]; ok {
+					out.Properties[property] = value
+				}
+			}
+		} else if opts.StripEmbeddings || (!opts.WithEmbeddings && !opts.ApplyDecayFilter) {
+			out.ChunkEmbeddings = nil
+			out.NamedEmbeddings = nil
+		}
+		if err := fn(out); err != nil {
+			if err == ErrIterationStopped {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *constraintValidationEngine) GetNodesByLabel(label string) ([]*Node, error) {

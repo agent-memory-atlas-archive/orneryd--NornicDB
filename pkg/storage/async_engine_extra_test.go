@@ -1134,7 +1134,7 @@ func TestAsyncEngine_AdaptiveFlushInterval_Branches(t *testing.T) {
 }
 
 // ============================================================================
-// GetSchema / GetSchemaForNamespace / GetEngine
+// GetSchema / GetSchemaForNamespace / GetInnerEngine
 // ============================================================================
 
 func TestAsyncEngine_GetSchema(t *testing.T) {
@@ -1149,9 +1149,9 @@ func TestAsyncEngine_GetSchemaForNamespace(t *testing.T) {
 	assert.NotNil(t, schema)
 }
 
-func TestAsyncEngine_GetEngine(t *testing.T) {
+func TestAsyncEngine_GetInnerEngine(t *testing.T) {
 	ae := newAsyncTestEngine(t)
-	eng := ae.GetEngine()
+	eng := ae.GetInnerEngine()
 	assert.NotNil(t, eng)
 }
 
@@ -1234,7 +1234,7 @@ func TestAsyncEngine_ForEachNodeIDByLabel_MergesCacheAndEngine(t *testing.T) {
 
 	// Engine-backed node
 	engineNode := makeNode("label-engine")
-	_, err := ae.GetEngine().CreateNode(engineNode)
+	_, err := ae.GetInnerEngine().CreateNode(engineNode)
 	require.NoError(t, err)
 
 	// Cache-backed node (not flushed yet)
@@ -1343,7 +1343,7 @@ func TestAsyncEngine_GetFirstAndGetNodesByLabel_CaseInsensitive(t *testing.T) {
 		Labels:     []string{"EngineOnly"},
 		Properties: map[string]interface{}{"name": "engine"},
 	}
-	_, err = ae.GetEngine().CreateNode(engineOnly)
+	_, err = ae.GetInnerEngine().CreateNode(engineOnly)
 	require.NoError(t, err)
 
 	first, err = ae.GetFirstNodeByLabel("engineonly")
@@ -1498,7 +1498,7 @@ func TestAsyncEngine_GetIncomingEdges_MergesCacheAndEngine(t *testing.T) {
 	require.NoError(t, ae.Flush())
 
 	// Engine edge.
-	require.NoError(t, ae.GetEngine().CreateEdge(makeEdge("in-engine", "in-n1", "in-n2")))
+	require.NoError(t, ae.GetInnerEngine().CreateEdge(makeEdge("in-engine", "in-n1", "in-n2")))
 	// Cache edge.
 	require.NoError(t, ae.CreateEdge(makeEdge("in-cache", "in-n3", "in-n2")))
 
@@ -1788,11 +1788,10 @@ func TestAsyncEngine_StreamFallbackAndErrors(t *testing.T) {
 		ae := newAsyncTestEngine(t)
 
 		engineNode := makeNode("stream-engine")
-		_, err := ae.GetEngine().CreateNode(engineNode)
+		_, err := ae.GetInnerEngine().CreateNode(engineNode)
 		require.NoError(t, err)
 		deletedNode := makeNode("stream-deleted")
-		_, err = ae.GetEngine().CreateNode(deletedNode)
-		require.NoError(t, err)
+		_, err = ae.GetInnerEngine().CreateNode(deletedNode)
 
 		_, err = ae.CreateNode(&Node{ID: engineNode.ID, Labels: []string{"TestLabel"}, Properties: map[string]interface{}{"name": "cached"}})
 		require.NoError(t, err)
@@ -1807,8 +1806,8 @@ func TestAsyncEngine_StreamFallbackAndErrors(t *testing.T) {
 		}))
 		assert.Equal(t, []NodeID{engineNode.ID}, nodeIDs)
 
-		require.NoError(t, ae.GetEngine().CreateEdge(makeEdge("stream-engine-edge", "stream-engine", "stream-deleted")))
-		require.NoError(t, ae.GetEngine().CreateEdge(makeEdge("stream-deleted-edge", "stream-deleted", "stream-engine")))
+		require.NoError(t, ae.GetInnerEngine().CreateEdge(makeEdge("stream-engine-edge", "stream-engine", "stream-deleted")))
+		require.NoError(t, ae.GetInnerEngine().CreateEdge(makeEdge("stream-deleted-edge", "stream-deleted", "stream-engine")))
 		require.NoError(t, ae.CreateEdge(&Edge{ID: EdgeID(prefixTestID("stream-engine-edge")), StartNode: engineNode.ID, EndNode: deletedNode.ID, Type: "RELATED"}))
 		ae.mu.Lock()
 		ae.deleteEdges[EdgeID(prefixTestID("stream-deleted-edge"))] = true
@@ -1860,7 +1859,7 @@ func TestAsyncEngine_StreamFallbackAndErrors(t *testing.T) {
 		assert.Equal(t, 1, edgeCount)
 	})
 
-	t.Run("fallback stream handles allnodes errors and early stop", func(t *testing.T) {
+	t.Run("node streaming works through the Engine contract on minimal inners", func(t *testing.T) {
 		base := NewMemoryEngine()
 		t.Cleanup(func() { _ = base.Close() })
 		_, err := base.CreateNode(&Node{ID: "mem:fallback-node-1", Labels: []string{"T"}, Properties: map[string]interface{}{"name": "n1"}})
@@ -1876,13 +1875,22 @@ func TestAsyncEngine_StreamFallbackAndErrors(t *testing.T) {
 		ae := NewAsyncEngine(engine, &AsyncEngineConfig{FlushInterval: time.Hour})
 		t.Cleanup(func() { _ = ae.Close() })
 
+		// The Engine contract carries the streaming kernel, so the minimal
+		// inner promotes the kernel and streams all three engine nodes.
 		nodeCount := 0
 		require.NoError(t, ae.StreamNodes(context.Background(), func(node *Node) error {
 			nodeCount++
-			return ErrIterationStopped
+			return nil
 		}))
-		assert.Equal(t, 1, nodeCount)
+		assert.Equal(t, 3, nodeCount)
 
+		errBoom := errors.New("kernel node callback failed")
+		err = ae.StreamNodes(context.Background(), func(node *Node) error {
+			return errBoom
+		})
+		require.ErrorIs(t, err, errBoom)
+
+		// Edge streaming retains its materialized fallback.
 		edgeCount := 0
 		require.NoError(t, ae.StreamEdges(context.Background(), func(edge *Edge) error {
 			edgeCount++
@@ -1890,20 +1898,9 @@ func TestAsyncEngine_StreamFallbackAndErrors(t *testing.T) {
 		}))
 		assert.Equal(t, 1, edgeCount)
 
-		engine.allNodesErr = errors.New("all nodes failed")
-		err = ae.StreamNodes(context.Background(), func(node *Node) error { return nil })
-		require.ErrorContains(t, err, "all nodes failed")
-
 		engine.allEdgesErr = errors.New("all edges failed")
 		err = ae.StreamEdges(context.Background(), func(edge *Edge) error { return nil })
 		require.ErrorContains(t, err, "all edges failed")
-
-		engine.allNodesErr = nil
-		errBoom := errors.New("fallback node callback failed")
-		err = ae.StreamNodes(context.Background(), func(node *Node) error {
-			return errBoom
-		})
-		require.ErrorIs(t, err, errBoom)
 
 		engine.allEdgesErr = nil
 		errBoom = errors.New("fallback edge callback failed")
@@ -1956,7 +1953,7 @@ func TestAsyncEngine_GetEdge_CacheDeleteAndEnginePaths(t *testing.T) {
 
 	require.NoError(t, ae.Flush())
 	engineEdge := makeEdge("edge-engine", "edge-get-1", "edge-get-2")
-	require.NoError(t, ae.GetEngine().CreateEdge(engineEdge))
+	require.NoError(t, ae.GetInnerEngine().CreateEdge(engineEdge))
 
 	got, err = ae.GetEdge(engineEdge.ID)
 	require.NoError(t, err)

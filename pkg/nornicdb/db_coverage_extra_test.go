@@ -14,7 +14,7 @@ type unwrapOnlyEngine struct {
 	inner storage.Engine
 }
 
-func (u unwrapOnlyEngine) UnwrapEngine() storage.Engine { return u.inner }
+func (u unwrapOnlyEngine) GetInnerEngine() storage.Engine { return u.inner }
 
 func TestDB_Coverage_ResolveSearchFlagsLazyFromConfig(t *testing.T) {
 	cfg := DefaultConfig()
@@ -88,7 +88,7 @@ func TestDB_Coverage_QueryChunkEmbeddingEdgeBranches(t *testing.T) {
 	require.Nil(t, chunksOnly)
 }
 
-func TestDB_Coverage_UnwrapToBadgerEngine_UnwrapCase(t *testing.T) {
+func TestDB_Coverage_UnwrapToBadgerEngine_NonBadgerChain(t *testing.T) {
 	base := storage.NewMemoryEngine()
 	t.Cleanup(func() { _ = base.Close() })
 	wrapper := &unwrapOnlyEngine{Engine: base, inner: storage.NewMemoryEngine()}

@@ -202,26 +202,28 @@ func TestAsyncEngine_StreamFallbackBranches(t *testing.T) {
 	ae.deleteEdges["edge:b"] = true
 	ae.mu.Unlock()
 
-	// StreamNodes fallback: skip deleted cached + skip deleted underlying IDs.
-	var streamedNodes []NodeID
+	// The Engine contract carries the streaming kernel, so even an inner that
+	// only embeds Engine streams through its promoted kernel: cached pending
+	// nodes merge with the engine rows, deleted entries are skipped.
+	var streamed []NodeID
 	err = ae.StreamNodes(context.Background(), func(node *Node) error {
-		streamedNodes = append(streamedNodes, node.ID)
+		streamed = append(streamed, node.ID)
 		return nil
 	})
 	require.NoError(t, err)
-	require.NotContains(t, streamedNodes, NodeID("tenant:deleted-cached"))
-	require.NotContains(t, streamedNodes, NodeID("tenant:b"))
+	require.Contains(t, streamed, NodeID("tenant:cached"))
+	require.NotContains(t, streamed, NodeID("tenant:deleted-cached"))
+	require.NotContains(t, streamed, NodeID("tenant:b"))
 
-	// StreamNodesByPrefix fallback: skip cached/deleted and prefix-mismatch.
-	var prefixNodes []NodeID
+	var prefixStreamed []NodeID
 	err = ae.StreamNodesByPrefix(context.Background(), "tenant:", func(node *Node) error {
-		prefixNodes = append(prefixNodes, node.ID)
+		prefixStreamed = append(prefixStreamed, node.ID)
 		return nil
 	})
 	require.NoError(t, err)
-	for _, id := range prefixNodes {
-		require.Contains(t, string(id), "tenant:")
-	}
+	require.Contains(t, prefixStreamed, NodeID("tenant:cached"))
+	require.NotContains(t, prefixStreamed, NodeID("tenant:deleted-cached"))
+	require.NotContains(t, prefixStreamed, NodeID("other:c"))
 
 	// StreamEdges fallback: skip deleted cached + deleted underlying IDs.
 	var streamedEdges []EdgeID

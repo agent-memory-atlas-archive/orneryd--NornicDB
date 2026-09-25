@@ -1068,11 +1068,6 @@ func (w *WALEngine) GetWAL() *WAL {
 	return w.wal
 }
 
-// GetEngine returns the underlying engine.
-func (w *WALEngine) GetEngine() Engine {
-	return w.engine
-}
-
 // FindNodeNeedingEmbedding delegates to underlying engine if it supports it.
 func (w *WALEngine) FindNodeNeedingEmbedding() *Node {
 	if finder, ok := w.engine.(interface{ FindNodeNeedingEmbedding() *Node }); ok {
@@ -1124,77 +1119,42 @@ func (w *WALEngine) IterateNodes(fn func(*Node) bool) error {
 // ============================================================================
 
 // StreamNodes implements StreamingEngine.StreamNodes by delegating to the underlying engine.
+// StreamNodesWithOptions streams nodes through the options-driven kernel.
+// The kernel is part of the Engine contract, so the delegation is direct.
+func (w *WALEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(node *Node) error) error {
+	return w.engine.StreamNodesWithOptions(ctx, opts, fn)
+}
+
 func (w *WALEngine) StreamNodes(ctx context.Context, fn func(node *Node) error) error {
-	if streamer, ok := w.engine.(StreamingEngine); ok {
-		return streamer.StreamNodes(ctx, fn)
-	}
-	// Fallback: load all nodes
-	nodes, err := w.engine.AllNodes()
-	if err != nil {
-		return err
-	}
-	for _, node := range nodes {
-		if err := fn(node); err != nil {
-			if err == ErrIterationStopped {
-				return nil
-			}
-			return err
-		}
-	}
-	return nil
+	return w.StreamNodesWithOptions(ctx, StreamNodesOptions{WithEmbeddings: true, ApplyDecayFilter: true}, fn)
 }
 
 // StreamNodesWithoutEmbeddings preserves embedding-free snapshot scans through
 // the WAL decorator.
 func (w *WALEngine) StreamNodesWithoutEmbeddings(ctx context.Context, fn func(node *Node) error) error {
-	if streamer, ok := w.engine.(NodeWithoutEmbeddingsStreamer); ok {
-		return streamer.StreamNodesWithoutEmbeddings(ctx, fn)
-	}
-	return w.StreamNodes(ctx, func(node *Node) error {
-		return fn(copyNodeWithoutEmbeddings(node))
-	})
+	return w.StreamNodesWithOptions(ctx, StreamNodesOptions{}, fn)
 }
 
 // StreamNodesByPrefix implements PrefixStreamingEngine by delegating prefix-scoped
 // iteration to the wrapped engine when available. This preserves namespace-aware
 // early termination behavior for MATCH ... LIMIT hot paths.
 func (w *WALEngine) StreamNodesByPrefix(ctx context.Context, prefix string, fn func(node *Node) error) error {
-	if prefixStreamer, ok := w.engine.(PrefixStreamingEngine); ok {
-		err := prefixStreamer.StreamNodesByPrefix(ctx, prefix, fn)
-		if err == ErrIterationStopped {
-			return nil
-		}
-		return err
-	}
-	// Fallback to StreamNodes + prefix filter.
-	return w.StreamNodes(ctx, func(node *Node) error {
-		if !strings.HasPrefix(string(node.ID), prefix) {
-			return nil
-		}
-		return fn(node)
-	})
+	return w.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, WithEmbeddings: true, ApplyDecayFilter: true}, fn)
 }
 
 // StreamNodesByPrefixProjected preserves embedding-free projected scans
 // through the WAL decorator.
 func (w *WALEngine) StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, fn func(node *Node) error) error {
-	if reader, ok := w.engine.(ProjectedPrefixNodeReader); ok {
-		return reader.StreamNodesByPrefixProjected(ctx, prefix, properties, fn)
+	if properties == nil {
+		return w.StreamNodesByPrefix(ctx, prefix, fn)
 	}
-	return w.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
-		return fn(copyNodeProjectedWithoutEmbeddings(node, properties))
-	})
+	return w.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, Projection: properties}, fn)
 }
 
 // StreamNodesByPrefixWithoutEmbeddings preserves lightweight scans through
 // the WAL decorator.
 func (w *WALEngine) StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, fn func(node *Node) error) error {
-	if reader, ok := w.engine.(PrefixNodeWithoutEmbeddingsReader); ok {
-		return reader.StreamNodesByPrefixWithoutEmbeddings(ctx, prefix, fn)
-	}
-	return w.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
-		return fn(copyNodeWithoutEmbeddings(node))
-	})
+	return w.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, Projection: []string{}, StripEmbeddings: true}, fn)
 }
 
 // StreamEdges implements StreamingEngine.StreamEdges by delegating to the underlying engine.

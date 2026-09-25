@@ -193,6 +193,13 @@ func (t *sizeTrackingEngine) StreamNodesByPrefix(ctx context.Context, prefix str
 	})
 }
 
+// StreamNodesWithOptions delegates the unified options-driven scan to the
+// wrapped engine. Size tracking only concerns writes, so the scan passes
+// through untouched.
+func (t *sizeTrackingEngine) StreamNodesWithOptions(ctx context.Context, opts storage.StreamNodesOptions, fn func(node *storage.Node) error) error {
+	return t.Engine.StreamNodesWithOptions(ctx, opts, fn)
+}
+
 // StreamNodesByLabelProjected preserves label-indexed candidate streaming
 // across this wrapper boundary. Embedding storage.Engine only promotes the
 // methods declared on that interface, not every method the wrapped engine's

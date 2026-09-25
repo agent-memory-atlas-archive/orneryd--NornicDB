@@ -1,6 +1,6 @@
 ## Purpose
 
-Preserve measured Cypher performance while exposing successful fallback
+Preserve measured Cypher performance while exposing rejected unhandled
 workloads as opportunities for additional verified streaming optimizations.
 
 ## ADDED Requirements
@@ -36,19 +36,20 @@ performance baseline for a corrected query.
 - **WHEN** a redundant handler is replaced by shared execution
 - **THEN** the change includes conformance evidence and workload-specific performance comparison before removal is accepted
 
-### Requirement: Informational fallback reporting
+### Requirement: Informational rejection reporting
 
-Successful fallback usage SHALL produce a bounded, redacted report of query
-shapes and reasons suitable for an optimization backlog. Successful fallback
-alone SHALL not fail correctness CI. Reports SHALL exclude raw parameter values
-and sensitive query literals and distinguish success from execution failures.
+Queries that end in a proper unsupported or syntax error SHALL produce a
+bounded, redacted report of query shapes and reasons suitable for an
+optimization backlog. Returning the proper error alone SHALL not fail
+correctness CI. Reports SHALL exclude raw parameter values and sensitive query
+literals and distinguish rejection from execution failures.
 
-#### Scenario: Valid query needs fallback
+#### Scenario: Valid query is not yet supported
 
-- **WHEN** a supported query succeeds through fallback with correct results
-- **THEN** conformance passes and the report records an optimization opportunity
+- **WHEN** a query cannot be handled
+- **THEN** execution returns a proper unsupported or syntax error and the report records an optimization opportunity
 
 #### Scenario: Report contains sensitive parameters
 
 - **WHEN** an executed query includes confidential strings in parameters
-- **THEN** the fallback report contains only the normalized shape and permitted aggregate measurements
+- **THEN** the report contains only the normalized shape and permitted aggregate measurements

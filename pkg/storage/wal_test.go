@@ -101,6 +101,10 @@ func (e *walStreamErrorEngine) StreamNodeChunks(_ context.Context, chunkSize int
 	return fn(nil)
 }
 
+func (e *walStreamErrorEngine) StreamNodesWithOptions(_ context.Context, _ StreamNodesOptions, _ func(*Node) error) error {
+	return e.nodeErr
+}
+
 func (e *walPrefixErrorEngine) NodeCountByPrefix(prefix string) (int64, error) {
 	return 0, e.nodeErr
 }
@@ -184,6 +188,38 @@ func (e *walStreamingCountEngine) StreamNodeChunks(ctx context.Context, chunkSiz
 	return nil
 }
 
+func (e *walStreamingCountEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(*Node) error) error {
+	for _, node := range e.nodes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		out := CopyNode(node)
+		if opts.Projection != nil {
+			out.Properties = make(map[string]any, len(opts.Projection))
+			for _, property := range opts.Projection {
+				if value, ok := node.Properties[property]; ok {
+					out.Properties[property] = value
+				}
+			}
+		} else if opts.StripEmbeddings || (!opts.WithEmbeddings && !opts.ApplyDecayFilter) {
+			out.ChunkEmbeddings = nil
+			out.NamedEmbeddings = nil
+		}
+		if err := fn(out); err != nil {
+			if err == ErrIterationStopped {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *walPrefixStreamingEngine) StreamNodes(ctx context.Context, fn func(*Node) error) error {
 	e.streamNodesCalls++
 	for _, node := range e.nodes {
@@ -237,6 +273,40 @@ func (e *walPrefixStreamingEngine) StreamNodesByPrefix(ctx context.Context, pref
 			continue
 		}
 		if err := fn(node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *walPrefixStreamingEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(*Node) error) error {
+	e.streamPrefixCalls++
+	e.lastPrefix = opts.Prefix
+	for _, node := range e.nodes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		out := CopyNode(node)
+		if opts.Projection != nil {
+			out.Properties = make(map[string]any, len(opts.Projection))
+			for _, property := range opts.Projection {
+				if value, ok := node.Properties[property]; ok {
+					out.Properties[property] = value
+				}
+			}
+		} else if opts.StripEmbeddings || (!opts.WithEmbeddings && !opts.ApplyDecayFilter) {
+			out.ChunkEmbeddings = nil
+			out.NamedEmbeddings = nil
+		}
+		if err := fn(out); err != nil {
+			if err == ErrIterationStopped {
+				return nil
+			}
 			return err
 		}
 	}
@@ -1711,7 +1781,7 @@ func TestWALEngine(t *testing.T) {
 		defer walEngine.Close()
 
 		assert.Same(t, wal, walEngine.GetWAL())
-		assert.Same(t, engine, walEngine.GetEngine())
+		assert.Same(t, engine, walEngine.GetInnerEngine())
 	})
 }
 
@@ -2741,7 +2811,7 @@ func TestWALEngine_StreamNodesByPrefix(t *testing.T) {
 		assert.Equal(t, NodeID("tenant_a:n1"), got[0])
 	})
 
-	t.Run("falls back to StreamNodes+prefix filter when prefix streamer is unavailable", func(t *testing.T) {
+	t.Run("enforces prefix scope through the Engine kernel", func(t *testing.T) {
 		base := NewMemoryEngine()
 		t.Cleanup(func() { _ = base.Close() })
 		inner := &walStreamingCountEngine{

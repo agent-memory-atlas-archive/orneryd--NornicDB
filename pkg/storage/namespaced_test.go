@@ -96,6 +96,33 @@ func (e *namespacedHelperEngine) StreamNodes(ctx context.Context, fn func(node *
 	return nil
 }
 
+// StreamNodesWithOptions models the options-driven capability explicitly so the
+// embedded MemoryEngine's promoted implementation does not shadow the injected
+// error (the promotion trap DIVERGENCE_REPORT.md §2 describes).
+func (e *namespacedHelperEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(node *Node) error) error {
+	if e.streamNodeErr != nil {
+		return e.streamNodeErr
+	}
+	nodes, err := e.MemoryEngine.AllNodes()
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		if err := fn(node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *namespacedHelperEngine) StreamNodesByPrefix(ctx context.Context, prefix string, fn func(node *Node) error) error {
 	if e.streamNodeErr != nil {
 		return e.streamNodeErr
@@ -394,6 +421,31 @@ func (e *namespacedPrefixStreamingEngine) StreamNodesByPrefix(ctx context.Contex
 	return nil
 }
 
+// StreamNodesWithOptions models the unified kernel so the namespaced wrapper
+// records prefix routing the same way for both entry points.
+func (e *namespacedPrefixStreamingEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(node *Node) error) error {
+	e.prefixCalls++
+	e.lastPrefix = opts.Prefix
+	nodes, err := e.Engine.AllNodes()
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		if err := fn(node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *namespacedSchemaProviderEngine) GetSchemaForNamespace(namespace string) *SchemaManager {
 	return e.schema
 }
@@ -580,21 +632,29 @@ func TestNamespacedEngine_DeleteByPrefix(t *testing.T) {
 
 	tenantA := NewNamespacedEngine(inner, "tenant_a")
 
-	// Create some nodes
+	// Create in-scope records and one out-of-scope node.
 	for i := 0; i < 5; i++ {
 		node := &Node{
-			ID:     NodeID("node-" + string(rune('0'+i))),
+			ID:     NodeID("del:node-" + string(rune('0'+i))),
 			Labels: []string{"Test"},
 		}
 		_, err := tenantA.CreateNode(node)
 		require.NoError(t, err)
 	}
+	_, err := tenantA.CreateNode(&Node{ID: "keep:node", Labels: []string{"Test"}})
+	require.NoError(t, err)
+	require.NoError(t, tenantA.CreateEdge(&Edge{ID: "del:e", StartNode: "del:node-0", EndNode: "keep:node", Type: "REL"}))
 
-	// DeleteByPrefix should not be supported on NamespacedEngine
-	// (should be called on underlying engine)
-	_, _, err := tenantA.DeleteByPrefix("tenant_a:")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not supported on NamespacedEngine")
+	// DeleteByPrefix is namespace-scoped and deletes the matching records.
+	nodesDeleted, edgesDeleted, err := tenantA.DeleteByPrefix("del:")
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), nodesDeleted)
+	assert.Equal(t, int64(1), edgesDeleted)
+
+	// Out-of-scope records survive.
+	got, err := tenantA.GetNode("keep:node")
+	require.NoError(t, err)
+	require.NotNil(t, got)
 }
 
 func TestNamespacedEngine_Stats(t *testing.T) {
@@ -904,7 +964,7 @@ func TestNamespacedEngine_DirectStreamingAndEmbeddingHelpers(t *testing.T) {
 		assert.Equal(t, []NodeID{"tenant_a:done"}, inner.markedIDs)
 	})
 
-	t.Run("streaming fallbacks work without streaming inner engine", func(t *testing.T) {
+	t.Run("streaming works through the Engine contract on minimal inners", func(t *testing.T) {
 		base := NewMemoryEngine()
 		t.Cleanup(func() { _ = base.Close() })
 		inner := &nonStreamingCountEngine{Engine: base}
@@ -920,6 +980,9 @@ func TestNamespacedEngine_DirectStreamingAndEmbeddingHelpers(t *testing.T) {
 		require.NoError(t, tenantA.CreateEdge(&Edge{ID: "e1", StartNode: "n1", EndNode: "n2", Type: "KNOWS"}))
 		require.NoError(t, tenantB.CreateEdge(&Edge{ID: "e9", StartNode: "n9", EndNode: "n9", Type: "KNOWS"}))
 
+		// The Engine contract carries the streaming kernel, so a minimal inner
+		// still streams this namespace's nodes correctly (promotion through
+		// the embedded Engine).
 		var nodeIDs []NodeID
 		err = tenantA.StreamNodes(context.Background(), func(node *Node) error {
 			nodeIDs = append(nodeIDs, node.ID)
@@ -927,6 +990,10 @@ func TestNamespacedEngine_DirectStreamingAndEmbeddingHelpers(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []NodeID{"n1", "n2"}, nodeIDs)
+
+		errBoom := errors.New("node callback failed")
+		err = tenantA.StreamNodes(context.Background(), func(node *Node) error { return errBoom })
+		require.ErrorIs(t, err, errBoom)
 
 		var edgeIDs []EdgeID
 		err = tenantA.StreamEdges(context.Background(), func(edge *Edge) error {
@@ -943,10 +1010,6 @@ func TestNamespacedEngine_DirectStreamingAndEmbeddingHelpers(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.Equal(t, 2, chunkedCount)
-
-		errBoom := errors.New("fallback node callback failed")
-		err = tenantA.StreamNodes(context.Background(), func(node *Node) error { return errBoom })
-		require.ErrorIs(t, err, errBoom)
 
 		errBoom = errors.New("fallback edge callback failed")
 		err = tenantA.StreamEdges(context.Background(), func(edge *Edge) error { return errBoom })

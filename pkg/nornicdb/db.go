@@ -1192,12 +1192,12 @@ func Open(dataDir string, config *Config) (*DB, error) {
 		// Keep a reference to also receive cache-only delete notifications (pending creates).
 		// These deletes never hit the inner engine, so only the async layer can emit them.
 		asyncNotifier = asyncEngine
-		underlyingEngine = asyncEngine.GetEngine()
+		underlyingEngine = asyncEngine.GetInnerEngine()
 	}
 
 	// Unwrap WALEngine if present
 	if walEngine, ok := underlyingEngine.(*storage.WALEngine); ok {
-		underlyingEngine = walEngine.GetEngine()
+		underlyingEngine = walEngine.GetInnerEngine()
 	}
 
 	// Set callbacks on the actual storage engine (BadgerEngine which implements StorageEventNotifier)
@@ -2175,12 +2175,12 @@ func (db *DB) ClearAllEmbeddings() (int, error) {
 
 	// Unwrap AsyncEngine if present
 	if asyncEngine, ok := engine.(*storage.AsyncEngine); ok {
-		engine = asyncEngine.GetEngine()
+		engine = asyncEngine.GetInnerEngine()
 	}
 
 	// Unwrap WALEngine if present
 	if walEngine, ok := engine.(*storage.WALEngine); ok {
-		engine = walEngine.GetEngine()
+		engine = walEngine.GetInnerEngine()
 	}
 
 	// Now check if we have a BadgerEngine
@@ -2506,18 +2506,11 @@ func (db *DB) Cypher(ctx context.Context, query string, params map[string]any) (
 
 // unwrapToBadgerEngine walks the engine wrapper chain to find the underlying BadgerEngine.
 func unwrapToBadgerEngine(eng storage.Engine) *storage.BadgerEngine {
-	for {
-		switch e := eng.(type) {
-		case *storage.BadgerEngine:
-			return e
-		case interface{ GetInnerEngine() storage.Engine }:
-			eng = e.GetInnerEngine()
-		case interface{ UnwrapEngine() storage.Engine }:
-			eng = e.UnwrapEngine()
-		default:
-			return nil
-		}
+	badger, ok := storage.UnwrapEngine(eng).(*storage.BadgerEngine)
+	if !ok {
+		return nil
 	}
+	return badger
 }
 
 // SetEmbeddingLabelPolicy configures managed-embedding admission for one database.

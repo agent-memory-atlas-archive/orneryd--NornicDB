@@ -109,6 +109,29 @@ func (e *startupStreamingEngine) StreamNodesByPrefix(ctx context.Context, prefix
 	return nil
 }
 
+// StreamNodesWithOptions models the unified kernel explicitly so the embedded
+// MemoryEngine's promoted implementation does not shadow the prefix recording.
+func (e *startupStreamingEngine) StreamNodesWithOptions(ctx context.Context, opts storage.StreamNodesOptions, visit func(*storage.Node) error) error {
+	e.prefixes = append(e.prefixes, opts.Prefix)
+	nodes, err := e.MemoryEngine.AllNodes()
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		e.prefixCallbackRuns++
+		if err := visit(node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Regression: initially reported in #373.
 func TestStartupCleanupScansOnlyLeakedSystemNodePrefixes(t *testing.T) {
 	engine := &startupStreamingEngine{MemoryEngine: storage.NewMemoryEngine()}

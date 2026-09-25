@@ -23,7 +23,7 @@ func (w *asyncEngineWrapper) Flush() error {
 	return w.flushErr
 }
 
-func (w *asyncEngineWrapper) GetEngine() storage.Engine { return w.Engine }
+func (w *asyncEngineWrapper) GetInnerEngine() storage.Engine { return w.Engine }
 
 type innerEngineWrapper struct{ storage.Engine }
 

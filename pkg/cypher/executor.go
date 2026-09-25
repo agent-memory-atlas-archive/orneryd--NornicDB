@@ -1966,11 +1966,7 @@ func (e *StorageExecutor) resolveImplicitTxEngines() implicitTxEngines {
 		}
 
 		switch wrapper := engine.(type) {
-		case interface{ GetUnderlying() storage.Engine }:
-			engine = wrapper.GetUnderlying()
-		case interface{ GetEngine() storage.Engine }:
-			engine = wrapper.GetEngine()
-		case interface{ GetInnerEngine() storage.Engine }:
+		case storage.EngineUnwrapper:
 			engine = wrapper.GetInnerEngine()
 		default:
 			engine = nil
@@ -2526,11 +2522,7 @@ func (e *StorageExecutor) resolveWALAndDatabase() (*storage.WAL, string) {
 			return walProvider.GetWAL(), dbName
 		}
 		switch wrapper := engine.(type) {
-		case interface{ GetUnderlying() storage.Engine }:
-			engine = wrapper.GetUnderlying()
-		case interface{ GetEngine() storage.Engine }:
-			engine = wrapper.GetEngine()
-		case interface{ GetInnerEngine() storage.Engine }:
+		case storage.EngineUnwrapper:
 			engine = wrapper.GetInnerEngine()
 		default:
 			return nil, dbName

@@ -659,7 +659,7 @@ func TestWALCompactionUnderLoad(t *testing.T) {
 			}
 		}
 
-		totalNodes, err := walEngine.GetEngine().NodeCount()
+		totalNodes, err := walEngine.GetInnerEngine().NodeCount()
 		require.NoError(t, err)
 		assert.Equal(t, int64(writers*writeCount), totalNodes, "Should have all nodes")
 

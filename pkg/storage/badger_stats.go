@@ -591,46 +591,102 @@ func (b *BadgerEngine) IterateNodes(fn func(*Node) bool) error {
 	})
 }
 
-// StreamNodes implements StreamingEngine.StreamNodes for memory-efficient iteration.
-// Iterates through all nodes one at a time without loading all into memory.
-func (b *BadgerEngine) StreamNodes(ctx context.Context, fn func(node *Node) error) error {
+// StreamNodesOptions controls a streaming node scan. The five legacy stream
+// variants (StreamNodes, StreamNodesWithoutEmbeddings, StreamNodesByPrefix,
+// StreamNodesByPrefixProjected, StreamNodesByPrefixWithoutEmbeddings) are thin
+// wrappers over StreamNodesWithOptions; consolidating their ~620 duplicated
+// lines across four engines into one kernel per engine (HARD_CONVERGENCE.md
+// item 4) means future scan fixes land in one place.
+type StreamNodesOptions struct {
+	// Prefix limits the scan to IDs starting with this string ("" scans all).
+	Prefix string
+	// Projection, when non-nil, decodes only these properties.
+	Projection []string
+	// WithEmbeddings loads separately stored chunk vectors.
+	WithEmbeddings bool
+	// ApplyDecayFilter drops nodes failing decay scoring (full scans only).
+	ApplyDecayFilter bool
+	// StripEmbeddings removes inline/legacy embedding payloads from results.
+	StripEmbeddings bool
+}
+
+// StreamNodesWithOptions iterates nodes one at a time without materializing
+// them, honoring prefix scoping, property projection, embedding and decay
+// options. Full scans use value prefetching; prefix scans use key-only seeks.
+func (b *BadgerEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(node *Node) error) error {
+	if fn == nil {
+		return ErrInvalidData
+	}
 	if err := b.ensureOpen(); err != nil {
 		return err
 	}
 	nowNanos := DecayScoringTime()
+	var include map[string]struct{}
+	if opts.Projection != nil {
+		include = propertyProjectionSet(opts.Projection)
+	}
+
+	visit := func(txn *badger.Txn, item *badger.Item) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		var node *Node
+		err := item.Value(func(val []byte) error {
+			key := item.Key()
+			if len(key) <= 1 {
+				return nil
+			}
+			nodeID := NodeID(key[1:])
+			var decodeErr error
+			switch {
+			case opts.WithEmbeddings:
+				node, decodeErr = b.decodeNodeWithEmbeddings(txn, val, nodeID)
+			case opts.Projection != nil:
+				node, decodeErr = b.decodeNodeProjected(namespaceForNodeID(nodeID), val, include)
+			default:
+				node, decodeErr = b.decodeNode(namespaceForNodeID(nodeID), val)
+			}
+			return decodeErr
+		})
+		if err != nil || node == nil {
+			return nil // Skip invalid nodes
+		}
+		if opts.ApplyDecayFilter && b.filterNodeByDecay(node, nowNanos) {
+			return nil
+		}
+		if opts.StripEmbeddings {
+			node = copyNodeWithoutEmbeddings(node)
+		}
+		if err := fn(node); err != nil {
+			if err == ErrIterationStopped {
+				return ErrIterationStopped
+			}
+			return err
+		}
+		return nil
+	}
 
 	return b.withView(func(txn *badger.Txn) error {
-		prefix := []byte{prefixNode}
-		it := txn.NewIterator(badgerIterOptsPrefetchValues(prefix, 10))
-		defer it.Close()
-
-		for it.Rewind(); it.Valid(); it.Next() {
-			// Check context cancellation
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-
-			item := it.Item()
-			var node *Node
-			err := item.Value(func(val []byte) error {
-				key := item.Key()
-				if len(key) <= 1 {
-					return nil
+		if opts.Prefix == "" {
+			it := txn.NewIterator(badgerIterOptsPrefetchValues([]byte{prefixNode}, 10))
+			defer it.Close()
+			for it.Rewind(); it.Valid(); it.Next() {
+				if err := visit(txn, it.Item()); err != nil {
+					if err == ErrIterationStopped {
+						return nil // Normal stop
+					}
+					return err
 				}
-				nodeID := NodeID(key[1:])
-				var decErr error
-				node, decErr = b.decodeNodeWithEmbeddings(txn, val, nodeID)
-				return decErr
-			})
-			if err != nil {
-				continue // Skip invalid nodes
 			}
-			if b.filterNodeByDecay(node, nowNanos) {
-				continue
-			}
-			if err := fn(node); err != nil {
+			return nil
+		}
+		seekPrefix := append([]byte{prefixNode}, []byte(opts.Prefix)...)
+		it := txn.NewIterator(badgerIterOptsKeyOnly(seekPrefix))
+		defer it.Close()
+		for it.Seek(seekPrefix); it.ValidForPrefix(seekPrefix); it.Next() {
+			if err := visit(txn, it.Item()); err != nil {
 				if err == ErrIterationStopped {
 					return nil // Normal stop
 				}
@@ -641,95 +697,23 @@ func (b *BadgerEngine) StreamNodes(ctx context.Context, fn func(node *Node) erro
 	})
 }
 
+// StreamNodes implements StreamingEngine.StreamNodes for memory-efficient iteration.
+// Iterates through all nodes one at a time without loading all into memory.
+func (b *BadgerEngine) StreamNodes(ctx context.Context, fn func(node *Node) error) error {
+	return b.StreamNodesWithOptions(ctx, StreamNodesOptions{WithEmbeddings: true, ApplyDecayFilter: true}, fn)
+}
+
 // StreamNodesWithoutEmbeddings iterates complete node records without reading
 // the separate vector keyspace. User properties are retained for snapshots.
 func (b *BadgerEngine) StreamNodesWithoutEmbeddings(ctx context.Context, fn func(node *Node) error) error {
-	if err := b.ensureOpen(); err != nil {
-		return err
-	}
-	return b.withView(func(txn *badger.Txn) error {
-		prefix := []byte{prefixNode}
-		it := txn.NewIterator(badgerIterOptsPrefetchValues(prefix, 10))
-		defer it.Close()
-		for it.Rewind(); it.Valid(); it.Next() {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			item := it.Item()
-			var node *Node
-			err := item.Value(func(val []byte) error {
-				key := item.Key()
-				if len(key) <= 1 {
-					return nil
-				}
-				var decodeErr error
-				node, decodeErr = b.decodeNode(namespaceForNodeID(NodeID(key[1:])), val)
-				return decodeErr
-			})
-			if err != nil || node == nil {
-				continue
-			}
-			if err := fn(node); err != nil {
-				if err == ErrIterationStopped {
-					return nil
-				}
-				return err
-			}
-		}
-		return nil
-	})
+	return b.StreamNodesWithOptions(ctx, StreamNodesOptions{}, fn)
 }
 
 // StreamNodesByPrefix streams nodes whose IDs start with prefix.
 // This is significantly faster than full StreamNodes + callback filtering when
 // tenants/databases share a physical store.
 func (b *BadgerEngine) StreamNodesByPrefix(ctx context.Context, prefix string, fn func(node *Node) error) error {
-	if err := b.ensureOpen(); err != nil {
-		return err
-	}
-	nowNanos := DecayScoringTime()
-
-	return b.withView(func(txn *badger.Txn) error {
-		seekPrefix := append([]byte{prefixNode}, []byte(prefix)...)
-		it := txn.NewIterator(badgerIterOptsKeyOnly(seekPrefix))
-		defer it.Close()
-
-		for it.Seek(seekPrefix); it.ValidForPrefix(seekPrefix); it.Next() {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-
-			item := it.Item()
-			var node *Node
-			err := item.Value(func(val []byte) error {
-				key := item.Key()
-				if len(key) <= 1 {
-					return nil
-				}
-				nodeID := NodeID(key[1:])
-				var decErr error
-				node, decErr = b.decodeNodeWithEmbeddings(txn, val, nodeID)
-				return decErr
-			})
-			if err != nil {
-				continue
-			}
-			if b.filterNodeByDecay(node, nowNanos) {
-				continue
-			}
-			if err := fn(node); err != nil {
-				if err == ErrIterationStopped {
-					return nil
-				}
-				return err
-			}
-		}
-		return nil
-	})
+	return b.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, WithEmbeddings: true, ApplyDecayFilter: true}, fn)
 }
 
 // StreamNodesByPrefixProjected streams nodes whose IDs start with prefix while
@@ -737,61 +721,16 @@ func (b *BadgerEngine) StreamNodesByPrefix(ctx context.Context, prefix string, f
 // semantics: nil properties reads full nodes, and ErrIterationStopped ends the
 // scan successfully.
 func (b *BadgerEngine) StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, fn func(node *Node) error) error {
-	if fn == nil {
-		return ErrInvalidData
-	}
 	if properties == nil {
 		return b.StreamNodesByPrefix(ctx, prefix, fn)
 	}
-	if err := b.ensureOpen(); err != nil {
-		return err
-	}
-
-	include := propertyProjectionSet(properties)
-	return b.withView(func(txn *badger.Txn) error {
-		seekPrefix := append([]byte{prefixNode}, []byte(prefix)...)
-		it := txn.NewIterator(badgerIterOptsKeyOnly(seekPrefix))
-		defer it.Close()
-
-		for it.Seek(seekPrefix); it.ValidForPrefix(seekPrefix); it.Next() {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-
-			item := it.Item()
-			var node *Node
-			err := item.Value(func(val []byte) error {
-				key := item.Key()
-				if len(key) <= 1 {
-					return nil
-				}
-				nodeID := NodeID(key[1:])
-				var decErr error
-				node, decErr = b.decodeNodeProjected(namespaceForNodeID(nodeID), val, include)
-				return decErr
-			})
-			if err != nil {
-				continue
-			}
-			if err := fn(node); err != nil {
-				if err == ErrIterationStopped {
-					return nil
-				}
-				return err
-			}
-		}
-		return nil
-	})
+	return b.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, Projection: properties}, fn)
 }
 
 // StreamNodesByPrefixWithoutEmbeddings streams node metadata without loading
 // separate or legacy inline vector payloads.
 func (b *BadgerEngine) StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, fn func(node *Node) error) error {
-	return b.StreamNodesByPrefixProjected(ctx, prefix, []string{}, func(node *Node) error {
-		return fn(copyNodeWithoutEmbeddings(node))
-	})
+	return b.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, Projection: []string{}, StripEmbeddings: true}, fn)
 }
 
 // StreamEdges implements StreamingEngine.StreamEdges for memory-efficient iteration.

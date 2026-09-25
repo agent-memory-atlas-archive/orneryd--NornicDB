@@ -1,6 +1,7 @@
 package cypher
 
 import (
+	"context"
 	"strings"
 	"sync"
 
@@ -65,7 +66,7 @@ func (w *transactionStorageWrapper) ensureNodeLookupCacheLocked(seedFrom *Storag
 	srcMu.RUnlock()
 }
 
-func (w *transactionStorageWrapper) GetEngine() storage.Engine {
+func (w *transactionStorageWrapper) GetInnerEngine() storage.Engine {
 	if w == nil {
 		return nil
 	}
@@ -232,6 +233,67 @@ func (w *transactionStorageWrapper) StreamNodesByLabelProjected(label string, pr
 		out.ID = w.unprefixNodeID(out.ID)
 		return visit(&out)
 	})
+}
+
+// StreamNodesWithOptions satisfies the storage.Engine streaming contract on the
+// transaction view. Reads route through the transaction's merged node view
+// (pending writes included), with prefix scope and projection applied per node.
+func (w *transactionStorageWrapper) StreamNodesWithOptions(ctx context.Context, opts storage.StreamNodesOptions, fn func(*storage.Node) error) error {
+	if fn == nil {
+		return storage.ErrInvalidData
+	}
+	nodes, err := w.GetNodesByLabel("")
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if node == nil {
+			continue
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		out := node
+		switch {
+		case opts.Projection != nil:
+			out = copyNodeProjected(node, opts.Projection)
+		case opts.StripEmbeddings || (!opts.WithEmbeddings && !opts.ApplyDecayFilter):
+			out = copyNodeWithoutEmbeddingVectors(node)
+		}
+		if err := fn(out); err != nil {
+			if err == storage.ErrIterationStopped {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// copyNodeProjected returns a node carrying only the requested user properties.
+func copyNodeProjected(node *storage.Node, properties []string) *storage.Node {
+	out := *node
+	out.Properties = make(map[string]interface{}, len(properties))
+	for _, property := range properties {
+		if value, ok := node.Properties[property]; ok {
+			out.Properties[property] = value
+		}
+	}
+	return &out
+}
+
+// copyNodeWithoutEmbeddingVectors returns a node with embedding vector payloads
+// removed while retaining metadata and user properties.
+func copyNodeWithoutEmbeddingVectors(node *storage.Node) *storage.Node {
+	out := *node
+	out.ChunkEmbeddings = nil
+	out.NamedEmbeddings = nil
+	return &out
 }
 
 func (w *transactionStorageWrapper) GetFirstNodeByLabel(label string) (*storage.Node, error) {

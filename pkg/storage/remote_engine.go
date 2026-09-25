@@ -1014,6 +1014,47 @@ func (r *RemoteEngine) GetEdgesByType(edgeType string) ([]*Edge, error) {
 
 func (r *RemoteEngine) AllNodes() ([]*Node, error) { return r.GetNodesByLabel("") }
 
+// StreamNodesWithOptions satisfies the Engine streaming contract for the
+// remote view: nodes are materialized through the remote read path and the
+// per-option transforms (prefix scope, projection, embedding stripping) are
+// applied locally.
+func (r *RemoteEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(node *Node) error) error {
+	if fn == nil {
+		return ErrInvalidData
+	}
+	nodes, err := r.AllNodes()
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if node == nil {
+			continue
+		}
+		if opts.Prefix != "" && !strings.HasPrefix(string(node.ID), opts.Prefix) {
+			continue
+		}
+		out := node
+		switch {
+		case opts.Projection != nil:
+			out = copyNodeProjectedWithoutEmbeddings(node, opts.Projection)
+		case opts.StripEmbeddings || (!opts.WithEmbeddings && !opts.ApplyDecayFilter):
+			out = copyNodeWithoutEmbeddings(node)
+		}
+		if err := fn(out); err != nil {
+			if err == ErrIterationStopped {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *RemoteEngine) AllEdges() ([]*Edge, error) {
 	ctx, cancel := defaultCtx()
 	defer cancel()

@@ -22,6 +22,10 @@ func (e *asyncBaseEngine) CreateNode(node *Node) (NodeID, error) {
 	return e.inner.CreateNode(node)
 }
 
+func (e *asyncBaseEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(*Node) error) error {
+	return e.inner.StreamNodesWithOptions(ctx, opts, fn)
+}
+
 func (e *asyncBaseEngine) GetNode(id NodeID) (*Node, error) {
 	return e.inner.GetNode(id)
 }

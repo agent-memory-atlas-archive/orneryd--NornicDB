@@ -27,7 +27,6 @@ package storage
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -837,6 +836,36 @@ func (n *NamespacedEngine) GetEdgeVisibleAt(id EdgeID, version MVCCVersion) (*Ed
 	return n.toUserEdge(edge), nil
 }
 
+// GetNodeLatestEffective resolves the latest-effective node within the
+// namespace, delegating to the wrapped engine when it supports the
+// MVCCLatestEffectiveEngine capability.
+func (n *NamespacedEngine) GetNodeLatestEffective(id NodeID) (*Node, error) {
+	provider, ok := n.inner.(MVCCLatestEffectiveEngine)
+	if !ok {
+		return n.GetNode(id)
+	}
+	node, err := provider.GetNodeLatestEffective(n.prefixNodeID(id))
+	if err != nil || node == nil {
+		return node, err
+	}
+	return n.toUserNode(node), nil
+}
+
+// GetEdgeLatestEffective resolves the latest-effective edge within the
+// namespace, delegating to the wrapped engine when it supports the
+// MVCCLatestEffectiveEngine capability.
+func (n *NamespacedEngine) GetEdgeLatestEffective(id EdgeID) (*Edge, error) {
+	provider, ok := n.inner.(MVCCLatestEffectiveEngine)
+	if !ok {
+		return n.GetEdge(id)
+	}
+	edge, err := provider.GetEdgeLatestEffective(n.prefixEdgeID(id))
+	if err != nil || edge == nil {
+		return edge, err
+	}
+	return n.toUserEdge(edge), nil
+}
+
 // GetNodeCurrentHead resolves node head metadata within the namespace.
 func (n *NamespacedEngine) GetNodeCurrentHead(id NodeID) (MVCCHead, error) {
 	provider, ok := n.inner.(MVCCHeadEngine)
@@ -1114,110 +1143,51 @@ func (n *NamespacedEngine) EdgeCount() (int64, error) {
 // ============================================================================
 
 // StreamNodes streams nodes in the namespace.
-func (n *NamespacedEngine) StreamNodes(ctx context.Context, fn func(node *Node) error) error {
-	if prefixStreamer, ok := n.inner.(PrefixStreamingEngine); ok {
-		return prefixStreamer.StreamNodesByPrefix(ctx, n.namespace+n.separator, func(node *Node) error {
-			return fn(n.toUserNode(node))
-		})
+// StreamNodesWithOptions streams this namespace's nodes with the options-driven
+// kernel. The caller-supplied prefix is namespace-relative; the physical scan
+// carries the namespace prefix so results stay inside this view. The kernel is
+// part of the Engine contract, so the delegation is direct.
+func (n *NamespacedEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, fn func(node *Node) error) error {
+	if fn == nil {
+		return ErrInvalidData
 	}
+	physicalOpts := opts
+	physicalOpts.Prefix = n.namespace + n.separator + opts.Prefix
+	return n.inner.StreamNodesWithOptions(ctx, physicalOpts, func(node *Node) error {
+		return fn(n.toUserNode(node))
+	})
+}
 
-	if streamer, ok := n.inner.(StreamingEngine); ok {
-		return streamer.StreamNodes(ctx, func(node *Node) error {
-			if n.hasNodePrefix(node.ID) {
-				return fn(n.toUserNode(node))
-			}
-			return nil // Skip nodes not in our namespace
-		})
-	}
-	// Fallback to AllNodes
-	nodes, err := n.AllNodes()
-	if err != nil {
-		return err
-	}
-	for _, node := range nodes {
-		if err := fn(node); err != nil {
-			return err
-		}
-	}
-	return nil
+func (n *NamespacedEngine) StreamNodes(ctx context.Context, fn func(node *Node) error) error {
+	return n.StreamNodesWithOptions(ctx, StreamNodesOptions{WithEmbeddings: true, ApplyDecayFilter: true}, fn)
 }
 
 // StreamNodesWithoutEmbeddings streams complete lightweight nodes in this
 // namespace while preserving user-visible IDs.
 func (n *NamespacedEngine) StreamNodesWithoutEmbeddings(ctx context.Context, fn func(node *Node) error) error {
-	if streamer, ok := n.inner.(NodeWithoutEmbeddingsStreamer); ok {
-		return streamer.StreamNodesWithoutEmbeddings(ctx, func(node *Node) error {
-			if n.hasNodePrefix(node.ID) {
-				return fn(n.toUserNode(node))
-			}
-			return nil
-		})
-	}
-	return n.StreamNodes(ctx, func(node *Node) error {
-		return fn(copyNodeWithoutEmbeddings(node))
-	})
+	return n.StreamNodesWithOptions(ctx, StreamNodesOptions{}, fn)
 }
 
 // StreamNodesByPrefix streams nodes in the namespace whose user-visible IDs
 // start with prefix.
 func (n *NamespacedEngine) StreamNodesByPrefix(ctx context.Context, prefix string, fn func(node *Node) error) error {
-	if prefixStreamer, ok := n.inner.(PrefixStreamingEngine); ok {
-		physicalPrefix := n.namespace + n.separator + prefix
-		return prefixStreamer.StreamNodesByPrefix(ctx, physicalPrefix, func(node *Node) error {
-			return fn(n.toUserNode(node))
-		})
-	}
-
-	return n.StreamNodes(ctx, func(node *Node) error {
-		if strings.HasPrefix(string(node.ID), prefix) {
-			return fn(node)
-		}
-		return nil
-	})
+	return n.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, WithEmbeddings: true, ApplyDecayFilter: true}, fn)
 }
 
 // StreamNodesByPrefixProjected streams nodes in the namespace whose
 // user-visible IDs start with prefix while decoding only requested properties
 // when the wrapped engine supports projected prefix scans.
 func (n *NamespacedEngine) StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, fn func(node *Node) error) error {
-	if fn == nil {
-		return ErrInvalidData
+	if properties == nil {
+		return n.StreamNodesByPrefix(ctx, prefix, fn)
 	}
-	physicalPrefix := n.namespace + n.separator + prefix
-	if reader, ok := n.inner.(ProjectedPrefixNodeReader); ok {
-		return reader.StreamNodesByPrefixProjected(ctx, physicalPrefix, properties, func(node *Node) error {
-			return fn(n.toUserNode(node))
-		})
-	}
-	if prefixStreamer, ok := n.inner.(PrefixStreamingEngine); ok {
-		return prefixStreamer.StreamNodesByPrefix(ctx, physicalPrefix, func(node *Node) error {
-			return fn(keepNodeProperties(n.toUserNode(node), properties))
-		})
-	}
-
-	return n.StreamNodes(ctx, func(node *Node) error {
-		if strings.HasPrefix(string(node.ID), prefix) {
-			return fn(keepNodeProperties(node, properties))
-		}
-		return nil
-	})
+	return n.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, Projection: properties}, fn)
 }
 
 // StreamNodesByPrefixWithoutEmbeddings streams lightweight nodes in this
 // namespace and returns user-visible IDs.
 func (n *NamespacedEngine) StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, fn func(node *Node) error) error {
-	if fn == nil {
-		return ErrInvalidData
-	}
-	physicalPrefix := n.namespace + n.separator + prefix
-	if reader, ok := n.inner.(PrefixNodeWithoutEmbeddingsReader); ok {
-		return reader.StreamNodesByPrefixWithoutEmbeddings(ctx, physicalPrefix, func(node *Node) error {
-			return fn(n.toUserNode(node))
-		})
-	}
-	return n.StreamNodesByPrefix(ctx, prefix, func(node *Node) error {
-		return fn(copyNodeWithoutEmbeddings(node))
-	})
+	return n.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: prefix, Projection: []string{}, StripEmbeddings: true}, fn)
 }
 
 // StreamEdges streams edges in the namespace.
@@ -1279,10 +1249,9 @@ func (n *NamespacedEngine) StreamNodeChunks(ctx context.Context, chunkSize int, 
 // DeleteByPrefix is not supported for NamespacedEngine.
 // Use the underlying engine's DeleteByPrefix with the namespace prefix instead.
 func (n *NamespacedEngine) DeleteByPrefix(prefix string) (nodesDeleted int64, edgesDeleted int64, err error) {
-	// NamespacedEngine doesn't support DeleteByPrefix directly.
-	// The DatabaseManager should call DeleteByPrefix on the underlying engine
-	// with the full namespace prefix (e.g., "tenant_a:").
-	return 0, 0, fmt.Errorf("DeleteByPrefix not supported on NamespacedEngine - use underlying engine with namespace prefix")
+	// Scope the deletion to this namespace by translating the user prefix into
+	// the stored namespace-prefixed form, then delegate.
+	return n.inner.DeleteByPrefix(n.namespace + n.separator + prefix)
 }
 
 // FindNodeNeedingEmbedding finds a node that needs embedding, but only from this namespace.
@@ -1295,7 +1264,7 @@ func (n *NamespacedEngine) FindNodeNeedingEmbedding() *Node {
 	innerEngine := n.inner
 	// Unwrap WALEngine if present
 	if walEngine, ok := innerEngine.(*WALEngine); ok {
-		innerEngine = walEngine.GetEngine()
+		innerEngine = walEngine.GetInnerEngine()
 	}
 
 	// If inner engine is AsyncEngine, it will check its cache first via its FindNodeNeedingEmbedding

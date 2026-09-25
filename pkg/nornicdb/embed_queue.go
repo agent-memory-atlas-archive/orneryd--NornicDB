@@ -496,11 +496,9 @@ func (ew *EmbedWorker) scanParkedEmbeddingFailures(ctx context.Context, visit fu
 		failure.FailedAt, _ = node.EmbedMeta["embedding_failed_at"].(string)
 		return visit(failure)
 	}
-	if reader, ok := ew.storage.(storage.PrefixNodeWithoutEmbeddingsReader); ok {
-		err := reader.StreamNodesByPrefixWithoutEmbeddings(ctx, "", inspect)
-		return count, err
-	}
-	err := storage.StreamNodesWithFallback(ctx, ew.storage, 256, inspect)
+	// StreamNodesWithOptions is part of the storage.Engine contract, so the
+	// lightweight scan is always available on the worker's engine.
+	err := ew.storage.StreamNodesWithOptions(ctx, storage.StreamNodesOptions{Prefix: "", Projection: []string{}, StripEmbeddings: true}, inspect)
 	return count, err
 }
 

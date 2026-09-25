@@ -119,6 +119,29 @@ var (
 	_ MVCCLifecycleScheduleEngine   = (*CompositeEngine)(nil)
 	_ GraphMutationVersionProvider  = (*CompositeEngine)(nil)
 	_ LabelNodeIDLookupEngine       = (*CompositeEngine)(nil)
+	_ MVCCLatestEffectiveEngine     = (*WALEngine)(nil)
+	_ MVCCLatestEffectiveEngine     = (*AsyncEngine)(nil)
+	_ MVCCLatestEffectiveEngine     = (*NamespacedEngine)(nil)
+	_ MVCCLatestEffectiveEngine     = (*CompositeEngine)(nil)
+)
+
+// Wrapper contract: every production engine type must satisfy the full Engine
+// contract and, when it decorates another engine, expose the canonical
+// EngineUnwrapper accessor. A type that drops a method fails the build instead
+// of surfacing a runtime ErrNotImplemented from a wrapper layer.
+var (
+	_ Engine          = (*BadgerEngine)(nil)
+	_ Engine          = (*WALEngine)(nil)
+	_ Engine          = (*AsyncEngine)(nil)
+	_ Engine          = (*NamespacedEngine)(nil)
+	_ Engine          = (*MemoryEngine)(nil)
+	_ Engine          = (*CompositeEngine)(nil)
+	_ Engine          = (*RemoteEngine)(nil)
+	_ EngineUnwrapper = (*WALEngine)(nil)
+	_ EngineUnwrapper = (*AsyncEngine)(nil)
+	_ EngineUnwrapper = (*NamespacedEngine)(nil)
+	_ EngineUnwrapper = (*CompositeEngine)(nil)
+	_ EngineUnwrapper = (*TracedEngine)(nil)
 )
 
 // GetNodeProjected returns a node with only the requested properties, honoring

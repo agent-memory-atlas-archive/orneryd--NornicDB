@@ -17,9 +17,11 @@ type embeddingFreeReadSpy struct {
 	projectedScans  int
 }
 
-func (s *embeddingFreeReadSpy) StreamNodesByPrefixWithoutEmbeddings(ctx context.Context, prefix string, visit func(*Node) error) error {
-	s.projectedScans++
-	return s.Engine.(PrefixNodeWithoutEmbeddingsReader).StreamNodesByPrefixWithoutEmbeddings(ctx, prefix, visit)
+func (s *embeddingFreeReadSpy) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, visit func(*Node) error) error {
+	if opts.StripEmbeddings {
+		s.projectedScans++
+	}
+	return s.Engine.StreamNodesWithOptions(ctx, opts, visit)
 }
 
 func (s *embeddingFreeReadSpy) GetNode(id NodeID) (*Node, error) {
