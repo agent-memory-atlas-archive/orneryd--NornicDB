@@ -791,75 +791,182 @@ func (c *CompositeEngine) SetLifecycleSchedule(interval time.Duration) error {
 
 // --- Event registration broadcasts to every readable constituent.
 
-func (c *CompositeEngine) OnNodeCreated(callback NodeEventCallback) {
+// compositeEventTarget is one unique underlying engine plus the namespaced
+// views through which its events must be translated.
+type compositeEventTarget struct {
+	engine Engine
+	views  []*NamespacedEngine
+}
+
+// eventTargets deduplicates the readable constituents by their underlying
+// engine. Constituents that share one engine (the common multi-namespace
+// deployment) get a single registration whose wrapper translates through
+// every namespace view, so the last-registered view can never shadow the
+// others and event delivery does not depend on map iteration order.
+func (c *CompositeEngine) eventTargets() []compositeEventTarget {
+	targets := make([]compositeEventTarget, 0, len(c.getConstituentsForRead()))
+	seen := make(map[Engine]int)
 	for _, alias := range c.getConstituentsForRead() {
 		engine, err := c.getConstituent(alias)
 		if err != nil {
 			continue
 		}
-		if notifier, ok := engine.(StorageEventNotifier); ok {
-			notifier.OnNodeCreated(callback)
+		var view *NamespacedEngine
+		if ns, ok := engine.(*NamespacedEngine); ok {
+			view = ns
+			engine = ns.GetInnerEngine()
 		}
+		if idx, ok := seen[engine]; ok {
+			if view != nil {
+				targets[idx].views = append(targets[idx].views, view)
+			}
+			continue
+		}
+		target := compositeEventTarget{engine: engine}
+		if view != nil {
+			target.views = []*NamespacedEngine{view}
+		}
+		seen[engine] = len(targets)
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func (c *CompositeEngine) OnNodeCreated(callback NodeEventCallback) {
+	for _, target := range c.eventTargets() {
+		notifier, ok := target.engine.(StorageEventNotifier)
+		if !ok {
+			continue
+		}
+		if len(target.views) == 0 {
+			notifier.OnNodeCreated(callback)
+			continue
+		}
+		notifier.OnNodeCreated(func(node *Node) {
+			if node == nil {
+				return
+			}
+			for _, view := range target.views {
+				if view.hasNodePrefix(node.ID) {
+					callback(view.toUserNode(node))
+					return
+				}
+			}
+		})
 	}
 }
 
 func (c *CompositeEngine) OnNodeUpdated(callback NodeEventCallback) {
-	for _, alias := range c.getConstituentsForRead() {
-		engine, err := c.getConstituent(alias)
-		if err != nil {
+	for _, target := range c.eventTargets() {
+		notifier, ok := target.engine.(StorageEventNotifier)
+		if !ok {
 			continue
 		}
-		if notifier, ok := engine.(StorageEventNotifier); ok {
+		if len(target.views) == 0 {
 			notifier.OnNodeUpdated(callback)
+			continue
 		}
+		notifier.OnNodeUpdated(func(node *Node) {
+			if node == nil {
+				return
+			}
+			for _, view := range target.views {
+				if view.hasNodePrefix(node.ID) {
+					callback(view.toUserNode(node))
+					return
+				}
+			}
+		})
 	}
 }
 
 func (c *CompositeEngine) OnNodeDeleted(callback NodeDeleteCallback) {
-	for _, alias := range c.getConstituentsForRead() {
-		engine, err := c.getConstituent(alias)
-		if err != nil {
+	for _, target := range c.eventTargets() {
+		notifier, ok := target.engine.(StorageEventNotifier)
+		if !ok {
 			continue
 		}
-		if notifier, ok := engine.(StorageEventNotifier); ok {
+		if len(target.views) == 0 {
 			notifier.OnNodeDeleted(callback)
+			continue
 		}
+		notifier.OnNodeDeleted(func(nodeID NodeID) {
+			for _, view := range target.views {
+				if view.hasNodePrefix(nodeID) {
+					callback(view.unprefixNodeID(nodeID))
+					return
+				}
+			}
+		})
 	}
 }
 
 func (c *CompositeEngine) OnEdgeCreated(callback EdgeEventCallback) {
-	for _, alias := range c.getConstituentsForRead() {
-		engine, err := c.getConstituent(alias)
-		if err != nil {
+	for _, target := range c.eventTargets() {
+		notifier, ok := target.engine.(StorageEventNotifier)
+		if !ok {
 			continue
 		}
-		if notifier, ok := engine.(StorageEventNotifier); ok {
+		if len(target.views) == 0 {
 			notifier.OnEdgeCreated(callback)
+			continue
 		}
+		notifier.OnEdgeCreated(func(edge *Edge) {
+			if edge == nil {
+				return
+			}
+			for _, view := range target.views {
+				if view.hasEdgePrefix(edge.ID) {
+					callback(view.toUserEdge(edge))
+					return
+				}
+			}
+		})
 	}
 }
 
 func (c *CompositeEngine) OnEdgeUpdated(callback EdgeEventCallback) {
-	for _, alias := range c.getConstituentsForRead() {
-		engine, err := c.getConstituent(alias)
-		if err != nil {
+	for _, target := range c.eventTargets() {
+		notifier, ok := target.engine.(StorageEventNotifier)
+		if !ok {
 			continue
 		}
-		if notifier, ok := engine.(StorageEventNotifier); ok {
+		if len(target.views) == 0 {
 			notifier.OnEdgeUpdated(callback)
+			continue
 		}
+		notifier.OnEdgeUpdated(func(edge *Edge) {
+			if edge == nil {
+				return
+			}
+			for _, view := range target.views {
+				if view.hasEdgePrefix(edge.ID) {
+					callback(view.toUserEdge(edge))
+					return
+				}
+			}
+		})
 	}
 }
 
 func (c *CompositeEngine) OnEdgeDeleted(callback EdgeDeleteCallback) {
-	for _, alias := range c.getConstituentsForRead() {
-		engine, err := c.getConstituent(alias)
-		if err != nil {
+	for _, target := range c.eventTargets() {
+		notifier, ok := target.engine.(StorageEventNotifier)
+		if !ok {
 			continue
 		}
-		if notifier, ok := engine.(StorageEventNotifier); ok {
+		if len(target.views) == 0 {
 			notifier.OnEdgeDeleted(callback)
+			continue
 		}
+		notifier.OnEdgeDeleted(func(edgeID EdgeID) {
+			for _, view := range target.views {
+				if view.hasEdgePrefix(edgeID) {
+					callback(view.unprefixEdgeID(edgeID))
+					return
+				}
+			}
+		})
 	}
 }
 

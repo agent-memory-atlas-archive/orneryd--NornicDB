@@ -162,3 +162,33 @@ func TestCompositeCapabilityParity_AggregatesAndBroadcasts(t *testing.T) {
 		require.Equal(t, []NodeID{"m-2"}, created)
 	})
 }
+
+// Constituents often share one underlying engine (one Badger per host with
+// several namespaces). Event registrations must deduplicate the shared engine
+// and translate through every namespace view, so delivery does not depend on
+// constituent iteration order and one namespace cannot shadow another.
+func TestCompositeEvents_SharedEngineTranslatesEveryNamespace(t *testing.T) {
+	composite, nsA, nsB := newTestCompositeEngine(t)
+
+	var created []NodeID
+	composite.OnNodeCreated(func(node *Node) { created = append(created, node.ID) })
+	_, err := nsA.CreateNode(&Node{ID: "shared-a", Labels: []string{"Doc"}})
+	require.NoError(t, err)
+	_, err = nsB.CreateNode(&Node{ID: "shared-b", Labels: []string{"Other"}})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []NodeID{"shared-a", "shared-b"}, created)
+
+	var deleted []NodeID
+	composite.OnNodeDeleted(func(nodeID NodeID) { deleted = append(deleted, nodeID) })
+	require.NoError(t, nsB.DeleteNode("shared-b"))
+	require.Equal(t, []NodeID{"shared-b"}, deleted)
+
+	_, err = nsB.CreateNode(&Node{ID: "shared-b2", Labels: []string{"Other"}})
+	require.NoError(t, err)
+	_, err = nsB.CreateNode(&Node{ID: "shared-b3", Labels: []string{"Other"}})
+	require.NoError(t, err)
+	var createdEdges []EdgeID
+	composite.OnEdgeCreated(func(edge *Edge) { createdEdges = append(createdEdges, edge.ID) })
+	require.NoError(t, nsB.CreateEdge(&Edge{ID: "shared-e", StartNode: "shared-b2", EndNode: "shared-b3", Type: "R"}))
+	require.Equal(t, []EdgeID{"shared-e"}, createdEdges)
+}

@@ -50,6 +50,61 @@ func (b *BadgerEngine) BeginQueryRevealScope(reveal bool) func() {
 	}
 }
 
+// filterEntityByDecay is the shared kernel behind filterNodeByDecay and
+// filterEdgeByDecay. It resolves the namespace scorer, applies the
+// reveal-all scope, scores the entity, and decides suppression. The
+// entity-specific scoring call is selected by isEdge so the hot scan path
+// stays allocation-free.
+func (b *BadgerEngine) filterEntityByDecay(
+	scorer *knowledgepolicy.Scorer,
+	kind string,
+	entityID string,
+	visibilitySuppressed bool,
+	labels []string,
+	entityType string,
+	entityProps map[string]interface{},
+	createdAtNanos, versionAtNanos, nowNanos int64,
+	isEdge bool,
+) bool {
+	if scorer == nil {
+		if visibilitySuppressed {
+			if kp := observability.GetKnowledgePolicyMetrics(); kp != nil {
+				kp.IncReadFilterDropped(kind, "")
+				kp.IncSuppression(kind, "explicit_flag", "")
+			}
+			return true
+		}
+		return false
+	}
+
+	var accessMeta *knowledgepolicy.AccessMetaEntry
+	if meta, err := b.GetAccessMeta(entityID); err == nil {
+		accessMeta = meta
+	}
+
+	var res knowledgepolicy.ScoringResolution
+	if isEdge {
+		res = scorer.ScoreEdgeWithProperties(entityID, entityType, entityProps, accessMeta, createdAtNanos, versionAtNanos, nowNanos)
+	} else {
+		res = scorer.ScoreNodeWithProperties(entityID, labels, entityProps, accessMeta, createdAtNanos, versionAtNanos, nowNanos)
+	}
+
+	if res.NoDecay && visibilitySuppressed {
+		if kp := observability.GetKnowledgePolicyMetrics(); kp != nil {
+			kp.IncReadFilterDropped(kind, "")
+			kp.IncSuppression(kind, "explicit_flag", "")
+		}
+		return true
+	}
+	if res.SuppressionEligible {
+		if kp := observability.GetKnowledgePolicyMetrics(); kp != nil {
+			kp.IncReadFilterDropped(kind, "")
+		}
+		return true
+	}
+	return false
+}
+
 // filterNodeByDecay returns true if the node should be suppressed from results.
 // It only decides visibility. Access recording is deferred until a query
 // actually materializes the entity into the final result set.
@@ -60,47 +115,19 @@ func (b *BadgerEngine) filterNodeByDecay(node *Node, nowNanos int64) bool {
 	if b.revealAll.Load() {
 		return false
 	}
-
-	scorer := b.getScorerForNode(node.ID)
-	if scorer == nil {
-		if node.VisibilitySuppressed {
-			if kp := observability.GetKnowledgePolicyMetrics(); kp != nil {
-				kp.IncReadFilterDropped("node", "")
-				kp.IncSuppression("node", "explicit_flag", "")
-			}
-			return true
-		}
-		return false
-	}
-
-	var accessMeta *knowledgepolicy.AccessMetaEntry
-	if meta, err := b.GetAccessMeta(string(node.ID)); err == nil {
-		accessMeta = meta
-	}
-
-	res := scorer.ScoreNodeWithProperties(
+	return b.filterEntityByDecay(
+		b.getScorerForNode(node.ID),
+		"node",
 		string(node.ID),
+		node.VisibilitySuppressed,
 		node.Labels,
+		"",
 		node.Properties,
-		accessMeta,
 		node.CreatedAt.UnixNano(),
 		node.UpdatedAt.UnixNano(),
 		nowNanos,
+		false,
 	)
-	if res.NoDecay && node.VisibilitySuppressed {
-		if kp := observability.GetKnowledgePolicyMetrics(); kp != nil {
-			kp.IncReadFilterDropped("node", "")
-			kp.IncSuppression("node", "explicit_flag", "")
-		}
-		return true
-	}
-	suppress := res.SuppressionEligible
-	if suppress {
-		if kp := observability.GetKnowledgePolicyMetrics(); kp != nil {
-			kp.IncReadFilterDropped("node", "")
-		}
-	}
-	return suppress
 }
 
 // filterEdgeByDecay returns true if the edge should be suppressed from results.
@@ -111,59 +138,29 @@ func (b *BadgerEngine) filterEdgeByDecay(edge *Edge, nowNanos int64) bool {
 	if b.revealAll.Load() {
 		return false
 	}
-
-	scorer := b.getScorerForEdge(edge.ID)
-	if scorer == nil {
-		if edge.VisibilitySuppressed {
-			if kp := observability.GetKnowledgePolicyMetrics(); kp != nil {
-				kp.IncReadFilterDropped("edge", "")
-				kp.IncSuppression("edge", "explicit_flag", "")
-			}
-			return true
-		}
-		return false
-	}
-
-	var accessMeta *knowledgepolicy.AccessMetaEntry
-	if meta, err := b.GetAccessMeta(string(edge.ID)); err == nil {
-		accessMeta = meta
-	}
-
-	res := scorer.ScoreEdgeWithProperties(
+	return b.filterEntityByDecay(
+		b.getScorerForEdge(edge.ID),
+		"edge",
 		string(edge.ID),
+		edge.VisibilitySuppressed,
+		nil,
 		edge.Type,
 		edge.Properties,
-		accessMeta,
 		edge.CreatedAt.UnixNano(),
 		edge.CreatedAt.UnixNano(),
 		nowNanos,
+		true,
 	)
-	if res.NoDecay && edge.VisibilitySuppressed {
-		if kp := observability.GetKnowledgePolicyMetrics(); kp != nil {
-			kp.IncReadFilterDropped("edge", "")
-			kp.IncSuppression("edge", "explicit_flag", "")
-		}
-		return true
-	}
-	suppress := res.SuppressionEligible
-	if suppress {
-		if kp := observability.GetKnowledgePolicyMetrics(); kp != nil {
-			kp.IncReadFilterDropped("edge", "")
-		}
-	}
-	return suppress
 }
 
 // getScorerForNode resolves a Scorer from the node's namespace SchemaManager.
 func (b *BadgerEngine) getScorerForNode(nodeID NodeID) *knowledgepolicy.Scorer {
-	ns := extractNamespaceFromID(string(nodeID))
-	return b.getScorerForNamespace(ns)
+	return b.getScorerForNamespace(extractNamespaceFromID(string(nodeID)))
 }
 
 // getScorerForEdge resolves a Scorer from the edge's namespace SchemaManager.
 func (b *BadgerEngine) getScorerForEdge(edgeID EdgeID) *knowledgepolicy.Scorer {
-	ns := extractNamespaceFromID(string(edgeID))
-	return b.getScorerForNamespace(ns)
+	return b.getScorerForNamespace(extractNamespaceFromID(string(edgeID)))
 }
 
 // getScorerForNamespace builds a Scorer from the namespace's BindingTable.
@@ -193,6 +190,27 @@ func DecayScoringTime() int64 {
 	return time.Now().UnixNano()
 }
 
+// filterPropertyByDecay is the shared kernel behind FilterPropertyByDecay and
+// FilterEdgePropertyByDecay. The entity-specific scoring call is selected by
+// isEdge so the property-read path stays allocation-free.
+func (b *BadgerEngine) filterPropertyByDecay(
+	scorer *knowledgepolicy.Scorer,
+	entityID string,
+	labels []string,
+	entityType, propKey string,
+	accessMeta *knowledgepolicy.AccessMetaEntry,
+	createdAtNanos, versionAtNanos, nowNanos int64,
+	isEdge bool,
+) bool {
+	var res knowledgepolicy.ScoringResolution
+	if isEdge {
+		res = scorer.ScoreEdgeProperty(entityID, entityType, propKey, accessMeta, createdAtNanos, versionAtNanos, nowNanos)
+	} else {
+		res = scorer.ScoreProperty(entityID, labels, propKey, accessMeta, createdAtNanos, versionAtNanos, nowNanos)
+	}
+	return res.SuppressionEligible
+}
+
 // FilterPropertyByDecay returns true if the property should be hidden from results.
 func (b *BadgerEngine) FilterPropertyByDecay(nodeID NodeID, labels []string, propKey string, createdAtNanos, versionAtNanos, nowNanos int64) bool {
 	if !b.decayEnabled {
@@ -202,8 +220,7 @@ func (b *BadgerEngine) FilterPropertyByDecay(nodeID NodeID, labels []string, pro
 		return false
 	}
 
-	ns := extractNamespaceFromID(string(nodeID))
-	scorer := b.getScorerForNamespace(ns)
+	scorer := b.getScorerForNode(nodeID)
 	if scorer == nil {
 		return false
 	}
@@ -213,8 +230,7 @@ func (b *BadgerEngine) FilterPropertyByDecay(nodeID NodeID, labels []string, pro
 		accessMeta = meta
 	}
 
-	res := scorer.ScoreProperty(string(nodeID), labels, propKey, accessMeta, createdAtNanos, versionAtNanos, nowNanos)
-	return res.SuppressionEligible
+	return b.filterPropertyByDecay(scorer, string(nodeID), labels, "", propKey, accessMeta, createdAtNanos, versionAtNanos, nowNanos, false)
 }
 
 // FilterEdgePropertyByDecay returns true if the edge property should be hidden from results.
@@ -226,8 +242,7 @@ func (b *BadgerEngine) FilterEdgePropertyByDecay(edgeID EdgeID, edgeType, propKe
 		return false
 	}
 
-	ns := extractNamespaceFromID(string(edgeID))
-	scorer := b.getScorerForNamespace(ns)
+	scorer := b.getScorerForEdge(edgeID)
 	if scorer == nil {
 		return false
 	}
@@ -237,8 +252,7 @@ func (b *BadgerEngine) FilterEdgePropertyByDecay(edgeID EdgeID, edgeType, propKe
 		accessMeta = meta
 	}
 
-	res := scorer.ScoreEdgeProperty(string(edgeID), edgeType, propKey, accessMeta, createdAtNanos, versionAtNanos, nowNanos)
-	return res.SuppressionEligible
+	return b.filterPropertyByDecay(scorer, string(edgeID), nil, edgeType, propKey, accessMeta, createdAtNanos, versionAtNanos, nowNanos, true)
 }
 
 // ScorerForNamespace returns a Scorer for the given namespace, or nil.
