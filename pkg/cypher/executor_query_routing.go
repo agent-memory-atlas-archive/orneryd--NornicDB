@@ -550,8 +550,18 @@ skipMatchCallRoute:
 	case findMultiWordKeywordIndex(cypher, "SHOW", "LIMITS") == 0:
 		return e.executeShowLimits(ctx, cypher)
 	default:
+		// Terminal chokepoint of the converged router: a statement that passed
+		// syntax validation but matches no handler is rejected here — never a
+		// silent success, alternate text executor, or re-dispatch. Neo4j
+		// reports unrecognized statements as syntax errors, so the localized
+		// message keeps its text while Bolt carries the proper status code.
 		firstWord := strings.Split(upperQuery, " ")[0]
-		return nil, localizedError(localization.CypherTransactionsQueryTypeUnsupported(firstWord), nil)
+		err := localizedError(localization.CypherTransactionsQueryTypeUnsupported(firstWord), nil)
+		return nil, &classifiedCypherError{
+			cause:  err,
+			code:   "Neo.ClientError.Statement.SyntaxError",
+			detail: "UnexpectedSyntax",
+		}
 	}
 }
 
@@ -759,7 +769,13 @@ func (e *StorageExecutor) validateSyntaxNornic(cypher string) error {
 		return nil
 	}
 	if !hasValidStartKeyword(cypher) {
-		return localizedError(localization.CypherTransactionsSyntaxStartInvalid(), nil)
+		// Neo4j reports an unrecognized statement as a syntax error; classify
+		// the localized terminal so Bolt carries the proper status code.
+		return &classifiedCypherError{
+			cause:  localizedError(localization.CypherTransactionsSyntaxStartInvalid(), nil),
+			code:   "Neo.ClientError.Statement.SyntaxError",
+			detail: "UnexpectedSyntax",
+		}
 	}
 	if err := validateLeadingNodePatternTransition(cypher); err != nil {
 		return err
@@ -833,7 +849,11 @@ func (e *StorageExecutor) validateSyntaxNornic(cypher string) error {
 		return newSemanticError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax", "syntax error: unbalanced curly braces")
 	}
 	if inString {
-		return localizedError(localization.CypherTransactionsSyntaxUnclosedQuote(), nil)
+		return &classifiedCypherError{
+			cause:  localizedError(localization.CypherTransactionsSyntaxUnclosedQuote(), nil),
+			code:   "Neo.ClientError.Statement.SyntaxError",
+			detail: "UnexpectedSyntax",
+		}
 	}
 
 	e.markCachedValidSyntax(cypher)

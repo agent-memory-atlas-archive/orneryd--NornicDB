@@ -41,9 +41,12 @@
 Owner decision: no alternate execution path will be added.
 Unhandled queries must fail like Neo4j fails them, through the converged pipeline.
 
-- [ ] 4.1 Route valid-but-unhandled statements to a single terminal unsupported/syntax error in the converged execution pipeline; never a silent success, alternate text executor, or re-dispatch.
-- [ ] 4.2 Add a regression test for every found valid-but-unhandled query: assert the proper error class, no observable effects, and behavior parity across autocommit and explicit transaction modes.
-- [ ] 4.3 Verify the same error class and rollback semantics are returned from every route/mode (server, executor, transaction wrapper).
+- [x] 4.1 Route valid-but-unhandled statements to a single terminal unsupported/syntax error in the converged execution pipeline; never a silent success, alternate text executor, or re-dispatch.
+	- `executeWithoutTransaction` is the single router (`executeQueryAgainstStorage` is a thin view-swap); its default case is the one terminal. It now carries Neo4j's syntax-error classification (`Neo.ClientError.Statement.SyntaxError`, `UnexpectedSyntax`) via `classifiedCypherError` while keeping the localized message. The Nornic validator's valid-start and unclosed-quote terminals got the same classification.
+- [x] 4.2 Add a regression test for every found valid-but-unhandled query: assert the proper error class, no observable effects, and behavior parity across autocommit and explicit transaction modes.
+	- `TestUnhandledStatementsReturnClassifiedSyntaxErrors` covers the found shapes (`SHOW WHATEVER` router terminal, `WHATEVER 1` start terminal) on memory and server stacks in both modes, asserting the Bolt classification, nil result and unchanged node count.
+- [x] 4.3 Verify the same error class and rollback semantics are returned from every route/mode (server, executor, transaction wrapper).
+	- The 4.2 matrix runs through `Execute` (executor + explicit-transaction wrapper + namespaced server stack); each case asserts the same `Neo.ClientError.Statement.SyntaxError` class and that COMMIT afterward succeeds with no effects. Existing `TestExecuteQueryAgainstStorage_DispatchBranches` continues to pin the terminal message at the direct-router level.
 
 ## 5. Converge expressions
 
