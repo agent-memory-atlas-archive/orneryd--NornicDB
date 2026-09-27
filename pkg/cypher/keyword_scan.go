@@ -390,7 +390,7 @@ func keywordIndexFrom(s, keyword string, from int, opts keywordScanOpts) int {
 
 		if opts.SkipComments {
 			if inLineComment {
-				if c == '\n' {
+				if c == '\n' || c == '\r' {
 					inLineComment = false
 				}
 				continue
@@ -588,7 +588,7 @@ func firstKeywordIndexFromDefault(s string, from int, keywords ...string) int {
 		c := s[i]
 
 		if inLineComment {
-			if c == '\n' {
+			if c == '\n' || c == '\r' {
 				inLineComment = false
 			}
 			continue

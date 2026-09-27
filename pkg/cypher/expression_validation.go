@@ -81,8 +81,8 @@ func wholeListOperand(text string, end int) bool {
 // mismatch: expected List<T> but was Node"), whatever the data: `1 IN n`,
 // `[x IN p | …]`, `any(x IN r WHERE …)`, in projections, WHERE, SET values
 // and subquery bodies. FOREACH (x IN n | …) is not a type error in Neo4j (it
-// runs once), and a name the text itself declares as a list element
-// (`[n IN list | …]`) names the element, so neither is checked.
+// runs once). A list element declaration (`[n IN list | …]`) is not itself
+// an operand and cannot change the type of a separate `IN n` operand.
 func graphListOperandTypeError(text string, scope matchSemanticScope) error {
 	if len(scope) == 0 {
 		return nil
@@ -107,7 +107,7 @@ func graphListOperandTypeError(text string, scope matchSemanticScope) error {
 		default:
 			return nil
 		}
-		if foreachDeclaration(text, in) || declaresListElement(text, name) {
+		if foreachDeclaration(text, in) || localListBindingShadowsOperand(text, start, name) {
 			return nil
 		}
 		return localizedStatusError("Neo.ClientError.Statement.SyntaxError", "InvalidArgumentType", localization.CypherCoreListOperandTypeMismatch(typeName))
@@ -117,45 +117,121 @@ func graphListOperandTypeError(text string, scope matchSemanticScope) error {
 // foreachDeclaration reports whether the IN at offset in is FOREACH's own
 // (`FOREACH (x IN …`).
 func foreachDeclaration(text string, in int) bool {
-	i := in - 1
-	for i >= 0 && isSpaceByte(text[i]) {
-		i--
-	}
-	for i >= 0 && isIdentByte(text[i]) {
-		i--
-	}
-	for i >= 0 && isSpaceByte(text[i]) {
-		i--
-	}
-	if i < 0 || text[i] != '(' {
+	if !containsFold(text[:in], "FOREACH") {
 		return false
 	}
-	i--
-	for i >= 0 && isSpaceByte(text[i]) {
-		i--
-	}
-	return i+1 >= len("FOREACH") && strings.EqualFold(text[i+1-len("FOREACH"):i+1], "FOREACH") &&
-		(i+1 == len("FOREACH") || !isIdentByte(text[i-len("FOREACH")]))
-}
-
-// declaresListElement reports whether text has `name IN`: name is then (also)
-// a list element variable of a comprehension or quantifier there.
-func declaresListElement(text, name string) bool {
-	for from := 0; ; {
-		index := strings.Index(text[from:], name)
-		if index < 0 {
+	opts := defaultKeywordScanOpts()
+	opts.SkipParens = false
+	opts.SkipBrackets = false
+	for from := 0; from < in; {
+		start := keywordIndexFrom(text, "FOREACH", from, opts)
+		if start < 0 || start >= in {
 			return false
 		}
-		index += from
-		end := index + len(name)
-		from = end
-		if (index > 0 && (isIdentByte(text[index-1]) || text[index-1] == '.' || text[index-1] == '$')) || (end < len(text) && isIdentByte(text[end])) {
+		open := queryGapEnd(text, start+len("FOREACH"))
+		if open < len(text) && text[open] == '(' {
+			_, end, ok := scanIdentifierToken(text, queryGapEnd(text, open+1))
+			if ok && queryGapEnd(text, end) == in {
+				return true
+			}
+		}
+		from = start + len("FOREACH")
+	}
+	return false
+}
+
+func localListBindingShadowsOperand(text string, operand int, name string) bool {
+	for open := 0; open < operand; open++ {
+		switch text[open] {
+		case '\'', '"', '`':
+			open = skipCypherQuotedText(text, open, text[open]) - 1
+			continue
+		case '/':
+			if end := queryCommentEnd(text, open); end >= 0 {
+				open = end - 1
+				continue
+			}
+		}
+		isList := text[open] == '['
+		if !isList && (text[open] != '(' || !quantifierBeforeParen(text, open)) {
 			continue
 		}
-		next := skipSpaces(text, end)
-		if next+2 <= len(text) && strings.EqualFold(text[next:next+2], "IN") && (next+2 == len(text) || !isIdentByte(text[next+2])) {
+		declaration := queryGapEnd(text, open+1)
+		variable, end, ok := scanIdentifierToken(text, declaration)
+		if !ok || variable != name {
+			continue
+		}
+		in := queryGapEnd(text, end)
+		if in+2 > operand || !strings.EqualFold(text[in:in+2], "IN") || in+2 < len(text) && isIdentByte(text[in+2]) {
+			continue
+		}
+		brackets, parens, braces := 0, 0, 0
+		if isList {
+			brackets = 1
+		} else {
+			parens = 1
+		}
+		projecting := false
+		for index := in + 2; index < operand; index++ {
+			switch text[index] {
+			case '\'', '"', '`':
+				index = skipCypherQuotedText(text, index, text[index]) - 1
+				continue
+			case '/':
+				if commentEnd := queryCommentEnd(text, index); commentEnd >= 0 {
+					index = commentEnd - 1
+					continue
+				}
+			case '[':
+				brackets++
+			case ']':
+				brackets--
+			case '(':
+				parens++
+			case ')':
+				parens--
+			case '{':
+				braces++
+			case '}':
+				braces--
+			case '|':
+				if isList && brackets == 1 && parens == 0 && braces == 0 {
+					projecting = true
+				}
+			}
+			if !isList && parens == 1 && brackets == 0 && braces == 0 && index+5 <= operand && strings.EqualFold(text[index:index+5], "WHERE") &&
+				(index == 0 || !isIdentByte(text[index-1])) && (index+5 == len(text) || !isIdentByte(text[index+5])) {
+				projecting = true
+				index += 4
+			}
+			if isList && brackets == 0 || !isList && parens == 0 {
+				break
+			}
+		}
+		if projecting && (isList && brackets > 0 || !isList && parens > 0) {
 			return true
 		}
+	}
+	return false
+}
+
+func quantifierBeforeParen(text string, open int) bool {
+	end := open
+	for end > 0 && isWhitespace(text[end-1]) {
+		end--
+	}
+	start := end
+	for start > 0 && isIdentByte(text[start-1]) {
+		start--
+	}
+	if start == end || start > 0 && isIdentByte(text[start-1]) {
+		return false
+	}
+	switch strings.ToLower(text[start:end]) {
+	case "any", "all", "none", "single":
+		return true
+	default:
+		return false
 	}
 }
 

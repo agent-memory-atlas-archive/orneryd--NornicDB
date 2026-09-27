@@ -186,6 +186,7 @@ func TestUnwindAndForeachOfSubqueryValue(t *testing.T) {
 	}
 	for _, statement := range []string{
 		"FOREACH (x IN 5 | CREATE (:FE {v: x}))",
+		"FOREACH (x /* gap */ IN 5 | CREATE (:FE {v: x}))",
 		"FOREACH (x IN null | CREATE (:FE {v: x}))",
 		"FOREACH (x IN COUNT { MATCH (n:NOPE) } | CREATE (:FE {v: x}))",
 	} {
@@ -194,5 +195,5 @@ func TestUnwindAndForeachOfSubqueryValue(t *testing.T) {
 	}
 	result, err := exec.Execute(ctx, "MATCH (n:FE) RETURN n.v AS v ORDER BY v", nil)
 	require.NoError(t, err)
-	require.Equal(t, [][]interface{}{{int64(0)}, {int64(5)}}, result.Rows)
+	require.Equal(t, [][]interface{}{{int64(0)}, {int64(5)}, {int64(5)}}, result.Rows)
 }

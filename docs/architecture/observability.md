@@ -451,6 +451,24 @@ Four research-surfaced amendments to the tracing pillar:
 - The slow-query log emits `WARN` with the truncated 500-char query, the
   `plan_hash`, and `cypher.duration_ms`. The full query text is **never**
   attached as a metric label or span attribute — it goes to the log only.
+- Classified Cypher syntax rejections emit an `INFO` record with
+  `event_id=cypher.query_rejected`, `reason=syntax_error`, an allowlisted
+  `statement_class`, `shape_hash`, and at most 500 bytes of query shape.
+  Comments are removed before literal redaction; parameter values are not
+  logged. The hash covers the complete redacted shape, before truncation.
+  The record is omitted when INFO logging is disabled; runtime failures and
+  successful queries do not produce it. Treat query shapes as potentially
+  sensitive because identifiers and parameter names may still appear.
+  With JSON logs, rebuild a count-ranked optimization backlog without
+  copying query text into the output:
+
+  ```sh
+  jq -r 'select(.event_id == "cypher.query_rejected") | [.statement_class, .reason, .shape_hash] | @tsv' nornicdb.jsonl | sort | uniq -c | sort -rn
+  ```
+
+  Retain only the log interval relevant to the workload and review each
+  grouped shape against a sanitized local reproducer before changing Cypher
+  behavior. No unbounded in-process backlog is maintained.
 - `pkg/audit/audit.go` is **not** migrated to `slog`. Audit must remain a
   distinct, signed, append-only stream with its own retention policy.
 

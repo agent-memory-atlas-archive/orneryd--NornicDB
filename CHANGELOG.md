@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Log classified Cypher syntax rejections at INFO with a bounded redacted
+  statement shape, allowlisted statement class and stable grouping hash.
+  JSON logs can be grouped into an optimization backlog without retaining
+  rejected queries in memory.
+
 ### Fixed
 
+- Remove Cypher comments before redacting rejection and slow-query log
+  records, preventing comment text from exposing secrets in query logs.
 - Gate the V2-to-V3 storage upgrade behind `--upgrade-storage` and restore
   missing versioned adjacency for edges written by older bulk-create paths.
   Current relationship traversal and retained pre-update/pre-delete snapshots

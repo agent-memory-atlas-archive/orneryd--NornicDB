@@ -196,6 +196,21 @@ func TestMultiWordKeywordsAcceptAnyWhitespace(t *testing.T) {
 	}
 }
 
+func TestKeywordScanLineCommentsEndAtCR(t *testing.T) {
+	for _, lineEnding := range []string{"\r", "\n", "\r\n"} {
+		query := "RETURN 1 // WITH 2" + lineEnding + "WITH 3 AS x RETURN x"
+		want := strings.Index(query, "WITH 3")
+		require.Equal(t, want, keywordIndexFrom(query, "WITH", 0, defaultKeywordScanOpts()), "%q default", lineEnding)
+		opts := defaultKeywordScanOpts()
+		opts.SkipParens = false
+		require.Equal(t, want, keywordIndexFrom(query, "WITH", 0, opts), "%q general", lineEnding)
+	}
+	exec, _ := newTestExecutor(t)
+	result, err := exec.Execute(context.Background(), "WITH 1 AS x // RETURN 0\rRETURN x AS result", nil)
+	require.NoError(t, err)
+	require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows)
+}
+
 // respaceQuery replaces each space outside quoted text with gap().
 func respaceQuery(query string, gap func() string) string {
 	var out strings.Builder

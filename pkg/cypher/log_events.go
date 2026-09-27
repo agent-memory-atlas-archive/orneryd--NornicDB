@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	nornicerrors "github.com/orneryd/nornicdb/pkg/errors"
 	"github.com/orneryd/nornicdb/pkg/localization"
 )
 
@@ -29,4 +30,27 @@ func (e *StorageExecutor) logEvent(level slog.Level, event localization.LogEvent
 		}
 	}
 	e.logger().LogAttrs(ctx, level, event.Message.Fallback, attrs...)
+}
+
+func (e *StorageExecutor) emitRejectionReport(query string, err error) {
+	if e == nil || e.log == nil || err == nil || !e.log.Enabled(context.Background(), slog.LevelInfo) || !nornicerrors.HasNeo4jStatus(err) {
+		return
+	}
+	code, _ := nornicerrors.Neo4jStatus(err)
+	if code != "Neo.ClientError.Statement.SyntaxError" {
+		return
+	}
+	redacted := RedactLiterals(StripComments(query))
+	hash := StatementShapeHash(redacted)
+	statementClass := "OTHER"
+	for _, start := range validSyntaxStarts {
+		if startsWithKeywordFold(query, start) {
+			statementClass = start
+			break
+		}
+	}
+	if len(redacted) > 500 {
+		redacted = redacted[:500]
+	}
+	e.log.Info("query rejected", "event_id", "cypher.query_rejected", "event", "query_rejected", "reason", "syntax_error", "statement_class", statementClass, "shape_hash", hash, "query", redacted)
 }

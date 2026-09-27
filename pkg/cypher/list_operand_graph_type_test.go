@@ -22,6 +22,7 @@ func TestListOperandGraphVariableIsTypeError(t *testing.T) {
 
 	for statement, typeName := range map[string]string{
 		"MATCH (n:QP {s: 5}) RETURN 1 IN n AS r":                              "Node",
+		"MATCH (n:QP {s: 5}) RETURN 1 IN n AS x, [n IN [1] | n] AS y":         "Node",
 		"MATCH (n:QP {s: 5}) WITH n RETURN 1 IN n AS r":                       "Node",
 		"CREATE (n:QP2) WITH n RETURN 1 IN n AS r":                            "Node",
 		"MATCH ()-[r:R]->() RETURN 1 IN r AS x":                               "Relationship",
@@ -47,6 +48,9 @@ func TestListOperandGraphVariableIsTypeError(t *testing.T) {
 		"MATCH (n:QP {s: 5}) FOREACH (x IN n | CREATE (:QF)) RETURN 1 AS one": {{int64(1)}},
 		"MATCH (n:QP {s: 5}) UNWIND n AS x RETURN x.s AS s":                   {{int64(5)}},
 		"MATCH (n:QP {s: 5}) RETURN [n IN [1, 2] | n] AS x":                   {{[]interface{}{int64(1), int64(2)}}},
+		"MATCH (n:QP {s: 5}) RETURN [n /* gap */ IN [1, 2] | n] AS x":         {{[]interface{}{int64(1), int64(2)}}},
+		"MATCH (n:QP {s: 5}) RETURN [n IN [[1], [2]] | 1 IN n] AS x":          {{[]interface{}{true, false}}},
+		"MATCH (n:QP {s: 5}) RETURN any(n IN [[1]] WHERE 1 IN n) AS x":        {{true}},
 		"MATCH (n:QP {s: 5}) RETURN n IN [n] AS x":                            {{true}},
 		"MATCH (n:QP {s: 5})-[r*1..2]->() RETURN 1 IN r AS x":                 {{false}},
 		"MATCH (n:QP {s: 5}) WITH n.s AS n RETURN 5 IN n AS x":                {{true}},
@@ -56,4 +60,13 @@ func TestListOperandGraphVariableIsTypeError(t *testing.T) {
 		require.NoError(t, err, statement)
 		require.Equal(t, want, result.Rows, statement)
 	}
+}
+
+func TestGraphListOperandIgnoresUnrelatedDeclarations(t *testing.T) {
+	require.ErrorContains(t, graphListOperandTypeError("RETURN 1 IN n /* n IN [1] */ AS x", matchSemanticScope{"n": matchBindingNode}), "was Node")
+	require.ErrorContains(t, graphListOperandTypeError("RETURN 1 IN n AS x, 'n IN [1]' AS note", matchSemanticScope{"n": matchBindingNode}), "was Node")
+	require.ErrorContains(t, graphListOperandTypeError("RETURN 1 IN n AS x, [n IN [1] | n] AS y", matchSemanticScope{"n": matchBindingNode}), "was Node")
+	require.ErrorContains(t, graphListOperandTypeError("RETURN [n IN [1] | n] AS y, 1 IN n AS x", matchSemanticScope{"n": matchBindingNode}), "was Node")
+	require.ErrorContains(t, graphListOperandTypeError("RETURN [n IN n /* | ] */ | n] AS y", matchSemanticScope{"n": matchBindingNode}), "was Node")
+	require.NoError(t, graphListOperandTypeError("RETURN [n IN [[1]] | '[' + (1 IN n)] AS y", matchSemanticScope{"n": matchBindingNode}))
 }

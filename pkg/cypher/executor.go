@@ -1029,7 +1029,7 @@ func (e *StorageExecutor) emitSlowQueryLog(query string, plan *ExecutionPlan, du
 	if e.slowQueryThreshold <= 0 || duration < e.slowQueryThreshold {
 		return
 	}
-	redacted := RedactLiterals(query)
+	redacted := RedactLiterals(StripComments(query))
 	hash := PlanHash(plan)
 	if plan == nil || plan.Root == nil {
 		// The normal (non-EXPLAIN/PROFILE) Execute() path never builds an
@@ -1330,6 +1330,7 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 	originalCypher := cypher
 	defer func() {
 		dur := time.Since(slowStart)
+		e.emitRejectionReport(originalCypher, retErr)
 		// Plan is unavailable for non-EXPLAIN/PROFILE queries; pass nil and
 		// rely on PlanHash's zero-placeholder behavior. Phase 6 (TRC-04) will
 		// thread the planned tree here once cypher EXPLAIN refactoring is in.

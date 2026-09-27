@@ -20,7 +20,7 @@ func validateStaticQuantifierTypes(cypher string) error {
 				break
 			}
 			from = index + len(name)
-			open := skipSpaces(cypher, index+len(name))
+			open := queryGapEnd(cypher, index+len(name))
 			if open >= len(cypher) || cypher[open] != '(' {
 				continue
 			}
@@ -46,8 +46,8 @@ func validateStaticQuantifierCall(inner string) error {
 	if whereIndex < 0 {
 		return nil
 	}
-	variable := strings.TrimSpace(inner[:inIndex])
-	listExpression := strings.TrimSpace(rest[:whereIndex])
+	variable := strings.TrimSpace(StripComments(inner[:inIndex]))
+	listExpression := strings.TrimSpace(StripComments(rest[:whereIndex]))
 	predicate := strings.TrimSpace(rest[whereIndex+len("WHERE"):])
 	if !isValidIdentifier(variable) || !quantifierPredicateRequiresNumbers(predicate, variable) {
 		return nil

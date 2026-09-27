@@ -32,12 +32,32 @@ func TestQuantifierValidationIgnoresTextAndComments(t *testing.T) {
 	require.NoError(t, validateStaticQuantifierTypes("RETURN any(x IN ['a'] WHERE x /* gap */ IS NOT NULL) AS result"))
 	require.NoError(t, validateStaticQuantifierTypes("RETURN any(x IN ['a'] WHERE x = 'x * 2') AS result"))
 	for _, query := range []string{
+		"RETURN any /* gap */ (x IN ['a'] WHERE x * 2 > 0) AS result",
+		"RETURN any(x IN /* gap */ ['a'] WHERE x * 2 > 0) AS result",
+		"RETURN any(x /* gap */ IN ['a'] WHERE x * 2 > 0) AS result",
+		"RETURN any(x IN ['a'] /* gap */ WHERE x * 2 > 0) AS result",
+		"RETURN any(x IN ['/* gap */'] WHERE x * 2 > 0) AS result",
 		"RETURN any(x IN ['a'] WHERE x /* gap */ * 2 > 0) AS result",
 		"RETURN any(x IN ['a'] WHERE 2 * /* gap */ x > 0) AS result",
 	} {
 		require.ErrorContains(t, validateStaticQuantifierTypes(query), "numeric operator", query)
 	}
 	exec, _ := newTestExecutor(t)
+	_, err := exec.Execute(context.Background(), "RETURN any /* gap */ (x IN ['a'] WHERE x * 2 > 0) AS result", nil)
+	require.Error(t, err)
+	semantic, ok := err.(*SemanticError)
+	require.True(t, ok, "%T: %v", err, err)
+	require.Equal(t, "InvalidArgumentType", semantic.Detail)
+	_, err = exec.Execute(context.Background(), "RETURN any(x IN /* gap */ ['a'] WHERE x * 2 > 0) AS result", nil)
+	require.Error(t, err)
+	semantic, ok = err.(*SemanticError)
+	require.True(t, ok, "%T: %v", err, err)
+	require.Equal(t, "InvalidArgumentType", semantic.Detail)
+	_, err = exec.Execute(context.Background(), "RETURN any(x /* gap */ IN ['a'] WHERE x * 2 > 0) AS result", nil)
+	require.Error(t, err)
+	semantic, ok = err.(*SemanticError)
+	require.True(t, ok, "%T: %v", err, err)
+	require.Equal(t, "InvalidArgumentType", semantic.Detail)
 	result, err := exec.Execute(context.Background(), "RETURN any(x IN ['a'] WHERE x /* gap */ IS NOT NULL) AS result", nil)
 	require.NoError(t, err)
 	require.Equal(t, [][]interface{}{{true}}, result.Rows)
@@ -57,6 +77,8 @@ func BenchmarkStaticQuantifierValidation(b *testing.B) {
 	}{
 		{"plain", "RETURN any(x IN ['a'] WHERE x IS NOT NULL) AS result"},
 		{"comment-gap", "RETURN any(x IN ['a'] WHERE x /* gap */ IS NOT NULL) AS result"},
+		{"list-comment-gap", "RETURN any(x IN /* gap */ [1] WHERE x > 0) AS result"},
+		{"variable-comment-gap", "RETURN any(x /* gap */ IN [1] WHERE x > 0) AS result"},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()

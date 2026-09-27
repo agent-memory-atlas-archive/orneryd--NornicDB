@@ -77,6 +77,7 @@ func TestValidateListOperandParameters(t *testing.T) {
 		// FOREACH over a value that isn't a list runs once (Neo4j 5.26).
 		"FOREACH (x IN $p | CREATE (:N))",
 		"FOREACH (x IN 5 | CREATE (:N))",
+		"FOREACH (x /* gap */ IN 5 | CREATE (:N))",
 		"MATCH (n) WHERE n.id IN $l RETURN n",
 		"MATCH (n) WHERE n.id IN $n RETURN n",
 		"MATCH (n) WHERE n.id IN $m.list RETURN n",
@@ -89,5 +90,24 @@ func TestValidateListOperandParameters(t *testing.T) {
 		"RETURN 1 AS value /* 5 IN $p */",
 	} {
 		assert.NoError(t, validateListOperands(q, params), q)
+	}
+}
+
+func BenchmarkValidateListOperands(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"plain-in", "RETURN 1 IN [1] AS result"},
+		{"foreach-comment-gap", "FOREACH (x /* gap */ IN 5 | CREATE (:N))"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for iteration := 0; iteration < b.N; iteration++ {
+				if err := validateListOperands(tc.query, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
