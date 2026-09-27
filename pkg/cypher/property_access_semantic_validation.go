@@ -42,7 +42,7 @@ func validateStaticPropertyAccessTypes(cypher string) error {
 // access would reject is accessed ($m.a) or projected ($m AS m), so
 // parameterized statements on hot paths cost one scan.
 func validateStaticPropertyAccessParameters(cypher string, params map[string]interface{}) error {
-	if len(params) == 0 || !parameterMayRejectPropertyAccess(cypher, params) {
+	if len(params) == 0 || (strings.IndexByte(cypher, '.') < 0 && strings.IndexByte(cypher, '{') < 0) || !parameterMayRejectPropertyAccess(cypher, params) {
 		return nil
 	}
 	return validatePropertyAccessTypes(cypher, params)
@@ -462,6 +462,11 @@ func parameterMayRejectPropertyAccess(cypher string, params map[string]interface
 		case '\'', '"':
 			index = skipQuotedSemanticText(cypher, index) - 1
 			continue
+		case '/':
+			if end := queryCommentEnd(cypher, index); end >= 0 {
+				index = end - 1
+				continue
+			}
 		case '$':
 		default:
 			continue

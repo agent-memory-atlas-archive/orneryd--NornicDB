@@ -99,6 +99,66 @@ func makeEngineWithTransport(t *testing.T, baseURL string, rt roundTripFunc) *Re
 	return engine
 }
 
+func TestRemoteStreamNodesWithOptionsCancellation(t *testing.T) {
+	t.Run("pre-cancelled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		calls := 0
+		engine := &RemoteEngine{transport: &fakeRemoteTransport{queryFn: func(context.Context, string, map[string]interface{}) ([][]interface{}, error) {
+			calls++
+			return nil, nil
+		}}}
+		err := engine.StreamNodesWithOptions(ctx, StreamNodesOptions{}, func(*Node) error { return nil })
+		if err != context.Canceled || calls != 0 {
+			t.Fatalf("pre-cancelled stream: err=%v, remote calls=%d; want context.Canceled and zero calls", err, calls)
+		}
+	})
+
+	t.Run("during query", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		calls := 0
+		engine := &RemoteEngine{transport: &fakeRemoteTransport{queryFn: func(queryCtx context.Context, statement string, _ map[string]interface{}) ([][]interface{}, error) {
+			calls++
+			if statement != "MATCH (n) RETURN n" {
+				t.Fatalf("query = %q", statement)
+			}
+			cancel()
+			return nil, queryCtx.Err()
+		}}}
+		err := engine.StreamNodesWithOptions(ctx, StreamNodesOptions{}, func(*Node) error { return nil })
+		if err != context.Canceled || calls != 1 {
+			t.Fatalf("cancelled remote query: err=%v, remote calls=%d; want context.Canceled and one call", err, calls)
+		}
+	})
+}
+
+func TestRemoteStreamNodesWithOptionsProjectionAndStop(t *testing.T) {
+	remoteCalls := 0
+	engine := &RemoteEngine{transport: &fakeRemoteTransport{queryFn: func(_ context.Context, statement string, _ map[string]interface{}) ([][]interface{}, error) {
+		remoteCalls++
+		if statement != "MATCH (n) RETURN n" {
+			t.Fatalf("query = %q", statement)
+		}
+		return [][]interface{}{
+			{map[string]interface{}{"id": "other:1", "properties": map[string]interface{}{"keep": "skip"}}},
+			{map[string]interface{}{"id": "db:1", "properties": map[string]interface{}{"keep": "first", "drop": "private"}}},
+			{map[string]interface{}{"id": "db:2", "properties": map[string]interface{}{"keep": "second"}}},
+		}, nil
+	}}}
+	callbackCalls := 0
+	err := engine.StreamNodesWithOptions(context.Background(), StreamNodesOptions{Prefix: "db:", Projection: []string{"keep"}}, func(node *Node) error {
+		callbackCalls++
+		if node.ID != "db:1" || len(node.Properties) != 1 || node.Properties["keep"] != "first" {
+			t.Fatalf("projected node = %+v", node)
+		}
+		return ErrIterationStopped
+	})
+	if err != nil || callbackCalls != 1 || remoteCalls != 1 {
+		t.Fatalf("remote stream: err=%v, callbacks=%d, queries=%d; want nil, one, one", err, callbackCalls, remoteCalls)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // URI scheme auto-detection and config validation
 // ---------------------------------------------------------------------------

@@ -464,6 +464,120 @@ func TestExecuteInternal_RejectsMissingParametersBeforeWrites(t *testing.T) {
 	}
 }
 
+func TestExecuteInternal_RejectsInvalidListParameterBeforeWrites(t *testing.T) {
+	for name, internal := range map[string]bool{"public": false, "internal": true} {
+		t.Run(name, func(t *testing.T) {
+			exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "list_param"))
+			run := exec.Execute
+			if internal {
+				run = exec.executeInternal
+			}
+			_, err := run(context.Background(), "CREATE (:ListParam {contained: 5 IN $p})", map[string]interface{}{"p": int64(5)})
+			require.ErrorContains(t, err, "Type mismatch for parameter 'p': expected List<T> but was Integer")
+			result, err := exec.Execute(context.Background(), "MATCH (n:ListParam) RETURN count(n) AS count", nil)
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(0)}}, result.Rows)
+			if internal {
+				ctx := context.WithValue(context.Background(), paramsKey, map[string]interface{}{"p": int64(5)})
+				_, err = run(ctx, "RETURN 5 IN $p AS contained", nil)
+				require.ErrorContains(t, err, "Type mismatch for parameter 'p': expected List<T> but was Integer")
+			}
+			result, err = run(context.Background(), "RETURN 5 IN $p AS contained", map[string]interface{}{"p": []interface{}{int64(5)}})
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{true}}, result.Rows)
+		})
+	}
+}
+
+func TestExecuteInternal_RejectsInvalidPropertyParameterBeforeWrites(t *testing.T) {
+	for name, internal := range map[string]bool{"public": false, "internal": true} {
+		t.Run(name, func(t *testing.T) {
+			exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "property_param"))
+			run := exec.Execute
+			if internal {
+				run = exec.executeInternal
+			}
+			_, err := run(context.Background(), "CREATE (:PropertyParam {value: $p.name})", map[string]interface{}{"p": int64(5)})
+			require.ErrorContains(t, err, "Type mismatch for parameter 'p'")
+			result, err := exec.Execute(context.Background(), "MATCH (n:PropertyParam) RETURN count(n) AS count", nil)
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(0)}}, result.Rows)
+			if internal {
+				ctx := context.WithValue(context.Background(), paramsKey, map[string]interface{}{"p": int64(5)})
+				_, err = run(ctx, "RETURN $p.name AS name", nil)
+				require.ErrorContains(t, err, "Type mismatch for parameter 'p'")
+			}
+			result, err = run(context.Background(), "RETURN $p.name AS name", map[string]interface{}{"p": map[string]interface{}{"name": "alice"}})
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{"alice"}}, result.Rows)
+		})
+	}
+}
+
+func TestExecuteInternal_RejectsInvalidOperatorParameterBeforeWrites(t *testing.T) {
+	for name, internal := range map[string]bool{"public": false, "internal": true} {
+		t.Run(name, func(t *testing.T) {
+			exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "operator_param"))
+			run := exec.Execute
+			if internal {
+				run = exec.executeInternal
+			}
+			_, err := run(context.Background(), "CREATE (:OperatorParam {value: $p - 1})", map[string]interface{}{"p": "text"})
+			require.ErrorContains(t, err, "Type mismatch for parameter 'p'")
+			result, err := exec.Execute(context.Background(), "MATCH (n:OperatorParam) RETURN count(n) AS count", nil)
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(0)}}, result.Rows)
+			if internal {
+				ctx := context.WithValue(context.Background(), paramsKey, map[string]interface{}{"p": "text"})
+				_, err = run(ctx, "RETURN $p - 1 AS value", nil)
+				require.ErrorContains(t, err, "Type mismatch for parameter 'p'")
+			}
+			result, err = run(context.Background(), "RETURN $p - 1 AS value", map[string]interface{}{"p": int64(5)})
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(4)}}, result.Rows)
+		})
+	}
+}
+
+func TestExecuteInternal_RejectsInvalidPaginationParameterBeforeWrites(t *testing.T) {
+	for name, internal := range map[string]bool{"public": false, "internal": true} {
+		t.Run(name, func(t *testing.T) {
+			exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "pagination_param"))
+			run := exec.Execute
+			if internal {
+				run = exec.executeInternal
+			}
+			_, err := run(context.Background(), "CREATE (:PaginationParam) RETURN 1 AS value LIMIT $limit", map[string]interface{}{"limit": int64(-1)})
+			require.ErrorContains(t, err, "LIMIT requires a non-negative INTEGER")
+			result, err := exec.Execute(context.Background(), "MATCH (n:PaginationParam) RETURN count(n) AS count", nil)
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(0)}}, result.Rows)
+			if internal {
+				ctx := context.WithValue(context.Background(), paramsKey, map[string]interface{}{"limit": int64(-1)})
+				_, err = run(ctx, "RETURN 1 AS value LIMIT $limit", nil)
+				require.ErrorContains(t, err, "LIMIT requires a non-negative INTEGER")
+			}
+			result, err = run(context.Background(), "RETURN 1 AS value LIMIT $limit", map[string]interface{}{"limit": int64(1)})
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows)
+		})
+	}
+}
+
+func TestExecuteInternal_ParameterValidationOrderMatchesExecute(t *testing.T) {
+	for name, internal := range map[string]bool{"public": false, "internal": true} {
+		t.Run(name, func(t *testing.T) {
+			exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "validation_order"))
+			run := exec.Execute
+			if internal {
+				run = exec.executeInternal
+			}
+			_, err := run(context.Background(), "RETURN 5 IN $p AS value LIMIT $limit", map[string]interface{}{"p": int64(5), "limit": int64(-1)})
+			require.ErrorContains(t, err, "LIMIT requires a non-negative INTEGER")
+		})
+	}
+}
+
 func TestApocDynamicRunAndRunMany_Direct(t *testing.T) {
 	baseStore := newTestMemoryEngine(t)
 	store := storage.NewNamespacedEngine(baseStore, "test")

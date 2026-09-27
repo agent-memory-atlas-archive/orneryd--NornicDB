@@ -221,12 +221,14 @@ func (b *BadgerEngine) releaseClosedStateLocked() {
 	b.namespaceEdgeCounts = nil
 	b.mvccByNamespace = nil
 	b.lifecycleController = nil
+	b.callbackMu.Lock()
 	b.onNodeCreated = nil
 	b.onNodeUpdated = nil
 	b.onNodeDeleted = nil
 	b.onEdgeCreated = nil
 	b.onEdgeUpdated = nil
 	b.onEdgeDeleted = nil
+	b.callbackMu.Unlock()
 	b.storageMetrics = nil
 	b.mvccMetrics = nil
 }

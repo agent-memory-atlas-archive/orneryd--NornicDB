@@ -1339,6 +1339,12 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 		recordSpanError(execSpan, retErr)
 		execSpan.End()
 	}()
+	if err := ctx.Err(); err != nil {
+		if ctx.Value(ctxKeyTxStorage) == nil {
+			e.failTransaction(err)
+		}
+		return nil, err
+	}
 	// Normalize query: trim BOM (some clients send it) then whitespace
 	cypher = trimBOM(cypher)
 	cypher = normalizeCypherSyntaxConfusables(cypher)
@@ -1551,12 +1557,6 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 	if err := e.statementParametersError(ctx, cypher, params); err != nil {
 		return nil, err
 	}
-	if err := e.validateStaticOperatorParameters(cypher, params); err != nil {
-		return nil, err
-	}
-	if err := validateStaticPropertyAccessParameters(cypher, params); err != nil {
-		return nil, err
-	}
 
 	// IMPORTANT: Do NOT substitute parameters before routing!
 	// We need to route the query based on the ORIGINAL query structure,
@@ -1569,10 +1569,7 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 
 	// Store params in context for handlers to use
 	ctx = context.WithValue(ctx, paramsKey, params)
-	if err := e.validateRuntimePaginationExpressions(ctx, cypher); err != nil {
-		return nil, err
-	}
-	if err := validateListOperands(cypher, params); err != nil {
+	if err := e.validateBoundParameterExpressions(ctx, cypher, params); err != nil {
 		return nil, err
 	}
 

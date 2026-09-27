@@ -2884,15 +2884,27 @@ func (ae *AsyncEngine) BulkDeleteNodes(ids []NodeID) error {
 
 // BulkDeleteEdges marks multiple edges for deletion (async).
 func (ae *AsyncEngine) BulkDeleteEdges(ids []EdgeID) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	namespace, err := namespaceForEdgeIDs(ids)
+	if err != nil {
+		return err
+	}
 	ae.mu.Lock()
 	defer ae.mu.Unlock()
 
+	pendingDeletes := len(ids)
 	for _, id := range ids {
+		if id == "" {
+			pendingDeletes--
+			continue
+		}
 		ae.deleteCacheEdgeLocked(id)
 		ae.deleteEdges[id] = true
-		ae.graphMutationVersions.changed(namespaceForEdgeID(id))
+		ae.graphMutationVersions.changed(namespace)
 	}
-	ae.pendingWrites += int64(len(ids))
+	ae.pendingWrites += int64(pendingDeletes)
 	return nil
 }
 

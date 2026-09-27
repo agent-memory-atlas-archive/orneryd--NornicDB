@@ -9,6 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type cancelOnDoneContext struct {
+	context.Context
+	cancel context.CancelFunc
+}
+
+func (ctx *cancelOnDoneContext) Done() <-chan struct{} {
+	ctx.cancel()
+	return ctx.Context.Done()
+}
+
 func TestIVFPQCandidateGen_SearchCandidates(t *testing.T) {
 	dir := t.TempDir()
 	vfs, err := NewVectorFileStore(fmt.Sprintf("%s/vectors", dir), 8)
@@ -50,6 +60,23 @@ func TestIVFPQCandidateGen_DefaultNProbeAndNilIndex(t *testing.T) {
 	_, err := gen.SearchCandidates(context.Background(), []float32{1, 0, 0}, 5, 0.0)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not configured")
+}
+
+func TestIVFPQCandidateGen_EmptyIndexPropagatesCancellation(t *testing.T) {
+	overlay := newANNMutationOverlay()
+	overlay.Add("fresh", []float32{1, 0})
+	gen := NewIVFPQCandidateGenWithOverlay(&IVFPQIndex{}, 1, overlay)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	candidates, err := gen.SearchCandidates(ctx, []float32{1, 0}, 5, -1)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, candidates)
+
+	duringOverlay, cancelOverlay := context.WithCancel(context.Background())
+	defer cancelOverlay()
+	candidates, err = gen.SearchCandidates(&cancelOnDoneContext{Context: duringOverlay, cancel: cancelOverlay}, []float32{1, 0}, 5, -1)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, candidates)
 }
 
 func TestIVFPQCandidateGen_DefaultNProbeFromIndexProfile(t *testing.T) {

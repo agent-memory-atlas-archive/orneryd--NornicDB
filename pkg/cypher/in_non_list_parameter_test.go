@@ -58,6 +58,7 @@ func TestValidateListOperandParameters(t *testing.T) {
 		"MATCH (n) WHERE (n.id IN $p) RETURN n",
 		"MATCH (n) WHERE n.id in $p AND n.x = 1 RETURN n",
 		"RETURN [x IN $p | x] AS l",
+		"RETURN /* 1 IN $p */ 5 IN $p AS valid",
 	} {
 		err := validateListOperands(q, params)
 		if assert.Error(t, err, q) {
@@ -76,6 +77,8 @@ func TestValidateListOperandParameters(t *testing.T) {
 		"MATCH (n) WHERE n.name = 'x IN $p' RETURN n",
 		"MATCH (n) WHERE n.id = $p RETURN n",
 		"MATCH (n:INx) WHERE n.MIN > $p RETURN n",
+		"RETURN 1 AS value // 5 IN $p",
+		"RETURN 1 AS value /* 5 IN $p */",
 	} {
 		assert.NoError(t, validateListOperands(q, params), q)
 	}

@@ -8,6 +8,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type cancelOnFirstCreateEngine struct {
+	storage.Engine
+	cancel  context.CancelFunc
+	creates int
+}
+
+func (engine *cancelOnFirstCreateEngine) CreateNode(node *storage.Node) (storage.NodeID, error) {
+	id, err := engine.Engine.CreateNode(node)
+	if err == nil {
+		engine.creates++
+		if engine.creates == 1 {
+			engine.cancel()
+		}
+	}
+	return id, err
+}
+
+func TestForeach_MergeStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &cancelOnFirstCreateEngine{Engine: storage.NewNamespacedEngine(newTestMemoryEngine(t), "cancel_foreach"), cancel: cancel}
+	exec := NewStorageExecutor(store)
+	_, err := exec.executeForeach(ctx, "FOREACH (x IN [1, 2] | MERGE (n:CancelMerge {value: x}))")
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, store.creates)
+}
+
 // TestForeach_BoundExecutionPinsNoSubstitution pins the FOREACH flip (§6.2):
 // the loop variable travels as a value binding, so values that are hostile to
 // query-text substitution (quotes, identifier-like content) and structured

@@ -321,18 +321,8 @@ func statementMissingParameters(cypher string, bound func(name string) bool) []s
 		case '\'', '"', '`':
 			index = skipQuotedSemanticText(cypher, index) - 1
 		case '/':
-			if index+1 < len(cypher) && cypher[index+1] == '/' {
-				if end := strings.IndexByte(cypher[index:], '\n'); end >= 0 {
-					index += end
-				} else {
-					index = len(cypher)
-				}
-			} else if index+1 < len(cypher) && cypher[index+1] == '*' {
-				if end := strings.Index(cypher[index+2:], "*/"); end >= 0 {
-					index += end + 3
-				} else {
-					index = len(cypher)
-				}
+			if end := queryCommentEnd(cypher, index); end >= 0 {
+				index = end - 1
 			}
 		case '$':
 			start := index + 1

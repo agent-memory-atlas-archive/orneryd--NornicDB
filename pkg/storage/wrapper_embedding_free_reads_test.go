@@ -17,6 +17,8 @@ type embeddingFreeReadSpy struct {
 	projectedScans  int
 }
 
+type engineWithoutLightRead struct{ Engine }
+
 func (s *embeddingFreeReadSpy) StreamNodesWithOptions(ctx context.Context, opts StreamNodesOptions, visit func(*Node) error) error {
 	if opts.StripEmbeddings {
 		s.projectedScans++
@@ -115,6 +117,91 @@ func TestEmbeddingFreeSingleReadsTraverseAsyncWALStack(t *testing.T) {
 	require.Empty(t, light.ChunkEmbeddings)
 	require.Equal(t, 1, spy.lightReads)
 	require.Zero(t, spy.fullReads)
+}
+
+func TestEmbeddingFreeSingleReadFallbackStripsEmbeddings(t *testing.T) {
+	for _, name := range []string{"async", "wal"} {
+		t.Run(name, func(t *testing.T) {
+			badger, err := NewBadgerEngineInMemory()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = badger.Close() })
+			id := NodeID("test:light-read")
+			_, err = badger.CreateNode(&Node{
+				ID: id, Properties: map[string]any{"keep": "visible"},
+				ChunkEmbeddings: [][]float32{{1, 0}},
+				NamedEmbeddings: map[string][]float32{"named": {0, 1}},
+			})
+			require.NoError(t, err)
+			fallback := &engineWithoutLightRead{Engine: badger}
+			var reader NodeWithoutEmbeddingsReader
+			if name == "async" {
+				async := NewAsyncEngine(fallback, &AsyncEngineConfig{FlushInterval: time.Hour})
+				t.Cleanup(func() { _ = async.Close() })
+				reader = async
+			} else {
+				log, err := NewWAL(t.TempDir(), nil)
+				require.NoError(t, err)
+				wal := NewWALEngine(fallback, log)
+				t.Cleanup(func() { _ = wal.Close() })
+				reader = wal
+			}
+			light, err := reader.GetNodeWithoutEmbeddings(id)
+			require.NoError(t, err)
+			require.Equal(t, "visible", light.Properties["keep"])
+			require.Empty(t, light.ChunkEmbeddings)
+			require.Empty(t, light.NamedEmbeddings)
+			original, err := badger.GetNode(id)
+			require.NoError(t, err)
+			require.NotEmpty(t, original.ChunkEmbeddings)
+			require.NotEmpty(t, original.NamedEmbeddings)
+			_, err = reader.GetNodeWithoutEmbeddings("test:missing")
+			require.ErrorIs(t, err, ErrNotFound)
+		})
+	}
+}
+
+func BenchmarkEmbeddingFreeSingleReadFallback(b *testing.B) {
+	badger, err := NewBadgerEngineInMemory()
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = badger.Close() })
+	id := NodeID("test:light-read-bench")
+	_, err = badger.CreateNode(&Node{
+		ID: id, Properties: map[string]any{"keep": "visible"},
+		ChunkEmbeddings: [][]float32{{1, 0}},
+		NamedEmbeddings: map[string][]float32{"named": {0, 1}},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	fallback := &engineWithoutLightRead{Engine: badger}
+	async := NewAsyncEngine(fallback, &AsyncEngineConfig{FlushInterval: time.Hour})
+	b.Cleanup(func() { _ = async.Close() })
+	log, err := NewWAL(b.TempDir(), nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	wal := NewWALEngine(fallback, log)
+	b.Cleanup(func() { _ = wal.Close() })
+	for _, entry := range []struct {
+		name string
+		read func(NodeID) (*Node, error)
+	}{
+		{name: "full", read: badger.GetNode},
+		{name: "native-light", read: badger.GetNodeWithoutEmbeddings},
+		{name: "async-fallback", read: async.GetNodeWithoutEmbeddings},
+		{name: "wal-fallback", read: wal.GetNodeWithoutEmbeddings},
+	} {
+		b.Run(entry.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for iteration := 0; iteration < b.N; iteration++ {
+				if _, err := entry.read(id); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 func TestEmbeddingFreePrefixScansTraverseNamespacedAsyncWALStack(t *testing.T) {

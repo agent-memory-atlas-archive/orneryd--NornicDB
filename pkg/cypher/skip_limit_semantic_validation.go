@@ -90,7 +90,7 @@ func (e *StorageExecutor) validateStaticPaginationExpression(keyword, expression
 }
 
 func (e *StorageExecutor) validateRuntimePaginationExpressions(ctx context.Context, cypher string) error {
-	if !strings.Contains(cypher, "$") {
+	if !strings.Contains(cypher, "$") || (!containsFold(cypher, "SKIP") && !containsFold(cypher, "LIMIT")) {
 		return nil
 	}
 	params := getParamsFromContext(ctx)

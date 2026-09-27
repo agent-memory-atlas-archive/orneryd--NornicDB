@@ -29,7 +29,7 @@ func TestCompositeCapabilityParity_MVCCAndVisibilityReads(t *testing.T) {
 
 	_, err := nsA.CreateNode(&Node{ID: "n-1", Labels: []string{"Doc"}, Properties: map[string]any{"p": int64(1)}})
 	require.NoError(t, err)
-	_, err = nsB.CreateNode(&Node{ID: "m-1", Labels: []string{"Doc"}, Properties: map[string]any{"p": int64(2)}})
+	_, err = nsB.CreateNode(&Node{ID: "m-1", Labels: []string{"Doc"}, Properties: map[string]any{"p": int64(2), "private": "hidden"}})
 	require.NoError(t, err)
 
 	t.Run("latest visible routes by ID", func(t *testing.T) {
@@ -89,6 +89,10 @@ func TestCompositeCapabilityParity_MVCCAndVisibilityReads(t *testing.T) {
 		node, err := composite.GetNodeProjected("n-1", []string{"p"})
 		require.NoError(t, err)
 		require.Equal(t, map[string]any{"p": int64(1)}, node.Properties)
+		node, err = composite.GetNodeProjected("m-1", []string{"p"})
+		require.NoError(t, err)
+		require.Equal(t, NodeID("m-1"), node.ID)
+		require.Equal(t, map[string]any{"p": int64(2)}, node.Properties)
 	})
 }
 

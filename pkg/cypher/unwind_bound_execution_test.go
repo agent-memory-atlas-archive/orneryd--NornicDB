@@ -44,6 +44,49 @@ ORDER BY id
 	require.Equal(t, "a, b", got.Rows[1][1])
 }
 
+func TestUnwind_BoundExecutionCancellationBeforeWrites(t *testing.T) {
+	store := storage.NewNamespacedEngine(newTestMemoryEngine(t), "test")
+	exec := NewStorageExecutor(store)
+	_, err := exec.Execute(context.Background(), "CREATE (:Customer {customerID: 1})", nil)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = exec.Execute(ctx, "UNWIND $rows AS row MATCH (c:Customer {customerID: row.customerID}) CREATE (o:Order {orderID: row.orderID}) RETURN o.orderID", map[string]interface{}{"rows": []interface{}{map[string]interface{}{"customerID": int64(1), "orderID": int64(9001)}}})
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = exec.executeInternal(ctx, "CREATE (:Order {orderID: 9002})", nil)
+	require.ErrorIs(t, err, context.Canceled)
+	result, err := exec.Execute(context.Background(), "MATCH (o:Order) RETURN count(o) AS count", nil)
+	require.NoError(t, err)
+	require.Equal(t, [][]interface{}{{int64(0)}}, result.Rows)
+}
+
+func TestUnwind_MergeStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &cancelOnFirstCreateEngine{Engine: storage.NewNamespacedEngine(newTestMemoryEngine(t), "cancel_unwind"), cancel: cancel}
+	exec := NewStorageExecutor(store)
+	_, err := exec.executeUnwind(ctx, "UNWIND [1, 2] AS row MERGE (n:CancelUnwind {value: row})")
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, store.creates)
+}
+
+func TestUnwind_MergeChainStopsWithinRowAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &cancelOnFirstCreateEngine{Engine: storage.NewNamespacedEngine(newTestMemoryEngine(t), "cancel_chain"), cancel: cancel}
+	exec := NewStorageExecutor(store)
+	_, err := exec.executeUnwind(ctx, "UNWIND [1] AS row MERGE (a:CancelChainA {value: row}) MERGE (b:CancelChainB {value: row}) RETURN count(b) AS count")
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, store.creates)
+}
+
+func TestUnwind_ProjectedMergeStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &cancelOnFirstCreateEngine{Engine: storage.NewNamespacedEngine(newTestMemoryEngine(t), "cancel_projected_unwind"), cancel: cancel}
+	exec := NewStorageExecutor(store)
+	_, err := exec.executeUnwind(ctx, "UNWIND [1, 2] AS row MERGE (n:CancelUnwind {value: row}) RETURN n.value AS value")
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, store.creates)
+}
+
 // TestUnwind_MutationBoundExecutionHostileValues pins the UNWIND mutation
 // migration (§6.2): MERGE/SET over unwound rows run against bound child
 // contexts, so hostile values survive without query-text substitution and

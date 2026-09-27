@@ -784,6 +784,9 @@ func (e *StorageExecutor) executeUnwind(ctx context.Context, cypher string) (*Ex
 
 			// Execute mutation for each unwound item
 			for _, item := range items {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 				// Reconstruct full query with RETURN.
 				fullQuery := mutationPart
 				if returnPart != "" {
@@ -2321,6 +2324,9 @@ func (e *StorageExecutor) executeUnwindMergeChainBatch(ctx context.Context, unwi
 	var runSteps func(stepIndex int, rowValues map[string]interface{}) error
 	runSteps = func(stepIndex int, rowValues map[string]interface{}) error {
 		for stepAt := stepIndex; stepAt < len(plan.steps); stepAt++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			step := plan.steps[stepAt]
 			if step.node != nil {
 				nodePlan := step.node
@@ -2573,6 +2579,9 @@ func (e *StorageExecutor) executeUnwindMergeChainBatch(ctx context.Context, unwi
 		return nil
 	}
 	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return nil, true, err
+		}
 		if err := runSteps(0, map[string]interface{}{unwindVar: item}); err != nil {
 			return nil, true, err
 		}
@@ -5381,6 +5390,9 @@ func (e *StorageExecutor) executeForeachWithContext(ctx context.Context, cypher 
 	}
 
 	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		// Bound child context: the loop variable travels as a value binding,
 		// never as query-text substitution. Property parsing (CREATE/MERGE
 		// maps) and expression evaluation resolve it through the value scope.

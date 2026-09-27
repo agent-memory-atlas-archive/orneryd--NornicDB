@@ -447,6 +447,60 @@ func TestAsyncEngine_BulkDeleteEdges_WithData(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestAsyncEngine_BulkDeleteEdges_RejectsMixedNamespacesBeforeStaging(t *testing.T) {
+	inner, err := NewBadgerEngineInMemory()
+	require.NoError(t, err)
+	async := NewAsyncEngine(inner, &AsyncEngineConfig{FlushInterval: time.Hour})
+	t.Cleanup(func() { require.NoError(t, async.Close()) })
+
+	for _, namespace := range []string{"a", "b"} {
+		startID := NodeID(namespace + ":start")
+		endID := NodeID(namespace + ":end")
+		_, err := inner.CreateNode(&Node{ID: startID})
+		require.NoError(t, err)
+		_, err = inner.CreateNode(&Node{ID: endID})
+		require.NoError(t, err)
+		require.NoError(t, inner.CreateEdge(&Edge{ID: EdgeID(namespace + ":edge"), StartNode: startID, EndNode: endID, Type: "REL"}))
+	}
+
+	err = async.BulkDeleteEdges([]EdgeID{"a:edge", "b:edge"})
+	require.ErrorIs(t, err, ErrCrossNamespaceTransaction)
+	require.ErrorContains(t, async.BulkDeleteEdges([]EdgeID{"unprefixed"}), "edge ID must be prefixed with namespace")
+	require.ErrorContains(t, async.BulkDeleteEdges([]EdgeID{""}), "batch contains no usable IDs")
+	async.mu.RLock()
+	pendingWritesAfterReject := async.pendingWrites
+	stagedDeletesAfterReject := len(async.deleteEdges)
+	async.mu.RUnlock()
+	require.Zero(t, pendingWritesAfterReject)
+	require.Zero(t, stagedDeletesAfterReject)
+	for _, id := range []EdgeID{"a:edge", "b:edge"} {
+		_, err := async.GetEdge(id)
+		require.NoError(t, err, "rejected batch must not hide %s", id)
+	}
+	require.NoError(t, async.Flush())
+	for _, id := range []EdgeID{"a:edge", "b:edge"} {
+		_, err := inner.GetEdge(id)
+		require.NoError(t, err, "rejected batch must not persist a delete of %s", id)
+	}
+
+	require.NoError(t, async.BulkDeleteEdges([]EdgeID{"a:edge", ""}))
+	async.mu.RLock()
+	emptyIDStaged := async.deleteEdges[""]
+	pendingWrites := async.pendingWrites
+	async.mu.RUnlock()
+	require.False(t, emptyIDStaged, "empty IDs must not stage tombstones")
+	require.Equal(t, int64(1), pendingWrites, "only staged deletes count as pending writes")
+	_, err = async.GetEdge("a:edge")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = async.GetEdge("b:edge")
+	require.NoError(t, err)
+	require.NoError(t, async.Flush())
+	_, err = inner.GetEdge("a:edge")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = inner.GetEdge("b:edge")
+	require.NoError(t, err)
+}
+
 // ============================================================================
 // GetEdgesBetween / GetEdgeBetween / GetAllNodes / Degree
 // ============================================================================

@@ -51,6 +51,11 @@ func forEachListOperand(text string, visit func(start, in int) error) error {
 				i++
 			}
 			continue
+		case '/':
+			if end := queryCommentEnd(text, i); end >= 0 {
+				i = end - 1
+				continue
+			}
 		}
 		if (text[i] != 'I' && text[i] != 'i') || i+1 >= len(text) || (text[i+1] != 'N' && text[i+1] != 'n') || (i > 0 && (isIdentByte(text[i-1]) || text[i-1] == ':' || text[i-1] == '.')) ||
 			i+2 >= len(text) || isIdentByte(text[i+2]) {

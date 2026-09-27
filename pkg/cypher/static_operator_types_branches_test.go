@@ -94,6 +94,17 @@ func TestStaticParameterOperandBranches(t *testing.T) {
 	require.False(t, staticParameterOperand(struct{}{}).known())
 }
 
+func TestParameterMayMismatchOperatorIgnoresComments(t *testing.T) {
+	params := map[string]interface{}{"p": "text"}
+	for _, query := range []string{
+		"RETURN 1 // $p * 2",
+		"RETURN 1 /* $p * 2 */ AS value",
+	} {
+		require.False(t, parameterMayMismatchOperator(query, params), query)
+	}
+	require.True(t, parameterMayMismatchOperator("RETURN 1 /* $p * 2 */ + $p * 2", params))
+}
+
 // TestStaticOperatorClauseBranches runs statements whose operator type errors
 // sit in each clause form the validation visits: RETURN DISTINCT, ORDER BY, a
 // CREATE pattern, SET and a MATCH pattern, next to quoted text with braces.

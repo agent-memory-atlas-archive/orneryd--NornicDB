@@ -140,3 +140,14 @@ func TestUnwindParameterPropertyAccessMatchesNeo4j(t *testing.T) {
 	require.True(t, parameterMayRejectPropertyAccess("UNWIND $m AS x RETURN x.a", map[string]interface{}{"m": []string{"a"}}))
 	require.True(t, parameterMayRejectPropertyAccess("WITH $rows AS r RETURN r.id", rows))
 }
+
+func TestParameterMayRejectPropertyAccessIgnoresComments(t *testing.T) {
+	params := map[string]interface{}{"p": int64(5)}
+	for _, query := range []string{
+		"RETURN 1 // $p.name",
+		"RETURN 1 /* $p.name */ AS value",
+	} {
+		require.False(t, parameterMayRejectPropertyAccess(query, params), query)
+	}
+	require.True(t, parameterMayRejectPropertyAccess("RETURN 1 /* $p.name */ + $p.name", params))
+}

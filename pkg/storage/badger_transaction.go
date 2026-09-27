@@ -1737,7 +1737,7 @@ func (tx *BadgerTransaction) StreamNodesByLabelProjected(label string, propertie
 			}
 			return nil
 		}
-		return visit(node)
+		return invokeVisit(node)
 	}
 
 	cacheKey := normalizeLabel(label)

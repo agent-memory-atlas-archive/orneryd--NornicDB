@@ -63,3 +63,21 @@ func TestFailedStatementMarksExplicitTransactionFailed(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, [][]interface{}{{int64(2)}}, result.Rows)
 }
+
+func TestCancelledStatementMarksExplicitTransactionFailed(t *testing.T) {
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "tx_cancel"))
+	ctx := context.Background()
+	_, err := exec.Execute(ctx, "BEGIN", nil)
+	require.NoError(t, err)
+	_, err = exec.Execute(ctx, "CREATE (:CancelledTx)", nil)
+	require.NoError(t, err)
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = exec.Execute(cancelled, "RETURN 1", nil)
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = exec.Execute(ctx, "COMMIT", nil)
+	require.ErrorContains(t, err, "Neo.ClientError.Transaction.TransactionMarkedAsFailed")
+	result, err := exec.Execute(ctx, "MATCH (n:CancelledTx) RETURN count(n) AS count", nil)
+	require.NoError(t, err)
+	require.Equal(t, [][]interface{}{{int64(0)}}, result.Rows)
+}

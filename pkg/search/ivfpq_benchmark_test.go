@@ -252,6 +252,22 @@ func BenchmarkIVFPQCandidateGen(b *testing.B) {
 	}
 }
 
+func BenchmarkIVFPQCandidateGenWithOverlay(b *testing.B) {
+	overlay := newANNMutationOverlay()
+	overlay.Add("fresh", []float32{1, 0})
+	gen := NewIVFPQCandidateGenWithOverlay(&IVFPQIndex{}, 1, overlay)
+	ctx := context.Background()
+	query := []float32{1, 0}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for iteration := 0; iteration < b.N; iteration++ {
+		candidates, err := gen.SearchCandidates(ctx, query, 5, -1)
+		if err != nil || len(candidates) != 1 {
+			b.Fatalf("overlay search returned %d candidates: %v", len(candidates), err)
+		}
+	}
+}
+
 func BenchmarkANNMutationOverlaySearch(b *testing.B) {
 	const (
 		vectors    = 512

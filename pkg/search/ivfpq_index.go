@@ -13,6 +13,9 @@ func (i *IVFPQIndex) SearchApprox(ctx context.Context, query []float32, k int, m
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if i == nil || len(i.centroids) == 0 || len(i.codebooks) == 0 {
 		return nil, nil
 	}

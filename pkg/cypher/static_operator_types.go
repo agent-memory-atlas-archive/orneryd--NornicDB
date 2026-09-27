@@ -574,6 +574,11 @@ func parameterMayMismatchOperator(cypher string, params map[string]interface{}) 
 		case '\'', '"':
 			index = skipQuotedSemanticText(cypher, index) - 1
 			continue
+		case '/':
+			if end := queryCommentEnd(cypher, index); end >= 0 {
+				index = end - 1
+				continue
+			}
 		case '$':
 		default:
 			continue

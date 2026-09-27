@@ -153,8 +153,12 @@ func TestIVFPQ_SearchApproxBranchesAndProfileHelpers(t *testing.T) {
 	cancel()
 	_, err = idx.SearchApprox(cancelled, []float32{1, 0}, 2, -1.0, 1)
 	require.ErrorIs(t, err, context.Canceled)
+	_, err = (&IVFPQIndex{}).SearchApprox(cancelled, []float32{1, 0}, 2, -1.0, 1)
+	require.ErrorIs(t, err, context.Canceled)
 
 	var nilIdx *IVFPQIndex
+	_, err = nilIdx.SearchApprox(cancelled, []float32{1, 0}, 2, 0, 1)
+	require.ErrorIs(t, err, context.Canceled)
 	out, err = nilIdx.SearchApprox(context.Background(), []float32{1, 0}, 2, 0, 1)
 	require.NoError(t, err)
 	require.Nil(t, out)

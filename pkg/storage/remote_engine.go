@@ -867,12 +867,19 @@ func (r *RemoteEngine) DeleteEdge(id EdgeID) error {
 }
 
 func (r *RemoteEngine) GetNodesByLabel(label string) ([]*Node, error) {
+	ctx, cancel := defaultCtx()
+	defer cancel()
+	return r.getNodesByLabel(ctx, label)
+}
+
+func (r *RemoteEngine) getNodesByLabel(ctx context.Context, label string) ([]*Node, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	stmt := "MATCH (n) RETURN n"
 	if strings.TrimSpace(label) != "" {
 		stmt = fmt.Sprintf("MATCH (n:%s) RETURN n", quoteIdent(label))
 	}
-	ctx, cancel := defaultCtx()
-	defer cancel()
 	rows, err := r.transport.query(ctx, stmt, nil)
 	if err != nil {
 		return nil, err
@@ -1022,7 +1029,7 @@ func (r *RemoteEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNo
 	if fn == nil {
 		return ErrInvalidData
 	}
-	nodes, err := r.AllNodes()
+	nodes, err := r.getNodesByLabel(ctx, "")
 	if err != nil {
 		return err
 	}

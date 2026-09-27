@@ -74,14 +74,39 @@ def analyze(graph_path, components):
     }
 
 
+def compare_candidate_groups(old, current):
+    old_keys = {f"{candidate['component']}|{candidate['label']}" for candidate in old["candidates"]}
+    current_keys = {f"{candidate['component']}|{candidate['label']}" for candidate in current["candidates"]}
+    return {
+        "old_count": len(old_keys),
+        "current_count": len(current_keys),
+        "retained": len(old_keys & current_keys),
+        "old_only": sorted(old_keys - current_keys),
+        "current_only": sorted(current_keys - old_keys),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--graph", type=Path, default=Path("graphify-out/graph.json"))
+    parser.add_argument("--compare-graph", type=Path, help="historical graph to compare using the same candidate filter")
     parser.add_argument("--component", action="append", required=True, help="Go package path, e.g. pkg/cypher")
     args = parser.parse_args()
     if not args.graph.is_file():
         parser.error(f"graph not found: {args.graph}")
-    print(json.dumps(analyze(args.graph, set(args.component)), indent=2, sort_keys=True))
+    if args.compare_graph is not None and not args.compare_graph.is_file():
+        parser.error(f"graph not found: {args.compare_graph}")
+    current = analyze(args.graph, set(args.component))
+    if args.compare_graph is None:
+        result = current
+    else:
+        old = analyze(args.compare_graph, set(args.component))
+        result = {
+            "old_components": old["components"],
+            "current_components": current["components"],
+            **compare_candidate_groups(old, current),
+        }
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

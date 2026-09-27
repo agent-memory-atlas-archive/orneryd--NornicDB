@@ -1,3 +1,4 @@
+from graphify_divergence import analyze, compare_candidate_groups
 """Deterministic, isolated tests for the Graphify candidate report."""
 
 import json
@@ -44,6 +45,25 @@ class GraphifyDivergenceTest(unittest.TestCase):
             ("left", "right", ["common"]),
             ("same", "right", ["common"]),
         ])
+
+    def test_compare_candidate_groups_is_sorted_and_revision_scoped(self):
+        old = {"candidates": [
+            {"component": "pkg/storage", "label": ".Old()"},
+            {"component": "pkg/cypher", "label": ".Read()"},
+        ]}
+        current = {"candidates": [
+            {"component": "pkg/storage", "label": ".New()"},
+            {"component": "pkg/cypher", "label": ".Read()"},
+        ]}
+        expected = {
+            "old_count": 2,
+            "current_count": 2,
+            "retained": 1,
+            "old_only": ["pkg/storage|.Old()"],
+            "current_only": ["pkg/storage|.New()"],
+        }
+        self.assertEqual(compare_candidate_groups(old, current), expected)
+        self.assertEqual(compare_candidate_groups({"candidates": list(reversed(old["candidates"]))}, current), expected)
 
 
 if __name__ == "__main__":

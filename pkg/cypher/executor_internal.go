@@ -20,6 +20,9 @@ import (
 // the caller's transaction context (explicit tx or implicit tx wrapper carried
 // on ctx), avoiding nested implicit transactions and misrouting.
 func (e *StorageExecutor) executeInternal(ctx context.Context, cypher string, params map[string]interface{}) (*ExecuteResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cypher = normalizeCypherSyntaxConfusables(cypher)
 	if config.IsCypherQueryNormalizationEnabled() {
 		cypher, _ = canonicalizeQueryText(cypher)
@@ -81,6 +84,9 @@ func (e *StorageExecutor) executeInternal(ctx context.Context, cypher string, pa
 	}
 	params = normalizeQueryParameters(params)
 	ctx = context.WithValue(ctx, paramsKey, params)
+	if err := e.validateBoundParameterExpressions(ctx, cypher, params); err != nil {
+		return nil, err
+	}
 	upper := e.cachedUpperQuery(cypher)
 
 	// If we're in an explicit transaction, execute within it.
@@ -90,4 +96,17 @@ func (e *StorageExecutor) executeInternal(ctx context.Context, cypher string, pa
 
 	// Otherwise, stay on the caller's execution path (no implicit tx starts here).
 	return e.executeWithoutTransaction(ctx, cypher, upper)
+}
+
+func (e *StorageExecutor) validateBoundParameterExpressions(ctx context.Context, cypher string, params map[string]interface{}) error {
+	if err := e.validateStaticOperatorParameters(cypher, params); err != nil {
+		return err
+	}
+	if err := validateStaticPropertyAccessParameters(cypher, params); err != nil {
+		return err
+	}
+	if err := e.validateRuntimePaginationExpressions(ctx, cypher); err != nil {
+		return err
+	}
+	return validateListOperands(cypher, params)
 }

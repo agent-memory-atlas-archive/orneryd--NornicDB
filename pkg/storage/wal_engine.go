@@ -804,7 +804,11 @@ func (w *WALEngine) GetNodeWithoutEmbeddings(id NodeID) (*Node, error) {
 	if reader, ok := w.engine.(NodeWithoutEmbeddingsReader); ok {
 		return reader.GetNodeWithoutEmbeddings(id)
 	}
-	return w.engine.GetNode(id)
+	node, err := w.engine.GetNode(id)
+	if err != nil {
+		return nil, err
+	}
+	return copyNodeWithoutEmbeddings(node), nil
 }
 
 // GetEdge delegates to underlying engine.

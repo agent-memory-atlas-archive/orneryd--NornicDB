@@ -950,11 +950,14 @@ func leadingShellCommandsEnd(query string) int {
 		if index >= len(query) || query[index] != ':' {
 			return end
 		}
-		lineEnd := strings.IndexByte(query[index:], '\n')
+		lineEnd := strings.IndexAny(query[index:], "\r\n")
 		if lineEnd < 0 {
 			return len(query)
 		}
 		index += lineEnd + 1
+		if query[index-1] == '\r' && index < len(query) && query[index] == '\n' {
+			index++
+		}
 		end = index
 	}
 }
@@ -1294,8 +1297,16 @@ func lineColumnAtOffset(text string, offset int) (line, column int) {
 	if offset > len(text) {
 		offset = len(text)
 	}
-	lineStart := strings.LastIndexByte(text[:offset], '\n') + 1
-	return strings.Count(text[:offset], "\n") + 1, utf8.RuneCountInString(text[lineStart:offset])
+	line, lineStart := 1, 0
+	for index := 0; index < offset; index++ {
+		if text[index] == '\r' || text[index] == '\n' && (index == 0 || text[index-1] != '\r') {
+			line++
+			lineStart = index + 1
+		} else if text[index] == '\n' && index > 0 && text[index-1] == '\r' {
+			lineStart = index + 1
+		}
+	}
+	return line, utf8.RuneCountInString(text[lineStart:offset])
 }
 
 // restoredQueryError is err with a message that quotes the client's text.

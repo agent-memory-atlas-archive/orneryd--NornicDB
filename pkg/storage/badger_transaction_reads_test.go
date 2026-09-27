@@ -126,6 +126,72 @@ func TestTxReads_StreamNodesByLabelProjected_MergesSnapshotAndPendingWrites(t *t
 	}
 }
 
+func TestTxReads_StreamNodesByLabelProjected_CallbackCanReadWithPendingWrites(t *testing.T) {
+	engine := txReadFixture(t)
+	tx, err := engine.BeginTransaction()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	_, err = tx.CreateNode(&Node{ID: "test:pending", Labels: []string{"Person"}})
+	require.NoError(t, err)
+
+	for _, pass := range []string{"initial", "cached"} {
+		t.Run(pass, func(t *testing.T) {
+			var visited []NodeID
+			lockAvailable := true
+			err := tx.StreamNodesByLabelProjected("Person", []string{"name"}, func(node *Node) error {
+				visited = append(visited, node.ID)
+				if !tx.mu.TryLock() {
+					lockAvailable = false
+					return ErrIterationStopped
+				}
+				tx.mu.Unlock()
+				readBack, err := tx.GetNode(node.ID)
+				if err != nil {
+					return err
+				}
+				if readBack.ID != node.ID {
+					return ErrNotFound
+				}
+				return nil
+			})
+			require.True(t, lockAvailable, "a projected stream callback must be able to read through the transaction")
+			require.NoError(t, err)
+			require.Equal(t, []NodeID{"test:alice", "test:bob", "test:carol", "test:dave", "test:pending"}, visited)
+		})
+	}
+}
+
+func BenchmarkTxReads_StreamNodesByLabelProjectedWithPendingWrites(b *testing.B) {
+	engine, err := NewBadgerEngineInMemory()
+	require.NoError(b, err)
+	b.Cleanup(func() { _ = engine.Close() })
+	for _, name := range []string{"alice", "bob", "carol"} {
+		_, err := engine.CreateNode(&Node{ID: NodeID("bench:" + name), Labels: []string{"Person"}, Properties: map[string]any{"name": name}})
+		require.NoError(b, err)
+	}
+	tx, err := engine.BeginTransaction()
+	require.NoError(b, err)
+	b.Cleanup(func() { _ = tx.Rollback() })
+	_, err = tx.CreateNode(&Node{ID: "bench:pending", Labels: []string{"Person"}})
+	require.NoError(b, err)
+	properties := []string{"name"}
+	visited := 0
+	visit := func(*Node) error {
+		visited++
+		return nil
+	}
+	require.NoError(b, tx.StreamNodesByLabelProjected("Person", properties, visit))
+	require.Equal(b, 4, visited)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for iteration := 0; iteration < b.N; iteration++ {
+		visited = 0
+		if err := tx.StreamNodesByLabelProjected("Person", properties, visit); err != nil || visited != 4 {
+			b.Fatalf("stream visited %d nodes: %v", visited, err)
+		}
+	}
+}
+
 func TestTxReads_StreamNodesByLabelProjected_StopsWithoutMaterializingRemainder(t *testing.T) {
 	engine := txReadFixture(t)
 	tx, err := engine.BeginTransaction()

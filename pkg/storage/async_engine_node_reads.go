@@ -19,7 +19,11 @@ func (ae *AsyncEngine) GetNodeWithoutEmbeddings(id NodeID) (*Node, error) {
 	if reader, ok := ae.engine.(NodeWithoutEmbeddingsReader); ok {
 		return reader.GetNodeWithoutEmbeddings(id)
 	}
-	return ae.engine.GetNode(id)
+	node, err := ae.engine.GetNode(id)
+	if err != nil {
+		return nil, err
+	}
+	return copyNodeWithoutEmbeddings(node), nil
 }
 
 // BatchGetNodesWithoutEmbeddings merges pending async nodes with a real

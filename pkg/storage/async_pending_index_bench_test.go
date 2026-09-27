@@ -47,6 +47,33 @@ func BenchmarkAsyncEngine_CreateNode(b *testing.B) {
 	}
 }
 
+func BenchmarkAsyncEngine_BulkDeleteEdges(b *testing.B) {
+	for _, size := range []int{1, 16} {
+		b.Run(fmt.Sprintf("ids=%d", size), func(b *testing.B) {
+			badger, err := NewBadgerEngineInMemory()
+			require.NoError(b, err)
+			config := DefaultAsyncEngineConfig()
+			config.FlushInterval = time.Hour
+			async := NewAsyncEngine(badger, config)
+			b.Cleanup(func() {
+				_ = async.Close()
+				_ = badger.Close()
+			})
+			ids := make([]EdgeID, size)
+			for index := range ids {
+				ids[index] = EdgeID(fmt.Sprintf("bench:e-%d", index))
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for iteration := 0; iteration < b.N; iteration++ {
+				if err := async.BulkDeleteEdges(ids); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkAsyncPropertyIndexLookup is a property-index seek on the async
 // stack with nothing pending and with a backlog of pending writes (#719).
 func BenchmarkAsyncPropertyIndexLookup(b *testing.B) {

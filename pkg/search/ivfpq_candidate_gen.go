@@ -63,7 +63,11 @@ func (g *IVFPQCandidateGen) SearchCandidates(ctx context.Context, query []float3
 			merged[candidate.ID] = candidate
 		}
 	}
-	for _, candidate := range g.overlay.Search(ctx, query, k, minSimilarity) {
+	overlayCandidates := g.overlay.Search(ctx, query, k, minSimilarity)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, candidate := range overlayCandidates {
 		merged[candidate.ID] = candidate
 	}
 	out := make([]Candidate, 0, len(merged))

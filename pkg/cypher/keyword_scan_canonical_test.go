@@ -243,6 +243,14 @@ func TestCanonicalQueryRestoresParserPosition(t *testing.T) {
 	message := fmt.Sprintf("Invalid input: line 1:%d mismatched input 'RETURN'", column)
 	require.Equal(t, "Invalid input: line 3:2 mismatched input 'RETURN'", rewrite.restoreMessage(message))
 	require.Equal(t, "Invalid input: line 9:0 x", rewrite.restoreMessage("Invalid input: line 9:0 x"))
+
+	crOnly := "MATCH (n)\r  WHERE n.x =\r  RETURN n"
+	canonical, rewrite = canonicalizeQueryText(crOnly)
+	require.NotNil(t, rewrite)
+	require.Equal(t, "MATCH (n) WHERE n.x = RETURN n", canonical)
+	column = strings.Index(canonical, "RETURN")
+	message = fmt.Sprintf("Invalid input: line 1:%d mismatched input 'RETURN'", column)
+	require.Equal(t, "Invalid input: line 3:2 mismatched input 'RETURN'", rewrite.restoreMessage(message))
 }
 
 // TestQueryRewriteRestoresPlansAndMessages: EXPLAIN / PROFILE text and
@@ -310,10 +318,17 @@ func TestOwnStatementSyntax(t *testing.T) {
 
 	require.Equal(t, 0, leadingShellCommandsEnd("MATCH (n) RETURN n"))
 	require.Equal(t, len(":USE db\n"), leadingShellCommandsEnd(":USE db\nRETURN 1"))
+	require.Equal(t, len(":USE db\r"), leadingShellCommandsEnd(":USE db\rRETURN 1"))
+	require.Equal(t, len(":USE db\r\n"), leadingShellCommandsEnd(":USE db\r\nRETURN 1"))
+	require.Equal(t, len(":USE db\r:param x => 1\r"), leadingShellCommandsEnd(":USE db\r:param x => 1\rRETURN 1"))
 	require.Equal(t, len(":use a\n  :param x => 1\n"), leadingShellCommandsEnd(":use a\n  :param x => 1\nRETURN  1"))
 	require.Equal(t, len(":USE db"), leadingShellCommandsEnd(":USE db"))
 	got, _ = canonicalizeQueryText(":USE  db\nRETURN   1")
 	require.Equal(t, ":USE  db\nRETURN 1", got)
+	got, _ = canonicalizeQueryText(":USE  db\rRETURN   1")
+	require.Equal(t, ":USE  db\rRETURN 1", got)
+	got, _ = canonicalizeQueryText(":USE  db\r\nRETURN   1")
+	require.Equal(t, ":USE  db\r\nRETURN 1", got)
 }
 
 // TestQueryMayNeedCanonicalRewriteIsExact: the quick check never clears a

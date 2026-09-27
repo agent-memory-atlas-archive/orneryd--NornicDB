@@ -55,6 +55,23 @@ func TestLexicalSeedHintsPreserveRankAndTopicSignature(t *testing.T) {
 	}
 }
 
+func TestLexicalSeedHintsV1V2Parity(t *testing.T) {
+	v1 := NewFulltextIndex()
+	v2 := NewFulltextIndexV2()
+	for _, document := range []struct{ id, content string }{
+		{"alpha-1", "alpha alpha shared"},
+		{"alpha-2", "alpha shared"},
+		{"beta-1", "beta beta shared"},
+		{"beta-2", "beta shared"},
+	} {
+		v1.Index(document.id, document.content)
+		v2.Index(document.id, document.content)
+	}
+	for _, limits := range []struct{ terms, docs int }{{8, 2}, {1, 1}, {0, 2}, {8, 0}} {
+		require.Equal(t, v1.LexicalSeedHints(limits.terms, limits.docs), v2.LexicalSeedHints(limits.terms, limits.docs), "limits=%+v", limits)
+	}
+}
+
 func TestHNSWBuildMetadataDoesNotExecuteBM25Queries(t *testing.T) {
 	service := NewServiceWithDimensions(storage.NewMemoryEngine(), 2)
 	index := &metadataOnlySeedIndex{bm25Index: NewFulltextIndexV2()}
