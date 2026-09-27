@@ -32,6 +32,9 @@ func TestInNonListParameterIsTypeError(t *testing.T) {
 				p interface{}
 			}{
 				{"MATCH (n:T) WHERE n.id IN $p RETURN count(n) AS c", int64(5)},
+				{"MATCH (n:T) WHERE n.id IN /* gap */ $p RETURN count(n) AS c", int64(5)},
+				{"MATCH (n:T) WHERE n.id IN $p /* gap */ RETURN count(n) AS c", int64(5)},
+				{"CREATE (:Unexpected {id: 9}) WITH 5 IN /* gap */ $p AS x RETURN x", int64(5)},
 				{"MATCH (n:T) WHERE n.id IN $p RETURN count(n) AS c", "abc"},
 				{"MATCH (n:T) WHERE NOT n.id IN $p RETURN count(n) AS c", int64(5)},
 				{"MATCH (n:T) WHERE n.id IN $p RETURN n.id AS id", map[string]interface{}{"a": 1}},
@@ -47,6 +50,9 @@ func TestInNonListParameterIsTypeError(t *testing.T) {
 			res, err = run("MATCH (n:T) WHERE n.id IN $p RETURN count(n) AS c", map[string]interface{}{"p": nil})
 			require.NoError(t, err)
 			assert.Equal(t, int64(0), res.Rows[0][0])
+			res, err = run("MATCH (n:Unexpected) RETURN count(n) AS c", nil)
+			require.NoError(t, err)
+			assert.Equal(t, int64(0), res.Rows[0][0])
 		})
 	}
 }
@@ -57,6 +63,8 @@ func TestValidateListOperandParameters(t *testing.T) {
 		"MATCH (n) WHERE n.id IN $p RETURN n",
 		"MATCH (n) WHERE (n.id IN $p) RETURN n",
 		"MATCH (n) WHERE n.id in $p AND n.x = 1 RETURN n",
+		"MATCH (n) WHERE n.id IN /* operand gap */ $p RETURN n",
+		"MATCH (n) WHERE n.id IN $p /* trailing gap */ RETURN n",
 		"RETURN [x IN $p | x] AS l",
 		"RETURN /* 1 IN $p */ 5 IN $p AS valid",
 	} {

@@ -29,12 +29,42 @@ func TestQuantifierNumericPredicatesAcceptStaticNumericLists(t *testing.T) {
 }
 
 func TestQuantifierValidationIgnoresTextAndComments(t *testing.T) {
+	require.NoError(t, validateStaticQuantifierTypes("RETURN any(x IN ['a'] WHERE x /* gap */ IS NOT NULL) AS result"))
+	require.NoError(t, validateStaticQuantifierTypes("RETURN any(x IN ['a'] WHERE x = 'x * 2') AS result"))
+	for _, query := range []string{
+		"RETURN any(x IN ['a'] WHERE x /* gap */ * 2 > 0) AS result",
+		"RETURN any(x IN ['a'] WHERE 2 * /* gap */ x > 0) AS result",
+	} {
+		require.ErrorContains(t, validateStaticQuantifierTypes(query), "numeric operator", query)
+	}
 	exec, _ := newTestExecutor(t)
+	result, err := exec.Execute(context.Background(), "RETURN any(x IN ['a'] WHERE x /* gap */ IS NOT NULL) AS result", nil)
+	require.NoError(t, err)
+	require.Equal(t, [][]interface{}{{true}}, result.Rows)
 	for _, query := range []string{
 		"RETURN 'none(x IN [false] WHERE x % 2 = 0)' AS text",
 		"RETURN 1 AS value // none(x IN [false] WHERE x % 2 = 0)",
 	} {
 		_, err := exec.Execute(context.Background(), query, nil)
 		require.NoError(t, err, query)
+	}
+}
+
+func BenchmarkStaticQuantifierValidation(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"plain", "RETURN any(x IN ['a'] WHERE x IS NOT NULL) AS result"},
+		{"comment-gap", "RETURN any(x IN ['a'] WHERE x /* gap */ IS NOT NULL) AS result"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for iteration := 0; iteration < b.N; iteration++ {
+				if err := validateStaticQuantifierTypes(tc.query); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

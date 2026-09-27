@@ -411,11 +411,11 @@ func propertyAccessMismatch(typeName, parameter string) error {
 // propertyAccessFollows reports whether text[index:] starts with a property
 // access (.key), not a range or a number.
 func propertyAccessFollows(text string, index int) bool {
-	index = skipSpaces(text, index)
+	index = queryGapEnd(text, index)
 	if index >= len(text) || text[index] != '.' {
 		return false
 	}
-	next := skipSpaces(text, index+1)
+	next := queryGapEnd(text, index+1)
 	return next < len(text) && (isIdentifierStart(text[next]) || text[next] == '`')
 }
 
@@ -477,7 +477,7 @@ func parameterMayRejectPropertyAccess(cypher string, params map[string]interface
 			continue
 		}
 		index = next - 1
-		after := skipSpaces(cypher, next)
+		after := queryGapEnd(cypher, next)
 		accessed := propertyAccessFollows(cypher, next)
 		projected := after+2 <= len(cypher) && strings.EqualFold(cypher[after:after+2], "AS") && (after+2 == len(cypher) || !isIdentifierPart(cypher[after+2]))
 		if !accessed && !projected {

@@ -61,7 +61,7 @@ func forEachListOperand(text string, visit func(start, in int) error) error {
 			i+2 >= len(text) || isIdentByte(text[i+2]) {
 			continue
 		}
-		if err := visit(skipSpaces(text, i+2), i); err != nil {
+		if err := visit(queryGapEnd(text, i+2), i); err != nil {
 			return err
 		}
 	}
@@ -72,7 +72,7 @@ func forEachListOperand(text string, visit func(start, in int) error) error {
 // list-position operand, not the start of a longer expression (n.list,
 // n[0], x + y).
 func wholeListOperand(text string, end int) bool {
-	next := skipSpaces(text, end)
+	next := queryGapEnd(text, end)
 	return next >= len(text) || strings.IndexByte(")],}|", text[next]) >= 0 || isIdentByte(text[next])
 }
 

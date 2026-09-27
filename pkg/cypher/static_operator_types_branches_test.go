@@ -103,6 +103,10 @@ func TestParameterMayMismatchOperatorIgnoresComments(t *testing.T) {
 		require.False(t, parameterMayMismatchOperator(query, params), query)
 	}
 	require.True(t, parameterMayMismatchOperator("RETURN 1 /* $p * 2 */ + $p * 2", params))
+	require.True(t, parameterMayMismatchOperator("RETURN $p /* gap */ * 2", params))
+	require.False(t, parameterMayMismatchOperator("RETURN $p /* gap */ AS value", params))
+	require.False(t, parameterMayMismatchOperator("RETURN /* gap */ $p AS value", params))
+	require.True(t, parameterMayMismatchOperator("RETURN 2 * /* gap */ $p AS value", params))
 }
 
 // TestStaticOperatorClauseBranches runs statements whose operator type errors
@@ -133,4 +137,11 @@ func TestStaticOperatorClauseBranches(t *testing.T) {
 	}
 	_, err := exec.Execute(ctx, "RETURN $s + 1 AS x", map[string]interface{}{"s": true})
 	require.Error(t, err)
+	_, err = exec.Execute(ctx, "RETURN $p /* gap */ * 2 AS x", map[string]interface{}{"p": true})
+	require.ErrorContains(t, err, "Type mismatch")
+	result, err := exec.Execute(ctx, "RETURN $p /* gap */ AS x", map[string]interface{}{"p": "text"})
+	require.NoError(t, err)
+	require.Equal(t, "text", result.Rows[0][0])
+	_, err = exec.Execute(ctx, "RETURN 2 * /* gap */ $p AS x", map[string]interface{}{"p": true})
+	require.ErrorContains(t, err, "Type mismatch")
 }

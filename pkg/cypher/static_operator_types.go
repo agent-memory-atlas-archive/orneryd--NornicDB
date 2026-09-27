@@ -569,9 +569,11 @@ func (e *StorageExecutor) validateStaticOperatorParameters(cypher string, params
 // parameterMayMismatchOperator reports whether a $parameter next to an
 // arithmetic operator in cypher holds a value that operator could reject.
 func parameterMayMismatchOperator(cypher string, params map[string]interface{}) bool {
+	var previous byte
 	for index := 0; index < len(cypher); index++ {
 		switch cypher[index] {
 		case '\'', '"':
+			previous = cypher[index]
 			index = skipQuotedSemanticText(cypher, index) - 1
 			continue
 		case '/':
@@ -579,8 +581,11 @@ func parameterMayMismatchOperator(cypher string, params map[string]interface{}) 
 				index = end - 1
 				continue
 			}
-		case '$':
-		default:
+		}
+		if cypher[index] != '$' {
+			if !isWhitespace(cypher[index]) {
+				previous = cypher[index]
+			}
 			continue
 		}
 		start := index + 1
@@ -589,16 +594,15 @@ func parameterMayMismatchOperator(cypher string, params map[string]interface{}) 
 			end++
 		}
 		if end == start {
+			previous = '$'
 			continue
 		}
-		before := index - 1
-		for before >= 0 && isWhitespace(cypher[before]) {
-			before--
-		}
-		after := skipSpaces(cypher, end)
+		before := previous
+		previous = '$'
+		after := queryGapEnd(cypher, end)
 		var operators [2]byte
-		if before >= 0 && strings.IndexByte("+-*/%^", cypher[before]) >= 0 {
-			operators[0] = cypher[before]
+		if strings.IndexByte("+-*/%^", before) >= 0 {
+			operators[0] = before
 		}
 		if after < len(cypher) && strings.IndexByte("+-*/%^", cypher[after]) >= 0 {
 			operators[1] = cypher[after]

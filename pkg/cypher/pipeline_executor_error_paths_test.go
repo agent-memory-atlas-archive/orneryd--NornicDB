@@ -127,6 +127,19 @@ RETURN n
 	require.Equal(t, int64(0), res.Rows[0][0])
 }
 
+func TestUnresolvedWithExpressionRejectsWithoutEffects(t *testing.T) {
+	store := storage.NewNamespacedEngine(newTestMemoryEngine(t), "pipeline_unresolved_with")
+	exec := NewStorageExecutor(store)
+	ctx := context.Background()
+	result, err := exec.Execute(ctx, "CREATE (:Tmp {id:'before'}) WITH unknownExpr AS x RETURN x", nil)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, statusText(err), "Neo.ClientError.Statement.SyntaxError")
+	nodes, err := store.GetNodesByLabel("Tmp")
+	require.NoError(t, err)
+	require.Empty(t, nodes)
+}
+
 func TestCreateWithPipeline_SupportedShapes(t *testing.T) {
 	base := newTestMemoryEngine(t)
 	store := storage.NewNamespacedEngine(base, "pipeline_create_with_supported")

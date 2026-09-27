@@ -150,4 +150,16 @@ func TestParameterMayRejectPropertyAccessIgnoresComments(t *testing.T) {
 		require.False(t, parameterMayRejectPropertyAccess(query, params), query)
 	}
 	require.True(t, parameterMayRejectPropertyAccess("RETURN 1 /* $p.name */ + $p.name", params))
+	require.True(t, parameterMayRejectPropertyAccess("RETURN $p /* gap */ .name", params))
+	require.True(t, parameterMayRejectPropertyAccess("RETURN $p. /* gap */ name", params))
+	require.True(t, parameterMayRejectPropertyAccess("WITH $p /* gap */ AS value RETURN value.name", params))
+	exec, ctx := newUnitExecutor(t)
+	for _, query := range []string{
+		"RETURN $p /* gap */ .name AS value",
+		"RETURN $p. /* gap */ name AS value",
+		"WITH $p /* gap */ AS value RETURN value.name",
+	} {
+		_, err := exec.Execute(ctx, query, params)
+		require.ErrorContains(t, err, "Type mismatch", query)
+	}
 }

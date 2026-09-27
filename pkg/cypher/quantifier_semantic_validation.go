@@ -72,15 +72,31 @@ func validateStaticQuantifierCall(inner string) error {
 }
 
 func quantifierPredicateRequiresNumbers(predicate, variable string) bool {
+	var previous byte
 	for index := 0; index < len(predicate); index++ {
+		switch predicate[index] {
+		case '\'', '"', '`':
+			previous = predicate[index]
+			index = skipQuotedSemanticText(predicate, index) - 1
+			continue
+		case '/':
+			if end := queryCommentEnd(predicate, index); end >= 0 {
+				index = end - 1
+				continue
+			}
+		}
 		if !identifierAt(predicate, index, variable) {
+			if !isWhitespace(predicate[index]) {
+				previous = predicate[index]
+			}
 			continue
 		}
-		before := quantifierPreviousNonSpaceByte(predicate, index)
-		after := quantifierNextNonSpaceByte(predicate, index+len(variable))
-		if isNumericOnlyOperatorByte(before) || isNumericOnlyOperatorByte(after) {
+		after := queryGapEnd(predicate, index+len(variable))
+		if isNumericOnlyOperatorByte(previous) || after < len(predicate) && isNumericOnlyOperatorByte(predicate[after]) {
 			return true
 		}
+		previous = predicate[index+len(variable)-1]
+		index += len(variable) - 1
 	}
 	return false
 }
@@ -91,24 +107,6 @@ func identifierAt(text string, index int, identifier string) bool {
 	}
 	return (index == 0 || !isIdentChar(text[index-1])) &&
 		(index+len(identifier) == len(text) || !isIdentChar(text[index+len(identifier)]))
-}
-
-func quantifierPreviousNonSpaceByte(text string, index int) byte {
-	for index--; index >= 0; index-- {
-		if !isWhitespace(text[index]) {
-			return text[index]
-		}
-	}
-	return 0
-}
-
-func quantifierNextNonSpaceByte(text string, index int) byte {
-	for ; index < len(text); index++ {
-		if !isWhitespace(text[index]) {
-			return text[index]
-		}
-	}
-	return 0
 }
 
 func isNumericOnlyOperatorByte(character byte) bool {

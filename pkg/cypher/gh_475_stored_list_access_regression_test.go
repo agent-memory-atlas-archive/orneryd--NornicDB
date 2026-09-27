@@ -2,6 +2,7 @@ package cypher
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/orneryd/nornicdb/pkg/storage"
@@ -52,4 +53,55 @@ func TestGH475_StoredListSubscriptAndHeadInMatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGH475_StoredMixedListAcrossBadgerReopenAndSnapshot(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "badger")
+	engine, err := storage.NewBadgerEngineWithOptions(storage.BadgerOptions{DataDir: dataDir})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if engine != nil {
+			_ = engine.Close()
+		}
+	})
+	store := storage.NewNamespacedEngine(engine, "gh475_disk")
+	_, err = store.CreateNode(&storage.Node{
+		ID: "one", Labels: []string{"A"},
+		Properties: map[string]interface{}{"tags": []interface{}{int64(7), "t0", true}},
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	check := func(t *testing.T, explicit bool) {
+		view := storage.NewNamespacedEngine(engine, "gh475_disk")
+		projected, err := view.GetNodeProjected("one", []string{"tags"})
+		require.NoError(t, err)
+		require.Equal(t, []interface{}{int64(7), "t0", true}, projected.Properties["tags"])
+		exec := NewStorageExecutor(view)
+		if explicit {
+			_, err := exec.Execute(ctx, "BEGIN", nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _, _ = exec.Execute(ctx, "ROLLBACK", nil) })
+		}
+		result, err := exec.Execute(ctx, "MATCH (a:A) RETURN a.tags[0] AS first, head(a.tags) AS h, a.tags[1] AS second, a.tags[2] AS third", nil)
+		require.NoError(t, err)
+		require.Equal(t, [][]interface{}{{int64(7), int64(7), "t0", true}}, result.Rows)
+		filtered, err := exec.Execute(ctx, "MATCH (a:A) WHERE a.tags[0] = $first RETURN a.tags[1] AS tag", map[string]interface{}{"first": int64(7)})
+		require.NoError(t, err)
+		require.Equal(t, [][]interface{}{{"t0"}}, filtered.Rows)
+		forms, err := exec.Execute(ctx, "MATCH (a:A) RETURN [7, 't0'][0] AS literal, head($items) AS parameter, collect(a.tags[0]) AS collected", map[string]interface{}{"items": []interface{}{int64(7), "t0"}})
+		require.NoError(t, err)
+		require.Equal(t, [][]interface{}{{int64(7), int64(7), []interface{}{int64(7)}}}, forms.Rows)
+		if explicit {
+			_, err = exec.Execute(ctx, "COMMIT", nil)
+			require.NoError(t, err)
+		}
+	}
+
+	t.Run("live", func(t *testing.T) { check(t, false) })
+	require.NoError(t, engine.Close())
+	engine = nil
+	engine, err = storage.NewBadgerEngineWithOptions(storage.BadgerOptions{DataDir: dataDir})
+	require.NoError(t, err)
+	t.Run("reopened snapshot", func(t *testing.T) { check(t, true) })
 }
