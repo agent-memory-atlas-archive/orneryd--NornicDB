@@ -390,6 +390,55 @@ func TestExecuteInternal_RejectsDuplicateReturnColumns(t *testing.T) {
 	}
 }
 
+func TestExecuteInternal_TrimsBOMLikeExecute(t *testing.T) {
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
+	for name, run := range map[string]func(context.Context, string, map[string]interface{}) (*ExecuteResult, error){
+		"public":   exec.Execute,
+		"internal": exec.executeInternal,
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := run(context.Background(), "\ufeffRETURN 1 AS x", nil)
+			require.NoError(t, err)
+			require.Equal(t, []string{"x"}, result.Columns)
+			require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows)
+		})
+	}
+}
+
+func TestExecuteInternal_NormalizesCompositeParametersLikeExecute(t *testing.T) {
+	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
+	params := map[string]interface{}{"items": []map[string]string{{"name": "alice"}}}
+	for name, run := range map[string]func(context.Context, string, map[string]interface{}) (*ExecuteResult, error){
+		"public":   exec.Execute,
+		"internal": exec.executeInternal,
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := run(context.Background(), "RETURN $items[0].name AS name", params)
+			require.NoError(t, err)
+			require.Equal(t, []string{"name"}, result.Columns)
+			require.Equal(t, [][]interface{}{{"alice"}}, result.Rows)
+		})
+	}
+
+	t.Run("inherited composite parameter", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), paramsKey, params)
+		result, err := exec.executeInternal(ctx, "RETURN $items[0].name AS name", nil)
+		require.NoError(t, err)
+		require.Equal(t, [][]interface{}{{"alice"}}, result.Rows)
+	})
+
+	t.Run("explicit override preserves inherited values", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), paramsKey, map[string]interface{}{
+			"items": []map[string]string{{"name": "wrong"}},
+			"other": map[string]string{"name": "bob"},
+		})
+		result, err := exec.executeInternal(ctx, "RETURN $items[0].name AS name, $other.name AS other", params)
+		require.NoError(t, err)
+		require.Equal(t, [][]interface{}{{"alice", "bob"}}, result.Rows)
+		require.Equal(t, []map[string]string{{"name": "alice"}}, params["items"])
+	})
+}
+
 func TestApocDynamicRunAndRunMany_Direct(t *testing.T) {
 	baseStore := newTestMemoryEngine(t)
 	store := storage.NewNamespacedEngine(baseStore, "test")

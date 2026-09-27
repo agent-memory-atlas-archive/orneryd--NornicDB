@@ -199,8 +199,8 @@
       "url": "https://github.com/orneryd/NornicDB/issues/465",
       "title": "Property access on startNode/endNode results",
       "fix_step": 5,
-      "candidate_tck_family": ["expressions/graph", "expressions/path"],
-      "tck_mapping": {"status": "local-only", "scenarios": [], "note": "The vendored graph family covers type()/labels() but contains no startNode/endNode property-access scenario."},
+      "candidate_tck_family": ["clauses/merge", "expressions/graph", "expressions/path"],
+      "tck_mapping": {"status": "exact", "scenarios": ["clauses/merge/Merge5.feature :: [11] Use outgoing direction when unspecified"], "note": "The TCK scenario reads startNode(r).id and endNode(r).id; the local regression adds the issue-specific WITH-bound case."},
       "local_reproductions": ["TestGH465_PropertyAccessOnEndpointFunctionResult"],
       "status": "verified"
     },

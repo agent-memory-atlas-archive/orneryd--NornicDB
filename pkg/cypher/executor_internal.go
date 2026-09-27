@@ -76,6 +76,7 @@ func (e *StorageExecutor) executeInternal(ctx context.Context, cypher string, pa
 			params = mergedParams
 		}
 	}
+	params = normalizeQueryParameters(params)
 	ctx = context.WithValue(ctx, paramsKey, params)
 	upper := e.cachedUpperQuery(cypher)
 

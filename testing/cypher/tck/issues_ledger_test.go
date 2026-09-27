@@ -152,3 +152,42 @@ func ledgerReproductionIDs(ledger issueLedger) []string {
 	sort.Strings(ids)
 	return ids
 }
+
+func TestIssuesLedger_EndpointPropertyAccessHasPassingTckCoverage(t *testing.T) {
+	const (
+		issueNumber  = 465
+		featurePath  = "clauses/merge/Merge5.feature"
+		scenarioName = "[11] Use outgoing direction when unspecified"
+	)
+
+	ledger := loadIssueLedger(t)
+	var endpointIssue *issueLedgerEntry
+	for i := range ledger.Issues {
+		if ledger.Issues[i].Number == issueNumber {
+			endpointIssue = &ledger.Issues[i]
+			break
+		}
+	}
+	require.NotNil(t, endpointIssue)
+	require.Equal(t, "exact", endpointIssue.TckMapping.Status)
+	require.Equal(t, []string{featurePath + " :: " + scenarioName}, endpointIssue.TckMapping.Scenarios)
+
+	feature, err := os.ReadFile(filepath.Join("testdata", "opencypher", "features", filepath.FromSlash(featurePath)))
+	require.NoError(t, err)
+	require.Contains(t, string(feature), "RETURN startNode(r).id AS s, endNode(r).id AS e")
+
+	content, err := os.ReadFile(filepath.Join("testdata", "ratchet.json"))
+	require.NoError(t, err)
+	var ratchet RatchetBaseline
+	require.NoError(t, json.Unmarshal(content, &ratchet))
+
+	modes := make(map[string]bool, 2)
+	for _, entry := range ratchet.Entries {
+		if entry.FeaturePath != featurePath || entry.ScenarioName != scenarioName || entry.ExampleRow != "single" || entry.RouteMode != "normal" {
+			continue
+		}
+		require.Equalf(t, "pass", entry.Status, "#%d %s in %s", issueNumber, scenarioName, entry.TransactionMode)
+		modes[string(entry.TransactionMode)] = true
+	}
+	require.Equal(t, map[string]bool{"autocommit": true, "explicit-transaction": true}, modes)
+}
