@@ -14,6 +14,17 @@ fi
 USER_HOME=$(eval echo ~$ACTUAL_USER)
 USER_UID=$(id -u $ACTUAL_USER)
 
+repair_legacy_user_file() {
+  local path="$1"
+  if [ -L "$path" ]; then
+    echo "ERROR: refusing to replace symlink at $path" >&2
+    return 1
+  fi
+  if [ -e "$path" ] && [ "$(stat -f %u "$path")" -eq 0 ]; then
+    chown "$ACTUAL_USER:staff" "$path"
+  fi
+}
+
 if [ ! -x /Applications/NornicDB.app/Contents/MacOS/NornicDB ]; then
   echo "ERROR: menu bar app missing from /Applications; installation did not place the app at its intended location" >&2
   exit 1
@@ -98,6 +109,7 @@ rm -f "$USER_HOME/Library/LaunchAgents/com.nornicdb.server.plist" 2>/dev/null ||
 echo "✓ Server will start after first-run wizard completes"
 
 # Install menu bar app LaunchAgent for auto-start
+repair_legacy_user_file "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist"
 sudo -u "$ACTUAL_USER" tee "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist" > /dev/null << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

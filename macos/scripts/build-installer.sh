@@ -12,7 +12,6 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BUILD_DIR="$PROJECT_ROOT/dist/installer"
 VERSION=${VERSION:-"1.0.0"}
 
 # Parse arguments
@@ -75,6 +74,10 @@ cleanup_build_dir() {
     echo "   Remove the old staging directory as an administrator before rebuilding."
     return 1
 }
+
+mkdir -p "$PROJECT_ROOT/dist"
+BUILD_DIR=$(mktemp -d "$PROJECT_ROOT/dist/installer.XXXXXX")
+trap 'cleanup_build_dir "$BUILD_DIR"' EXIT
 
 # Function to build a package variant
 build_package() {
@@ -160,6 +163,17 @@ log() {
     echo "$1"
 }
 
+repair_legacy_user_file() {
+    local path="$1"
+    if [ -L "$path" ]; then
+        log "ERROR: refusing to replace symlink at $path"
+        return 1
+    fi
+    if [ -e "$path" ] && [ "$(stat -f %u "$path")" -eq 0 ]; then
+        chown "$ACTUAL_USER:staff" "$path"
+    fi
+}
+
 log "Starting NornicDB post-installation (Full Edition) for user: $ACTUAL_USER..."
 
 if [ ! -x /Applications/NornicDB.app/Contents/MacOS/NornicDB ]; then
@@ -227,6 +241,7 @@ CONFIGEOF
 fi
 
 # Create environment file with plugin paths
+repair_legacy_user_file "$CONFIG_DIR/environment"
 sudo -u "$ACTUAL_USER" tee "$CONFIG_DIR/environment" > /dev/null << 'EOF'
 # NornicDB Environment Configuration (Full Edition)
 # This file is sourced by the NornicDB service
@@ -260,6 +275,7 @@ pkill -9 -f "nornicdb serve" 2>/dev/null || true
 log "Server will start after first-run wizard completes"
 
 # Install menu bar app LaunchAgent for auto-start
+repair_legacy_user_file "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist"
 sudo -u "$ACTUAL_USER" tee "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist" > /dev/null << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -429,11 +445,11 @@ EOF
         --distribution "$BUILD_DIR/distribution.xml" \
         --resources "$BUILD_DIR/resources" \
         --package-path "$BUILD_DIR" \
-        "$PROJECT_ROOT/dist/$PKG_NAME"
+        "$BUILD_DIR/$PKG_NAME"
     
     echo ""
     echo "✅ Package built: dist/$PKG_NAME"
-    echo "   Size: $(du -h "$PROJECT_ROOT/dist/$PKG_NAME" | cut -f1)"
+    echo "   Size: $(du -h "$BUILD_DIR/$PKG_NAME" | cut -f1)"
     
     # Optionally create DMG for distribution
     if command -v hdiutil &> /dev/null; then
@@ -441,7 +457,7 @@ EOF
         DMG_DIR="$BUILD_DIR/dmg"
         mkdir -p "$DMG_DIR"
         
-        cp "$PROJECT_ROOT/dist/$PKG_NAME" "$DMG_DIR/"
+        cp "$BUILD_DIR/$PKG_NAME" "$DMG_DIR/"
         cp "$BUILD_DIR/resources/README.txt" "$DMG_DIR/"
         
         # Create Applications symlink for drag-and-drop DMGs (if we were doing that)
@@ -463,11 +479,13 @@ EOF
             -size "${DMG_SIZE_MIB}m" \
             -ov \
             -format UDZO \
-            "$PROJECT_ROOT/dist/$DMG_NAME"
+            "$BUILD_DIR/$DMG_NAME"
         
         echo "✅ DMG created: dist/$DMG_NAME"
-        echo "   Size: $(du -h "$PROJECT_ROOT/dist/$DMG_NAME" | cut -f1)"
+        echo "   Size: $(du -h "$BUILD_DIR/$DMG_NAME" | cut -f1)"
+        mv -f "$BUILD_DIR/$DMG_NAME" "$PROJECT_ROOT/dist/$DMG_NAME"
     fi
+    mv -f "$BUILD_DIR/$PKG_NAME" "$PROJECT_ROOT/dist/$PKG_NAME"
 }
 
 # Build requested packages
