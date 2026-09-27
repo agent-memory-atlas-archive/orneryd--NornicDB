@@ -16,6 +16,15 @@ func TestApocHelpers_FindMatchingParen(t *testing.T) {
 	assert.Equal(t, 8, e.findMatchingParen("('x)';(a))", 6))
 }
 
+func TestMatchingDelimiterSkipsCommentsAndBackticks(t *testing.T) {
+	require.Equal(t, len("(a /* ) */ + b)")-1, findMatchingDelimiter("(a /* ) */ + b)", 0, '(', ')'))
+	require.Equal(t, len("(a // )\n+ b)")-1, findMatchingDelimiter("(a // )\n+ b)", 0, '(', ')'))
+	require.Equal(t, len("(`a)b`)")-1, findMatchingDelimiter("(`a)b`)", 0, '(', ')'))
+	require.Equal(t, len("(a /* ) */ + b)")-1, findMatchingParen("(a /* ) */ + b)", 0))
+	require.Equal(t, len("(a /* ) */ + b)")-1, findMatchingParenAt("(a /* ) */ + b)", 0))
+	require.Equal(t, -1, findMatchingParen("(a /* ) */ + b", 0))
+}
+
 func TestApocHelpers_ExtractQuotedString(t *testing.T) {
 	e := &StorageExecutor{}
 	v, rem, err := e.extractQuotedString(" 'hello' ,x")

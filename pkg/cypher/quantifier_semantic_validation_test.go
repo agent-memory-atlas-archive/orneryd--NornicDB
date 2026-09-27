@@ -39,6 +39,10 @@ func TestQuantifierValidationIgnoresTextAndComments(t *testing.T) {
 		"RETURN any(x IN ['/* gap */'] WHERE x * 2 > 0) AS result",
 		"RETURN any(x IN ['a'] WHERE x /* gap */ * 2 > 0) AS result",
 		"RETURN any(x IN ['a'] WHERE 2 * /* gap */ x > 0) AS result",
+		"RETURN any(x /* IN */ IN ['a'] WHERE x * 2 > 0) AS result",
+		"RETURN any(x IN ['a'] /* WHERE */ WHERE x * 2 > 0) AS result",
+		"RETURN any(x IN ['a'] /* ) */ WHERE x * 2 > 0) AS result",
+		"RETURN any(x IN ['a'] WHERE x /* ) */ * 2 > 0) AS result",
 	} {
 		require.ErrorContains(t, validateStaticQuantifierTypes(query), "numeric operator", query)
 	}

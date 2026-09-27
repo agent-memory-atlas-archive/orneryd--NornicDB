@@ -37,6 +37,7 @@ func validateStaticQuantifierTypes(cypher string) error {
 }
 
 func validateStaticQuantifierCall(inner string) error {
+	inner = StripComments(inner)
 	inIndex := findKeywordIndexInContext(inner, "IN")
 	if inIndex <= 0 {
 		return nil

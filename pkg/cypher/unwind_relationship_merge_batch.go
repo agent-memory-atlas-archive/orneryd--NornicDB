@@ -905,32 +905,5 @@ func appendRelationshipBatchScalarKeyValue(b *strings.Builder, value interface{}
 }
 
 func findMatchingParenAt(s string, openIdx int) int {
-	if openIdx < 0 || openIdx >= len(s) || s[openIdx] != '(' {
-		return -1
-	}
-	depth := 0
-	inQuote := byte(0)
-	for i := openIdx; i < len(s); i++ {
-		c := s[i]
-		if inQuote != 0 {
-			if c == inQuote {
-				inQuote = 0
-			}
-			continue
-		}
-		if c == '\'' || c == '"' {
-			inQuote = c
-			continue
-		}
-		switch c {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				return i
-			}
-		}
-	}
-	return -1
+	return findMatchingDelimiter(s, openIdx, '(', ')')
 }

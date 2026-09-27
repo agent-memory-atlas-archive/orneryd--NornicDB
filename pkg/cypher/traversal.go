@@ -1580,45 +1580,11 @@ func findMatchingBracket(s string, startIdx int) int {
 	return -1
 }
 
-// findMatchingParen finds the index of the closing paren that matches the opening paren at startIdx.
-// Respects quoted strings so that ')' inside quotes is not treated as a closing paren.
+// findMatchingParen finds the index of the closing paren that matches the
+// opening paren at startIdx. It shares the comment- and quote-aware matcher
+// so a ')' inside a string, backtick name or comment never closes early.
 func findMatchingParen(s string, startIdx int) int {
-	if startIdx >= len(s) || s[startIdx] != '(' {
-		return -1
-	}
-
-	depth := 0
-	inQuote := false
-	quoteChar := byte(0)
-
-	for i := startIdx; i < len(s); i++ {
-		c := s[i]
-
-		// Handle quotes
-		if (c == '\'' || c == '"') && !isBackslashEscaped(s, i) {
-			if !inQuote {
-				inQuote = true
-				quoteChar = c
-			} else if c == quoteChar {
-				inQuote = false
-			}
-			continue
-		}
-
-		// Only count parens when not in a quote
-		if !inQuote {
-			if c == '(' {
-				depth++
-			} else if c == ')' {
-				depth--
-				if depth == 0 {
-					return i
-				}
-			}
-		}
-	}
-
-	return -1 // No matching paren found
+	return findMatchingDelimiter(s, startIdx, '(', ')')
 }
 
 // parseNodePatternFromString parses n:Label {props} from a string

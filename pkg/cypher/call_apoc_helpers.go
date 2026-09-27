@@ -16,32 +16,36 @@ func (e *StorageExecutor) findMatchingParen(s string, startIdx int) int {
 	return findMatchingDelimiter(s, startIdx, '(', ')')
 }
 
-// findMatchingDelimiter finds the index of the closer matching the opener at startIdx,
-// skipping quoted strings. It returns -1 when s[startIdx] is not the opener or no
-// matching closer exists.
+// findMatchingDelimiter finds the index of the closer matching the opener at
+// startIdx, skipping quoted strings (single, double and backtick) and
+// comments, so a closer inside trivia never terminates the span early. It
+// returns -1 when s[startIdx] is not the opener or no matching closer exists.
 func findMatchingDelimiter(s string, startIdx int, opener, closer rune) int {
 	if startIdx >= len(s) || rune(s[startIdx]) != opener {
 		return -1
 	}
 
 	depth := 0
-	inQuote := false
-	quoteChar := rune(0)
-
+	var quote byte
 	for i := startIdx; i < len(s); i++ {
-		c := rune(s[i])
-
-		if inQuote {
-			if c == quoteChar && !isBackslashEscaped(s, i) {
-				inQuote = false
+		c := s[i]
+		if quote != 0 {
+			if c == quote && !isBackslashEscaped(s, i) {
+				quote = 0
 			}
 			continue
 		}
-
 		switch c {
-		case '\'', '"':
-			inQuote = true
-			quoteChar = c
+		case '\'', '"', '`':
+			quote = c
+			continue
+		case '/':
+			if end := queryCommentEnd(s, i); end >= 0 {
+				i = end - 1
+				continue
+			}
+		}
+		switch rune(c) {
 		case opener:
 			depth++
 		case closer:

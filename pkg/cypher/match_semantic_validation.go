@@ -49,7 +49,19 @@ func (e *StorageExecutor) validateMatchSemanticScopes(cypher string) error {
 	// valueTypes holds the static types of variables bound to a literal by
 	// WITH … AS or UNWIND, for the function argument checks.
 	var valueTypes map[string]string
+	returnSeen := false
 	for _, clause := range clauses {
+		if returnSeen {
+			// RETURN is the terminal clause: a clause after it is never a
+			// legal statement (RETURN 1 AS x RETURN 2 AS y is Neo4j's
+			// "Invalid input 'RETURN'").
+			token := strings.Fields(clause.text)[0]
+			return localizedStatusError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax",
+				localization.CypherCoreInvalidInput(token))
+		}
+		if clause.kind == pipelineClauseReturn {
+			returnSeen = true
+		}
 		if clause.kind == pipelineClauseWith {
 			// The projection reads the incoming variables; WITH … WHERE
 			// reads the projected ones.
@@ -233,6 +245,24 @@ func validateReturnSemanticScope(scope matchSemanticScope, clause string) error 
 	if err := validateReturnAggregationSemantics(body); err != nil {
 		return err
 	}
+	// A dangling modifier keyword (RETURN 1 ORDER BY / SKIP / LIMIT) and an
+	// empty projection (RETURN, WITH 1 AS x RETURN) are Neo4j syntax errors.
+	projectionEnd := len(body)
+	for _, keyword := range []string{"ORDER BY", "SKIP", "LIMIT"} {
+		index := topLevelKeywordIndex(body, keyword)
+		if index < 0 || index >= projectionEnd {
+			continue
+		}
+		if strings.TrimSpace(body[index+len(keyword):]) == "" {
+			return localizedStatusError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax",
+				localization.CypherCoreInvalidInputExpectedExpression(""))
+		}
+		projectionEnd = index
+	}
+	if projection, _ := cutDistinct(strings.TrimSpace(body[:projectionEnd])); projection == "" {
+		return localizedStatusError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax",
+			localization.CypherMatchingReturnExpressionRequired())
+	}
 	if orderIndex := topLevelKeywordIndex(body, "ORDER BY"); orderIndex >= 0 {
 		projection := strings.TrimSpace(body[:orderIndex])
 		if err := validateOrderByReferences(scope, projectMatchSemanticScope(scope, "WITH "+projection), strings.TrimSpace(body[orderIndex+len("ORDER BY"):])); err != nil {
@@ -373,6 +403,23 @@ func (e *StorageExecutor) validateMatchClauseBindings(scope matchSemanticScope, 
 
 func (e *StorageExecutor) validateMatchWhereSimpleOperands(scope matchSemanticScope, whereClause string) error {
 	whereClause = strings.TrimSpace(maskSubqueryBodies(whereClause))
+	if whereClause == "" {
+		return nil
+	}
+	switch whereClause[0] {
+	case '=', '<', '>', '~':
+		return localizedStatusError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax",
+			localization.CypherCoreInvalidInputExpectedExpression(string(whereClause[0])))
+	case '!':
+		return localizedStatusError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax",
+			localization.CypherCoreInvalidInputExpectedExpression("!"))
+	}
+	// A clause keyword read as a variable followed by another term with no
+	// operator between them is Neo4j's Invalid input error (WHERE RETURN n:
+	// return is the variable, n is invalid — the #740 reading).
+	if err := projectionItemTermError(whereClause); err != nil {
+		return err
+	}
 	if containsAggregateFunc(whereClause) {
 		return newSemanticError(
 			"Neo.ClientError.Statement.SyntaxError",
@@ -394,6 +441,12 @@ func (e *StorageExecutor) validateMatchWhereSimpleOperands(scope matchSemanticSc
 	if operands, _, comparison := splitComparisonChain(whereClause); comparison {
 		for _, operand := range operands {
 			operand = strings.TrimSpace(operand)
+			// A clause keyword read as a variable followed by another term with
+			// no operator between them is Neo4j's Invalid input error
+			// (WHERE n.x = RETURN n: return is the variable, n is invalid).
+			if err := projectionItemTermError(operand); err != nil {
+				return err
+			}
 			if variable, _, propertyAccess := parseVarPropertyRef(operand); propertyAccess {
 				switch scope[normalizeProjectionColumnName(variable)] {
 				case matchBindingPath, matchBindingRelationshipList, matchBindingNodeList:
@@ -657,7 +710,8 @@ func projectionAliasError(item string) error {
 	}
 	alias := strings.TrimSpace(item[as+len("AS"):])
 	if alias == "" {
-		return nil
+		return localizedStatusError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax",
+			localization.CypherCoreInvalidInput(""))
 	}
 	_, next, ok := scanSymbolicName(alias, 0)
 	if !ok || next == len(alias) {
