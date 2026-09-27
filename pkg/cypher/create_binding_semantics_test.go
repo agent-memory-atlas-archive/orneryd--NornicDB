@@ -133,6 +133,45 @@ func TestCreateReturnModifiersDoNotDiscardSideEffects(t *testing.T) {
 	require.Equal(t, int64(2), count.Rows[0][0])
 }
 
+func TestWriteReturnBarrierAcrossTransactionModes(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		name := "autocommit"
+		if explicit {
+			name = "explicit-transaction"
+		}
+		t.Run(name, func(t *testing.T) {
+			exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "barrier"))
+			ctx := context.Background()
+			if explicit {
+				_, err := exec.Execute(ctx, "BEGIN", nil)
+				require.NoError(t, err)
+			}
+
+			result, err := exec.Execute(ctx, "UNWIND [3, 1, 2] AS value CREATE (node:Barrier {num: value}) RETURN node.num AS num ORDER BY num ASC LIMIT 1", nil)
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows)
+
+			grouped, err := exec.Execute(ctx, "MATCH (node:Barrier) RETURN count(node) AS total ORDER BY total DESC LIMIT 1", nil)
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(3)}}, grouped.Rows)
+			limited, err := exec.Execute(ctx, "MATCH (node:Barrier) SET node.touched = true RETURN node LIMIT 0", nil)
+			require.NoError(t, err)
+			require.Empty(t, limited.Rows)
+
+			if explicit {
+				_, err = exec.Execute(ctx, "COMMIT", nil)
+				require.NoError(t, err)
+			}
+			readback, err := exec.Execute(ctx, "MATCH (node:Barrier) RETURN node.num AS num ORDER BY num", nil)
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(1)}, {int64(2)}, {int64(3)}}, readback.Rows)
+			updated, err := exec.Execute(ctx, "MATCH (node:Barrier {touched: true}) RETURN count(node) AS total", nil)
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(3)}}, updated.Rows)
+		})
+	}
+}
+
 func TestUnwindCreateAppliesProjectionHorizonsAfterEveryMutation(t *testing.T) {
 	exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "test"))
 

@@ -439,6 +439,31 @@ func TestExecuteInternal_NormalizesCompositeParametersLikeExecute(t *testing.T) 
 	})
 }
 
+func TestExecuteInternal_RejectsMissingParametersBeforeWrites(t *testing.T) {
+	for name, internal := range map[string]bool{"public": false, "internal": true} {
+		t.Run(name, func(t *testing.T) {
+			exec := NewStorageExecutor(storage.NewNamespacedEngine(newTestMemoryEngine(t), "missing_param"))
+			run := exec.Execute
+			if internal {
+				run = exec.executeInternal
+			}
+			for _, query := range []string{"RETURN $missing AS value", "CREATE (:MissingParam {value: $missing})"} {
+				_, err := run(context.Background(), query, nil)
+				require.ErrorContains(t, err, "Neo.ClientError.Statement.ParameterMissing: Expected parameter(s): missing")
+			}
+			result, err := exec.Execute(context.Background(), "MATCH (n:MissingParam) RETURN count(n) AS count", nil)
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(0)}}, result.Rows)
+			if internal {
+				ctx := context.WithValue(context.Background(), paramsKey, map[string]interface{}{"inherited": int64(7)})
+				result, err = run(ctx, "RETURN $inherited AS inherited, $explicit AS explicit", map[string]interface{}{"explicit": int64(8)})
+				require.NoError(t, err)
+				require.Equal(t, [][]interface{}{{int64(7), int64(8)}}, result.Rows)
+			}
+		})
+	}
+}
+
 func TestApocDynamicRunAndRunMany_Direct(t *testing.T) {
 	baseStore := newTestMemoryEngine(t)
 	store := storage.NewNamespacedEngine(baseStore, "test")
