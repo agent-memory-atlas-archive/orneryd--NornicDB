@@ -2052,6 +2052,10 @@ func (e *StorageExecutor) processAfterCallSubquery(ctx context.Context, innerRes
 	if strings.HasPrefix(upperAfter, "RETURN ") {
 		return e.processCallSubqueryReturn(ctx, innerResult, afterCall)
 	}
+	if strings.EqualFold(strings.TrimSpace(afterCall), "RETURN") {
+		return nil, localizedStatusError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax",
+			localization.CypherMatchingReturnExpressionRequired())
+	}
 
 	// Handle ORDER BY (without RETURN means use inner result's columns)
 	if strings.HasPrefix(upperAfter, "ORDER BY ") {
@@ -2062,7 +2066,12 @@ func (e *StorageExecutor) processAfterCallSubquery(ctx context.Context, innerRes
 
 	// Unsupported clause after CALL {}
 	firstWord := strings.Split(upperAfter, " ")[0]
-	return nil, localizedError(localization.CypherSubqueriesAfterCallClauseUnsupported(firstWord), nil)
+	err := localizedError(localization.CypherSubqueriesAfterCallClauseUnsupported(firstWord), nil)
+	return nil, &classifiedCypherError{
+		cause:  err,
+		code:   "Neo.ClientError.Statement.SyntaxError",
+		detail: "UnexpectedSyntax",
+	}
 }
 
 // executeChainedCallSubquery runs a CALL { } subquery for the rows produced by

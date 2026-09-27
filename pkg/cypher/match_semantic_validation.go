@@ -111,6 +111,21 @@ func (e *StorageExecutor) validateMatchSemanticScopes(cypher string) error {
 			if err := validateWithOrderBySemanticScope(scope, clause.text); err != nil {
 				return err
 			}
+			// The WHERE after WITH reads the projected scope merged over the
+			// incoming one, as at runtime (aliases shadow same-named inputs).
+			if where := topLevelKeywordIndex(clause.text, "WHERE"); where >= 0 {
+				projected := projectMatchSemanticScope(scope, clause.text)
+				whereScope := make(matchSemanticScope, len(scope)+len(projected))
+				for name, kind := range scope {
+					whereScope[name] = kind
+				}
+				for name, kind := range projected {
+					whereScope[name] = kind
+				}
+				if err := e.validateMatchWhereSimpleOperands(whereScope, clause.text[where+len("WHERE"):]); err != nil {
+					return err
+				}
+			}
 			// The projection sees the incoming variables; WHERE / ORDER BY
 			// after it see the projected ones.
 			projection, rest := splitWithProjection(clause.text)
@@ -472,11 +487,16 @@ func (e *StorageExecutor) validateMatchWhereSimpleOperands(scope matchSemanticSc
 		}
 	}
 	for _, operator := range []string{" STARTS WITH ", " ENDS WITH ", " CONTAINS ", " NOT IN ", " IN ", "=~"} {
-		left, _, found := splitByOperatorOutsideCase(whereClause, operator, true, true)
+		left, right, found := splitByOperatorOutsideCase(whereClause, operator, true, true)
 		if !found {
 			continue
 		}
 		left = strings.TrimSpace(left)
+		// A clause keyword read as a variable on the operator's right followed
+		// by another term is Invalid input (WHERE n.x IN RETURN n).
+		if err := projectionItemTermError(strings.TrimSpace(right)); err != nil {
+			return err
+		}
 		if simpleSemanticIdentifier(left) == left {
 			if _, exists := scope[left]; !exists {
 				return createUndefinedVariableError(left)

@@ -59,6 +59,9 @@ func TestEmptyProjectionAndDanglingModifiersRejectedLikeNeo4j(t *testing.T) {
 		"WITH 1 AS",
 		"MATCH (n) WHERE = 1 RETURN n",
 		"MATCH () WHERE RETURN n",
+		"WITH 1 AS x WHERE RETURN x",
+		"MATCH (n) WHERE n.x IN RETURN n",
+		"CALL { RETURN 1 AS x } RETURN",
 	} {
 		_, err := exec.Execute(ctx, query, nil)
 		requireSyntaxError(t, err, query)
