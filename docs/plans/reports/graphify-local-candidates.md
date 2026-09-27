@@ -123,6 +123,20 @@ cannot establish semantic equivalence or measure runtime performance.
 
 ## Reviewed historical-only candidate
 
+`pkg/storage|.StreamNodesByPrefixProjected()` is a retained public
+compatibility entry point, not a second scan kernel. Badger, WAL, Async and
+Namespaced forward a non-nil projection to their `StreamNodesWithOptions`
+kernel; nil properties forward to `StreamNodesByPrefix` to preserve full-node
+semantics. `TestStreamNodesOptionsParityAcrossStacks` now compares projected
+IDs and selected properties from the legacy and options routes on every stack
+that exposes the capability, including pending Async and namespace translation.
+The broader options parity battery also covers Memory and Composite. No
+production consolidation is needed for this group. The parity test passes
+three times under `-race`. M2 Max `BenchmarkStreamNodes_ByPrefixProjected`
+(`-benchtime=300ms -cpu=1 -count=3`) measured 1.193–1.208 ms/op,
+1,053,605–1,053,606 B/op and 13,767 allocs/op; this candidate changed only
+tests and documentation, so no runtime improvement is claimed.
+
 `pkg/storage|.checkUniqueConstraint()` is a historical-only group. PR #747
 removed Async's partial checker; constrained writes now pass through the
 storage engine before acknowledgement. SchemaManager owns registered values,

@@ -164,6 +164,20 @@ func startBoltIntegrationServer(t *testing.T, store storage.Engine) (*Server, in
 	return server, addr.Port
 }
 
+func serveBoltIntegrationServer(t *testing.T, server *Server) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	requireNoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		requireNoError(t, <-done)
+	})
+	return port
+}
+
 func openBoltTestConn(t *testing.T, port int) net.Conn {
 	t.Helper()
 	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
@@ -235,18 +249,7 @@ func TestBoltCypherIntegration(t *testing.T) {
 	server := New(config, executor)
 	defer server.Close()
 
-	// Start server
-	go func() {
-		if err := server.ListenAndServe(); err != nil {
-			t.Logf("Server error: %v", err)
-		}
-	}()
-
-	// Wait for server to start
-	time.Sleep(100 * time.Millisecond)
-
-	// Get actual port
-	port := server.listener.Addr().(*net.TCPAddr).Port
+	port := serveBoltIntegrationServer(t, server)
 
 	t.Run("create_and_query_node", func(t *testing.T) {
 		// Connect to server
@@ -966,14 +969,7 @@ func TestBoltExplicitTransactionRollbackRevertsCreate(t *testing.T) {
 	server := New(config, executor)
 	defer server.Close()
 
-	go func() {
-		if err := server.ListenAndServe(); err != nil {
-			t.Logf("Server error: %v", err)
-		}
-	}()
-	time.Sleep(100 * time.Millisecond)
-
-	port := server.listener.Addr().(*net.TCPAddr).Port
+	port := serveBoltIntegrationServer(t, server)
 	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -1053,10 +1049,7 @@ func TestBoltServerStress(t *testing.T) {
 	server := New(config, executor)
 	defer server.Close()
 
-	go server.ListenAndServe()
-	time.Sleep(100 * time.Millisecond)
-
-	port := server.listener.Addr().(*net.TCPAddr).Port
+	port := serveBoltIntegrationServer(t, server)
 
 	// Launch multiple concurrent connections
 	const numConnections = 20
@@ -1127,12 +1120,7 @@ func TestBoltBenchmarkCreateDeleteRelationship(t *testing.T) {
 	server := New(config, executor)
 	defer server.Close()
 
-	go func() {
-		server.ListenAndServe()
-	}()
-	time.Sleep(100 * time.Millisecond)
-
-	port := server.listener.Addr().(*net.TCPAddr).Port
+	port := serveBoltIntegrationServer(t, server)
 
 	// Connect
 	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
@@ -1198,10 +1186,7 @@ func TestBoltBenchmarkCreateDeleteRelationship_LargeDataset(t *testing.T) {
 	server := New(config, executor)
 	defer server.Close()
 
-	go func() { server.ListenAndServe() }()
-	time.Sleep(100 * time.Millisecond)
-
-	port := server.listener.Addr().(*net.TCPAddr).Port
+	port := serveBoltIntegrationServer(t, server)
 	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -1271,10 +1256,7 @@ func TestBoltBenchmarkCreateDeleteRelationship_Badger(t *testing.T) {
 	server := New(config, executor)
 	defer server.Close()
 
-	go func() { server.ListenAndServe() }()
-	time.Sleep(100 * time.Millisecond)
-
-	port := server.listener.Addr().(*net.TCPAddr).Port
+	port := serveBoltIntegrationServer(t, server)
 	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)

@@ -126,6 +126,25 @@ func TestStreamNodesOptionsParityAcrossStacks(t *testing.T) {
 				return engine.StreamNodesWithOptions(ctx, StreamNodesOptions{Prefix: stack.prefix, Projection: []string{"a"}}, fn)
 			})
 			require.Equal(t, all, projected)
+			if reader, ok := engine.(ProjectedPrefixNodeReader); ok {
+				legacyProjected := collect(func(ctx context.Context, fn func(*Node) error) error {
+					return reader.StreamNodesByPrefixProjected(ctx, stack.prefix, []string{"a"}, func(node *Node) error {
+						require.Contains(t, node.Properties, "a")
+						require.Equal(t, map[string]any{"a": node.Properties["a"]}, node.Properties)
+						return fn(node)
+					})
+				})
+				require.Equal(t, projected, legacyProjected)
+				fullProjected := collect(func(ctx context.Context, fn func(*Node) error) error {
+					return reader.StreamNodesByPrefixProjected(ctx, stack.prefix, nil, func(node *Node) error {
+						if stack.name == "namespaced" && node.ID == "n-1" {
+							require.Equal(t, "two", node.Properties["b"])
+						}
+						return fn(node)
+					})
+				})
+				require.Equal(t, all, fullProjected)
+			}
 
 			// Legacy streaming entry point stays consistent with the kernel.
 			legacy := collect(func(ctx context.Context, fn func(*Node) error) error {
