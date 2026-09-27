@@ -85,7 +85,7 @@ func (m *Manager) OpenWithExecutorForOwner(ctx context.Context, dbName string, e
 		return nil, fmt.Errorf("transaction executor is not available")
 	}
 
-	if _, err := executor.Execute(ctx, "BEGIN", nil); err != nil {
+	if _, err := executor.Execute(cypher.WithTransactionControl(ctx), "BEGIN", nil); err != nil {
 		return nil, err
 	}
 
@@ -183,7 +183,7 @@ func (m *Manager) CommitAndDelete(ctx context.Context, session *Session) (*cyphe
 		return nil, err
 	}
 
-	result, err := session.Executor.Execute(ctx, "COMMIT", nil)
+	result, err := session.Executor.Execute(cypher.WithTransactionControl(ctx), "COMMIT", nil)
 	if err != nil {
 		terminalErr, notify := m.rememberTerminalErrorLocked(session, err)
 		session.mu.Unlock()
@@ -205,7 +205,7 @@ func (m *Manager) RollbackAndDelete(ctx context.Context, session *Session) error
 		return nil
 	}
 
-	_, err := session.Executor.Execute(ctx, "ROLLBACK", nil)
+	_, err := session.Executor.Execute(cypher.WithTransactionControl(ctx), "ROLLBACK", nil)
 	session.mu.Unlock()
 	return err
 }

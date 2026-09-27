@@ -168,7 +168,7 @@ func (r *heimdallDBRouter) Query(ctx context.Context, database string, cypherQue
 		return nil, err
 	}
 
-	result, err := exec.Execute(ctx, cypherQuery, params)
+	result, err := exec.Execute(cypher.WithClientStatement(ctx), cypherQuery, params)
 	if err != nil {
 		return nil, err
 	}

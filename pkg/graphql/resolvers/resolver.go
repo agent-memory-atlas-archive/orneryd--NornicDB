@@ -248,7 +248,7 @@ func (r *Resolver) executeCypher(ctx context.Context, query string, params map[s
 		return nil, err
 	}
 
-	result, err := executor.Execute(ctx, query, params)
+	result, err := executor.Execute(cypher.WithClientStatement(ctx), query, params)
 	if err != nil {
 		return nil, err
 	}

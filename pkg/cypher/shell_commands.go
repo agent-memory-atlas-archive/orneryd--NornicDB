@@ -191,7 +191,7 @@ func (e *StorageExecutor) executeShellCommand(ctx context.Context, command strin
 			return nil, ctx, localizedError(localization.CypherCommandRoutingShellUseDatabaseRequired(), nil)
 		}
 		dbName := strings.Fields(args)[0]
-		if err := authorizeDatabaseSelection(ctx, dbName); err != nil {
+		if err := e.authorizeSelectedDatabase(ctx, dbName); err != nil {
 			return nil, ctx, err
 		}
 		ctx = withExecutionDatabase(ctx, dbName)

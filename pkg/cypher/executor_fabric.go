@@ -123,7 +123,7 @@ func (e *StorageExecutor) executeViaPreparedFabricWithTx(ctx context.Context, cy
 		authToken:  authToken,
 		autoCommit: autoCommit,
 	}, func(dbName string) (storage.Engine, error) {
-		if err := authorizeDatabaseSelection(ctx, dbName); err != nil {
+		if err := e.authorizeSelectedDatabase(ctx, dbName); err != nil {
 			return nil, err
 		}
 		if e.dbManager != nil {
@@ -854,7 +854,7 @@ func (c *cypherFabricExecutor) ensureLocalShardTxExecutor(ctx context.Context, s
 	txExec.vectorRegistry = c.base.vectorRegistry
 	txExec.vectorIndexSpaces = c.base.vectorIndexSpaces
 
-	beginCtx := WithAuthToken(ctx, c.authToken)
+	beginCtx := WithTransactionControl(WithAuthToken(ctx, c.authToken))
 	if _, err := txExec.Execute(beginCtx, "BEGIN", nil); err != nil {
 		return nil, localizedError(localization.CypherCommandRoutingFabricShardTransactionFailed(dbName, err), err)
 	}

@@ -34,7 +34,7 @@ func (e *StorageExecutor) executeInternal(ctx context.Context, cypher string, pa
 		if err != nil {
 			return nil, err
 		}
-		if err := authorizeDatabaseSelection(ctx, useDB); err != nil {
+		if err := e.authorizeSelectedDatabase(ctx, useDB); err != nil {
 			return nil, err
 		}
 		scopedExec, resolvedDB, err := e.scopedExecutorForUse(useDB, GetAuthTokenFromContext(ctx))

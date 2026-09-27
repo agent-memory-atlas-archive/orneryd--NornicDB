@@ -268,6 +268,39 @@ func authorizeDatabaseSelection(ctx context.Context, database string) error {
 	return AuthorizeQuery(withExecutionDatabase(ctx, database), "RETURN 1")
 }
 
+func (e *StorageExecutor) authorizeSelectedDatabase(ctx context.Context, database string) error {
+	if _, ok := ctx.Value(databaseAuthorizationKey{}).(databaseAuthorization); !ok {
+		return nil
+	}
+	if e.dbManager != nil {
+		if dot := strings.IndexByte(database, '.'); dot > 0 && e.dbManager.IsCompositeDatabase(database[:dot]) {
+			composite := database[:dot]
+			if err := authorizeDatabaseSelection(ctx, composite); err != nil {
+				return err
+			}
+			constituents, err := e.dbManager.GetCompositeConstituents(composite)
+			if err != nil {
+				return err
+			}
+			for _, item := range constituents {
+				if ref, ok := toConstituentRef(item); ok && strings.EqualFold(ref.Alias, database[dot+1:]) {
+					return authorizeDatabaseSelection(ctx, ref.DatabaseName)
+				}
+			}
+			return authorizeDatabaseSelection(ctx, database)
+		}
+	}
+	if err := authorizeDatabaseSelection(ctx, database); err != nil {
+		return err
+	}
+	if e.dbManager != nil {
+		if resolved, err := e.dbManager.ResolveDatabase(database); err == nil && resolved != database {
+			return authorizeDatabaseSelection(ctx, resolved)
+		}
+	}
+	return nil
+}
+
 // PermissionDeniedError identifies the entitlement needed for a query.
 type PermissionDeniedError struct {
 	Permission string

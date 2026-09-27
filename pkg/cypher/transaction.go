@@ -17,6 +17,30 @@ import (
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
+type transactionStatementOriginKey struct{}
+
+// WithClientStatement marks text supplied as a client statement, not protocol transaction control.
+func WithClientStatement(ctx context.Context) context.Context {
+	return context.WithValue(ctx, transactionStatementOriginKey{}, true)
+}
+
+// WithTransactionControl permits a transaction owner to issue its lifecycle command.
+func WithTransactionControl(ctx context.Context) context.Context {
+	return context.WithValue(ctx, transactionStatementOriginKey{}, false)
+}
+
+func clientTransactionCommand(ctx context.Context, query string) error {
+	if ctx.Value(transactionStatementOriginKey{}) != true {
+		return nil
+	}
+	for _, command := range []string{"BEGIN", "COMMIT", "ROLLBACK"} {
+		if strings.EqualFold(query, command) || strings.EqualFold(query, command+" TRANSACTION") {
+			return &SemanticError{Code: "Neo.ClientError.Statement.SyntaxError", Detail: "UnexpectedSyntax", Message: "Invalid input '" + command + "': expected a Cypher statement"}
+		}
+	}
+	return nil
+}
+
 var firstUseGraphPattern = regexp.MustCompile(`(?is)\bUSE\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)`)
 
 // TransactionContext holds the active transaction for a Cypher session.

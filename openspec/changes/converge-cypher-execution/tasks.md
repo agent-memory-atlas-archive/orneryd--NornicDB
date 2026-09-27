@@ -36,6 +36,7 @@
 - [ ] 3.5 Normalize typed property access and capability forwarding; cover #475's storage leg and individual/batch mutation equivalence.
 	- Progress (individual/batch mutation equivalence): `TestMutationEquivalence_*` runs over Badger, WAL, Async, WAL+Async and Namespaced+WAL+Async stacks, asserting single-vs-bulk node creates, edge creates, deletes and single-vs-staged updates leave byte-equivalent stored state (labels, typed property graphs with nested lists/maps and mixed-type lists, endpoints). The async staged path flushes as bulk operations, so these pin the overlay/direct convergence. Full storage suite ×2 green.
 - [ ] 3.6 Verify own writes, stable snapshots, rollback, authorization, cache isolation and cancellation.
+	- Progress: client-supplied bare transaction commands are syntax errors at HTTP, Bolt, GraphQL and Heimdall entry points, while protocol-owned and embedded transactions and one-statement scripts retain their lifecycle. HTTP and Bolt attach selected-database permissions, including the target of a composite constituent. In-process regressions reproduce the prior acknowledged-write loss and restricted-database read and verify their rejection; affected package suites and focused race tests pass on Go 1.26.6.
 
 ## 4. Proper errors for unhandled queries
 

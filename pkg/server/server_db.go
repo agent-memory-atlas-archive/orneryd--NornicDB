@@ -1577,7 +1577,7 @@ func (s *Server) autoCommitStatementRunner(authToken string) statementRunner {
 				Message: fmt.Sprintf("Failed to access database '%s': %v", dbName, err),
 			}}
 		}
-		result, err := executor.Execute(ctx, query, params)
+		result, err := executor.Execute(cypher.WithClientStatement(ctx), query, params)
 		return result, executor, err
 	}
 }
@@ -1597,7 +1597,7 @@ func (s *Server) sessionStatementRunner(session *txsession.Session) statementRun
 				query = "USE " + dbName + " " + query
 			}
 		}
-		result, err := s.txSessions.ExecuteInSession(ctx, session, query, params)
+		result, err := s.txSessions.ExecuteInSession(cypher.WithClientStatement(ctx), session, query, params)
 		return result, session.Executor, err
 	}
 }
@@ -1676,6 +1676,24 @@ func (s *Server) runRequestStatements(
 ) (failed bool) {
 	ctx = cypher.WithAuthToken(ctx, authToken)
 	ctx = cypher.WithAuthenticatedPrincipal(ctx, transactionOwnerKey(nil, claims))
+	mode := s.getDatabaseAccessMode(claims)
+	ctx = cypher.WithDatabasePermissionResolver(ctx, defaultDB, func(database, permission string) bool {
+		if !mode.CanAccessDatabase(database) {
+			return false
+		}
+		if !s.isRBACEnforced() {
+			return true
+		}
+		switch permission {
+		case "read":
+			return s.getResolvedAccess(claims, database).Read
+		case "write":
+			return s.getResolvedAccess(claims, database).Write
+		case "schema", "admin":
+			return claims != nil && hasPermission(s, claims.Roles, auth.Permission(permission))
+		}
+		return false
+	})
 	for _, stmt := range statements {
 		if queryErr := s.runRequestStatement(ctx, claims, defaultDB, stmt, run, localize, response); queryErr != nil {
 			response.Errors = append(response.Errors, *queryErr)

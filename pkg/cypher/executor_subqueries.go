@@ -494,7 +494,7 @@ func (e *StorageExecutor) executeMatchWithCallSubquery(ctx context.Context, cyph
 		if useErr != nil {
 			return nil, localizedError(localization.CypherSubqueriesUseClauseFailed(useErr), useErr)
 		}
-		if authErr := authorizeDatabaseSelection(ctx, useDB); authErr != nil {
+		if authErr := e.authorizeSelectedDatabase(ctx, useDB); authErr != nil {
 			return nil, authErr
 		}
 		scopedExec, resolvedDB, scopeErr := e.scopedExecutorForUse(useDB, GetAuthTokenFromContext(ctx))
@@ -1448,7 +1448,7 @@ func (e *StorageExecutor) executeCallSubquery(ctx context.Context, cypher string
 		if useErr != nil {
 			return nil, localizedError(localization.CypherSubqueriesUseClauseFailed(useErr), useErr)
 		}
-		if authErr := authorizeDatabaseSelection(ctx, useDB); authErr != nil {
+		if authErr := e.authorizeSelectedDatabase(ctx, useDB); authErr != nil {
 			return nil, authErr
 		}
 		scopedExec, resolvedDB, scopeErr := e.scopedExecutorForUse(useDB, GetAuthTokenFromContext(ctx))
@@ -2081,7 +2081,7 @@ func (e *StorageExecutor) executeChainedCallSubquery(ctx context.Context, seedRe
 
 	targetExec := e
 	if hasUse {
-		if err := authorizeDatabaseSelection(ctx, useDB); err != nil {
+		if err := e.authorizeSelectedDatabase(ctx, useDB); err != nil {
 			return nil, err
 		}
 		scopedExec, resolvedDB, err := e.scopedExecutorForUse(useDB, GetAuthTokenFromContext(ctx))

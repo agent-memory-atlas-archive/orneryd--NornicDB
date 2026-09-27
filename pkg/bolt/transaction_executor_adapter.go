@@ -2,6 +2,8 @@ package bolt
 
 import (
 	"context"
+
+	"github.com/orneryd/nornicdb/pkg/cypher"
 )
 
 // transactionalBoltQueryExecutorAdapter owns one database-scoped explicit
@@ -43,7 +45,7 @@ func (a *transactionalBoltQueryExecutorAdapter) BeginTransaction(ctx context.Con
 	// reach a storage transaction if the downstream executor allocates it and
 	// then returns an error or panics.
 	a.inTx = true
-	if _, err := a.boltQueryExecutorAdapter.Execute(ctx, "BEGIN", nil); err != nil {
+	if _, err := a.boltQueryExecutorAdapter.Execute(cypher.WithTransactionControl(ctx), "BEGIN", nil); err != nil {
 		// StorageExecutor's returned-error contract leaves no active storage
 		// transaction. A panic does not cross this branch, so the preclaim stays
 		// set and lifecycle recovery can still issue the compensating ROLLBACK.
@@ -59,7 +61,7 @@ func (a *transactionalBoltQueryExecutorAdapter) CommitTransaction(ctx context.Co
 	if !a.inTx {
 		return nil
 	}
-	_, err := a.boltQueryExecutorAdapter.Execute(ctx, "COMMIT", nil)
+	_, err := a.boltQueryExecutorAdapter.Execute(cypher.WithTransactionControl(ctx), "COMMIT", nil)
 	a.inTx = false
 	return err
 }
@@ -70,7 +72,7 @@ func (a *transactionalBoltQueryExecutorAdapter) RollbackTransaction(ctx context.
 	if !a.inTx {
 		return nil
 	}
-	_, err := a.boltQueryExecutorAdapter.Execute(ctx, "ROLLBACK", nil)
+	_, err := a.boltQueryExecutorAdapter.Execute(cypher.WithTransactionControl(ctx), "ROLLBACK", nil)
 	a.inTx = false
 	return err
 }

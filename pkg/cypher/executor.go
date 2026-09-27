@@ -1374,6 +1374,9 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 	if cypher == "" {
 		return shellResult, nil
 	}
+	if err := clientTransactionCommand(ctx, cypher); err != nil {
+		return nil, err
+	}
 
 	// Backtick-quoted variables become plain identifiers here, once, for
 	// every route; the result's columns and errors are mapped back (#734).
@@ -1459,7 +1462,7 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 		if err != nil {
 			return nil, err
 		}
-		if err := authorizeDatabaseSelection(ctx, useDB); err != nil {
+		if err := e.authorizeSelectedDatabase(ctx, useDB); err != nil {
 			return nil, err
 		}
 		scopedExec, resolvedDB, err := e.scopedExecutorForUse(useDB, GetAuthTokenFromContext(ctx))

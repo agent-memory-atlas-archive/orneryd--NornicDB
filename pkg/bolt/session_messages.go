@@ -258,6 +258,31 @@ func (s *Session) handleRun(data []byte) error {
 	s.setActiveRun(runCancel)
 	defer s.clearActiveRun()
 	ctx = s.withSessionIdentity(ctx)
+	ctx = cypher.WithClientStatement(ctx)
+	if mode != nil {
+		ctx = cypher.WithDatabasePermissionResolver(ctx, dbName, func(database, permission string) bool {
+			if !mode.CanAccessDatabase(database) {
+				return false
+			}
+			if s.server != nil && s.server.resolvedAccessResolver != nil {
+				var roles []string
+				if s.authResult != nil {
+					roles = s.authResult.Roles
+				}
+				access := s.server.resolvedAccessResolver(roles, database)
+				switch permission {
+				case "read":
+					return access.Read
+				case "write":
+					return access.Write
+				}
+			}
+			if s.authResult != nil {
+				return s.authResult.HasPermission(permission)
+			}
+			return true
+		})
+	}
 
 	runStart := time.Now()
 	result, err := executor.Execute(ctx, query, params)
