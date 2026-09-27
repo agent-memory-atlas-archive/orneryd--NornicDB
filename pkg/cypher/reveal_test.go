@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orneryd/nornicdb/pkg/knowledgepolicy"
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
@@ -17,8 +18,14 @@ func TestHasRevealCall(t *testing.T) {
 		{"MATCH (n:Foo) RETURN REVEAL(n)", true},
 		{"MATCH (n:Foo) RETURN Reveal(n)", true},
 		{"MATCH (n:Foo) RETURN REVEAL (n)", true},
+		{"MATCH (n:Foo) RETURN reveal /* gap */ (n)", true},
 		{"MATCH (n:Foo) RETURN n", false},
 		{"MATCH (n:Foo) RETURN n.revealed", false},
+		{"MATCH (n:Foo) RETURN 'reveal(n)'", false},
+		{"MATCH (n:Foo) RETURN \"reveal(n)\"", false},
+		{"MATCH (n:Foo) RETURN `reveal(n)`", false},
+		{"MATCH (n:Foo) // reveal(n)\r RETURN n", false},
+		{"MATCH (n:Foo) /* reveal(n) */ RETURN n", false},
 		{"MATCH (n:Foo) WITH reveal AS alias RETURN alias, reveal(n)", true},
 		{"", false},
 	}
@@ -26,6 +33,85 @@ func TestHasRevealCall(t *testing.T) {
 		if got := hasRevealCall(tt.query); got != tt.want {
 			t.Errorf("hasRevealCall(%q) = %v, want %v", tt.query, got, tt.want)
 		}
+	}
+}
+
+func TestRevealExpressionBypassesDecayDuringQuery(t *testing.T) {
+	engine, err := storage.NewBadgerEngineInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Close() })
+
+	schema := engine.GetSchemaForNamespace("testns")
+	if err := schema.CreateDecayProfileBundle(knowledgepolicy.DecayProfileBundle{
+		Name:                "episode_decay",
+		Scope:               knowledgepolicy.ScopeNode,
+		Function:            knowledgepolicy.DecayFunctionExponential,
+		HalfLifeSeconds:     3600,
+		VisibilityThreshold: 0.10,
+		ScoreFrom:           knowledgepolicy.ScoreFromCreated,
+		Enabled:             true,
+		DecayEnabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.CreateDecayProfileBinding(knowledgepolicy.DecayProfileBinding{
+		Name:         "bind_episode",
+		ProfileRef:   "episode_decay",
+		TargetLabels: []string{"MemoryEpisode"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	engine.SetDecayEnabled(true)
+	createdAt := time.Now().Add(-720 * time.Hour)
+	if _, err := engine.CreateNode(&storage.Node{
+		ID: "testns:old_episode", Labels: []string{"MemoryEpisode"},
+		Properties: map[string]interface{}{"name": "old"},
+		CreatedAt:  createdAt, UpdatedAt: createdAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewStorageExecutor(engine)
+	filtered, err := executor.Execute(context.Background(), "MATCH (n:MemoryEpisode) RETURN n", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered.Rows) != 0 {
+		t.Fatalf("ordinary MATCH returned %d decayed nodes", len(filtered.Rows))
+	}
+	revealed, err := executor.Execute(context.Background(), "MATCH (n:MemoryEpisode) RETURN reveal(n)", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revealed.Rows) != 1 {
+		t.Fatalf("reveal(n) returned %d rows, want one", len(revealed.Rows))
+	}
+	node, ok := revealed.Rows[0][0].(*storage.Node)
+	if !ok || node.ID != "testns:old_episode" {
+		t.Fatalf("revealed value = %#v, want node testns:old_episode", revealed.Rows[0][0])
+	}
+
+	if _, err := executor.Execute(context.Background(), "BEGIN", nil); err != nil {
+		t.Fatal(err)
+	}
+	txFiltered, err := executor.Execute(context.Background(), "MATCH (n:MemoryEpisode) RETURN n", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(txFiltered.Rows) != 0 {
+		t.Fatalf("ordinary MATCH in explicit transaction returned %d decayed nodes", len(txFiltered.Rows))
+	}
+	txRevealed, err := executor.Execute(context.Background(), "MATCH (n:MemoryEpisode) RETURN reveal(n)", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(txRevealed.Rows) != 1 {
+		t.Fatalf("reveal(n) in explicit transaction returned %d rows, want one", len(txRevealed.Rows))
+	}
+	if _, err := executor.Execute(context.Background(), "COMMIT", nil); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -56,14 +142,14 @@ func TestSetRevealOnEngine_BadgerEngine(t *testing.T) {
 	}
 	defer eng.Close()
 
-	_, cleanup := setRevealOnEngine(context.Background(), eng, true)
+	_, cleanup, _ := setRevealOnEngine(context.Background(), eng, true)
 
 	// Verify cleanup is callable and doesn't panic.
 	cleanup()
 }
 
 func TestSetRevealOnEngine_NilEngine(t *testing.T) {
-	_, cleanup := setRevealOnEngine(context.Background(), nil, false)
+	_, cleanup, _ := setRevealOnEngine(context.Background(), nil, false)
 	cleanup() // should not panic
 }
 
@@ -74,11 +160,11 @@ func TestSetRevealOnEngine_BlocksConcurrentNonRevealScope(t *testing.T) {
 	}
 	defer eng.Close()
 
-	ctx, cleanup := setRevealOnEngine(context.Background(), eng, true)
+	ctx, cleanup, _ := setRevealOnEngine(context.Background(), eng, true)
 
 	done := make(chan struct{})
 	go func() {
-		_, nestedCleanup := setRevealOnEngine(context.Background(), eng, false)
+		_, nestedCleanup, _ := setRevealOnEngine(context.Background(), eng, false)
 		nestedCleanup()
 		close(done)
 	}()
@@ -97,6 +183,51 @@ func TestSetRevealOnEngine_BlocksConcurrentNonRevealScope(t *testing.T) {
 		t.Fatal("non-reveal scope did not resume after reveal scope cleanup")
 	}
 
-	_, nestedCleanup := setRevealOnEngine(ctx, eng, false)
+	_, nestedCleanup, _ := setRevealOnEngine(ctx, eng, false)
 	nestedCleanup()
+}
+
+func TestSetRevealOnEngine_ExecutionStateBlocksConcurrentRead(t *testing.T) {
+	eng, err := storage.NewBadgerEngineInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	revealCtx := context.WithValue(context.Background(), expressionFailureKey{}, &expressionFailure{})
+	revealCtx, releaseReveal, revealEngine := setRevealOnEngine(revealCtx, eng, true)
+	if revealEngine != eng {
+		t.Fatal("expected reveal scope to be tracked in execution state")
+	}
+	revealActive := true
+	defer func() {
+		if revealActive {
+			clearRevealScope(revealCtx, revealEngine)
+			releaseReveal()
+		}
+	}()
+
+	readDone := make(chan struct{})
+	go func() {
+		readCtx := context.WithValue(context.Background(), expressionFailureKey{}, &expressionFailure{})
+		readCtx, releaseRead, readEngine := setRevealOnEngine(readCtx, eng, false)
+		clearRevealScope(readCtx, readEngine)
+		releaseRead()
+		close(readDone)
+	}()
+
+	select {
+	case <-readDone:
+		t.Fatal("ordinary read scope must wait for the active reveal scope")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	clearRevealScope(revealCtx, revealEngine)
+	releaseReveal()
+	revealActive = false
+	select {
+	case <-readDone:
+	case <-time.After(time.Second):
+		t.Fatal("ordinary read scope did not resume after reveal scope ended")
+	}
 }

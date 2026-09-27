@@ -160,6 +160,36 @@ func TestEmbeddingFreeSingleReadFallbackStripsEmbeddings(t *testing.T) {
 	}
 }
 
+func TestNamespacedEmbeddingFreeReadFallbackStripsEmbeddings(t *testing.T) {
+	badger, err := NewBadgerEngineInMemory()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = badger.Close() })
+
+	tenant := NewNamespacedEngine(&engineWithoutLightRead{Engine: badger}, "library")
+	node := &Node{
+		ID:              "test:namespaced-light-read",
+		Properties:      map[string]any{"keep": "visible"},
+		EmbedMeta:       map[string]any{"embedding_model": "test-model"},
+		ChunkEmbeddings: [][]float32{{1, 0}},
+		NamedEmbeddings: map[string][]float32{"named": {0, 1}},
+	}
+	_, err = tenant.CreateNode(node)
+	require.NoError(t, err)
+
+	light, err := tenant.GetNodeWithoutEmbeddings(node.ID)
+	require.NoError(t, err)
+	require.Equal(t, node.ID, light.ID)
+	require.Equal(t, "visible", light.Properties["keep"])
+	require.Equal(t, "test-model", light.EmbedMeta["embedding_model"])
+	require.Empty(t, light.ChunkEmbeddings)
+	require.Empty(t, light.NamedEmbeddings)
+
+	full, err := tenant.GetNode(node.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, full.ChunkEmbeddings)
+	require.NotEmpty(t, full.NamedEmbeddings)
+}
+
 func BenchmarkEmbeddingFreeSingleReadFallback(b *testing.B) {
 	badger, err := NewBadgerEngineInMemory()
 	if err != nil {
@@ -176,6 +206,16 @@ func BenchmarkEmbeddingFreeSingleReadFallback(b *testing.B) {
 		b.Fatal(err)
 	}
 	fallback := &engineWithoutLightRead{Engine: badger}
+	namespacedID := NodeID("test:namespaced-light-read-bench")
+	namespaced := NewNamespacedEngine(fallback, "benchmark")
+	_, err = namespaced.CreateNode(&Node{
+		ID: namespacedID, Properties: map[string]any{"keep": "visible"},
+		ChunkEmbeddings: [][]float32{{1, 0}},
+		NamedEmbeddings: map[string][]float32{"named": {0, 1}},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
 	async := NewAsyncEngine(fallback, &AsyncEngineConfig{FlushInterval: time.Hour})
 	b.Cleanup(func() { _ = async.Close() })
 	log, err := NewWAL(b.TempDir(), nil)
@@ -186,17 +226,20 @@ func BenchmarkEmbeddingFreeSingleReadFallback(b *testing.B) {
 	b.Cleanup(func() { _ = wal.Close() })
 	for _, entry := range []struct {
 		name string
+		id   NodeID
 		read func(NodeID) (*Node, error)
 	}{
-		{name: "full", read: badger.GetNode},
-		{name: "native-light", read: badger.GetNodeWithoutEmbeddings},
-		{name: "async-fallback", read: async.GetNodeWithoutEmbeddings},
-		{name: "wal-fallback", read: wal.GetNodeWithoutEmbeddings},
+		{name: "full", id: id, read: badger.GetNode},
+		{name: "native-light", id: id, read: badger.GetNodeWithoutEmbeddings},
+		{name: "async-fallback", id: id, read: async.GetNodeWithoutEmbeddings},
+		{name: "wal-fallback", id: id, read: wal.GetNodeWithoutEmbeddings},
+		{name: "namespaced-full-baseline", id: namespacedID, read: namespaced.GetNode},
+		{name: "namespaced-fallback", id: namespacedID, read: namespaced.GetNodeWithoutEmbeddings},
 	} {
 		b.Run(entry.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for iteration := 0; iteration < b.N; iteration++ {
-				if _, err := entry.read(id); err != nil {
+				if _, err := entry.read(entry.id); err != nil {
 					b.Fatal(err)
 				}
 			}

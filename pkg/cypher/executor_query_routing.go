@@ -196,6 +196,11 @@ func isShowConstraintContractsCommand(cypher string) bool {
 
 // executeWithoutTransaction executes query without transaction wrapping (original path).
 func (e *StorageExecutor) executeWithoutTransaction(ctx context.Context, cypher string, upperQuery string) (result *ExecuteResult, err error) {
+	ctx, cleanupReveal, readScopeEngine := setRevealOnEngine(ctx, e.storage, hasRevealCall(cypher))
+	defer cleanupReveal()
+	if readScopeEngine != nil {
+		defer clearRevealScope(ctx, readScopeEngine)
+	}
 	defer func() {
 		if recorded := getExpressionFailure(ctx); recorded != nil && err == nil {
 			result, err = nil, recorded

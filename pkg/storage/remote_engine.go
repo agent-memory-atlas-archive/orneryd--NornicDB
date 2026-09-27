@@ -873,12 +873,20 @@ func (r *RemoteEngine) GetNodesByLabel(label string) ([]*Node, error) {
 }
 
 func (r *RemoteEngine) getNodesByLabel(ctx context.Context, label string) ([]*Node, error) {
+	return r.getNodesByLabelWithReveal(ctx, label, false)
+}
+
+func (r *RemoteEngine) getNodesByLabelWithReveal(ctx context.Context, label string, revealSuppressed bool) ([]*Node, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	stmt := "MATCH (n) RETURN n"
+	returnExpr := "n"
+	if revealSuppressed {
+		returnExpr = "reveal(n)"
+	}
+	stmt := fmt.Sprintf("MATCH (n) RETURN %s", returnExpr)
 	if strings.TrimSpace(label) != "" {
-		stmt = fmt.Sprintf("MATCH (n:%s) RETURN n", quoteIdent(label))
+		stmt = fmt.Sprintf("MATCH (n:%s) RETURN %s", quoteIdent(label), returnExpr)
 	}
 	rows, err := r.transport.query(ctx, stmt, nil)
 	if err != nil {
@@ -1029,7 +1037,7 @@ func (r *RemoteEngine) StreamNodesWithOptions(ctx context.Context, opts StreamNo
 	if fn == nil {
 		return ErrInvalidData
 	}
-	nodes, err := r.getNodesByLabel(ctx, "")
+	nodes, err := r.getNodesByLabelWithReveal(ctx, "", !opts.ApplyDecayFilter)
 	if err != nil {
 		return err
 	}

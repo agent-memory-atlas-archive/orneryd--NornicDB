@@ -265,7 +265,13 @@ func (n *NamespacedEngine) GetNodeProjected(id NodeID, properties []string) (*No
 func (n *NamespacedEngine) GetNodeWithoutEmbeddings(id NodeID) (*Node, error) {
 	reader, ok := n.inner.(NodeWithoutEmbeddingsReader)
 	if !ok {
-		return n.GetNode(id)
+		node, err := n.GetNode(id)
+		if err != nil || node == nil {
+			return node, err
+		}
+		node.ChunkEmbeddings = nil
+		node.NamedEmbeddings = nil
+		return node, nil
 	}
 	node, err := reader.GetNodeWithoutEmbeddings(n.prefixNodeID(id))
 	if err != nil || node == nil {

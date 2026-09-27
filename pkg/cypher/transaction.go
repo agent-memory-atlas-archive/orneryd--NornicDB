@@ -501,8 +501,6 @@ func extractFirstUseGraph(cypher string) string {
 // executeQueryAgainstStorage executes query with current storage context.
 func (e *StorageExecutor) executeQueryAgainstStorage(ctx context.Context, cypher string, upperQuery string) (*ExecuteResult, error) {
 	e.decayMismatchLogged = false
-	ctx, cleanup := setRevealOnEngine(ctx, e.storage, hasRevealCall(cypher))
-	defer cleanup()
 	// Single router: the transaction only changes which storage view e.storage is.
 	return e.executeWithoutTransaction(ctx, cypher, upperQuery)
 }

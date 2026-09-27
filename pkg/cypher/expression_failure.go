@@ -3,13 +3,16 @@ package cypher
 import (
 	"context"
 	"sync"
+
+	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
 type expressionFailureKey struct{}
 
 type expressionFailure struct {
-	mu  sync.Mutex
-	err error
+	mu              sync.Mutex
+	err             error
+	readScopeEngine *storage.BadgerEngine
 }
 
 func recordExpressionFailure(ctx context.Context, err error) {

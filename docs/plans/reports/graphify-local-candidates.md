@@ -128,11 +128,25 @@ optional reader adapters, not just the Badger cache/miss kernel. Async and WAL
 used to fall back to full `GetNode` results when the underlying `Engine` did
 not expose `NodeWithoutEmbeddingsReader`, returning inline and named vectors.
 Their fallback now returns a copy without embeddings; the optional-reader
-fast path remains unchanged. `TestEmbeddingFreeSingleReadFallbackStripsEmbeddings`
-checks both adapters over a capability-hidden Badger store, including preserved
-properties, unchanged source vectors and not-found propagation. It and the
-existing stacked fast-path test pass three times under `-race`. Other variants
-in the historical-only group remain to be dispositioned.
+fast path remains unchanged. The Namespaced fallback had the same leak; it now
+clears vectors on its user-facing struct copy while preserving `EmbedMeta` and
+leaving the inner node untouched. `TestEmbeddingFreeSingleReadFallbackStripsEmbeddings`
+covers Async/WAL with a capability-hidden Badger store, including preserved
+properties, unchanged source vectors and not-found propagation.
+`TestNamespacedEmbeddingFreeReadFallbackStripsEmbeddings` pins Namespaced ID and
+property mapping, vector stripping, metadata preservation and source vectors.
+These tests and the existing stacked fast-path tests pass three times under
+`-race`. All four current production implementations (Badger, Async, WAL and
+Namespaced) are dispositioned; their native read, overlay and namespace roles
+remain distinct.
+
+M2 Max `BenchmarkEmbeddingFreeSingleReadFallback/namespaced-*`
+(`-benchtime=500ms -cpu=1 -count=5`) compared the old full-return path at
+585.9–611.5 ns/op with the corrected fallback at 584.2–599.7 ns/op; both use
+1,112 B/op and 10 allocs/op, within run-to-run noise. The isolated final CPU
+profile attributes 58.5% cumulative time to `copyNode` in the inner full read;
+the Namespaced fallback adds no extra metadata-copy cost. Avoiding the vector
+read itself requires the inner engine to expose the optional reader.
 
 `pkg/storage|.StreamNodesWithOptions()` pairs the Badger and RemoteEngine
 implementations. Their local-transaction and network-backed reads cannot be
@@ -144,9 +158,29 @@ context. `TestRemoteStreamNodesWithOptionsCancellation` covers both a
 pre-cancelled stream (zero transport calls) and cancellation inside the remote
 query. The test and the existing local-stack stream parity battery pass under
 `-race`. A separate fake-transport contract test verifies prefix scoping,
-projection, and early stop with one query and one callback. Remote embedding
-and decay option parity is not established by these tests and remains to be
-reviewed under 8.4.
+projection, and early stop with one query and one callback. The stream now
+honors the remote `ApplyDecayFilter` option: enabled uses normal MATCH behavior;
+disabled returns `reveal(n)` so the server does not suppress decayed nodes.
+`reveal` is registered in the canonical function catalog, and the query-scoped
+reveal lifecycle now wraps the shared router for both autocommit and explicit
+transactions. `TestRemoteStreamNodesWithOptionsDecayFilterMode`,
+`TestRevealExpressionBypassesDecayDuringQuery` and the execution-state scope
+concurrency test pass three times under `-race`.
+
+Remote `WithEmbeddings` parity remains open. Bolt normalization and the HTTP
+transaction API expose node element ID, labels and user properties; they do not
+carry NornicDB's separately stored chunk/named embedding vectors, so
+`RemoteEngine` cannot populate `Node.ChunkEmbeddings` or `Node.NamedEmbeddings`
+from the current node result shape. A vector-capable remote API contract is
+needed before claiming this option is implemented.
+
+M2 Max `BenchmarkStatementRouting` (`-cpu=1 -count=5`) after the allocation-free
+reveal detector measured autocommit at 17.596–19.622 us/op, 11,215 B/op,
+162–163 allocs, and explicit transactions at 11.260–11.748 us/op, 5,594 B/op,
+89 allocs. The paired pre-detector run measured 17.795–19.428 us/op,
+11,255 B/op, 163–164 allocs and 11.333–11.648 us/op, 5,642 B/op, 90 allocs,
+respectively. A CPU-profiled autocommit run measured 17.172 us/op, 11,210 B/op
+and 163 allocs; timing varies between runs, so this is not a speedup claim.
 
 `pkg/storage|.GetNodeProjected()` pairs Composite's multi-constituent read
 with WAL and Async capability adapters. These responsibilities are distinct:

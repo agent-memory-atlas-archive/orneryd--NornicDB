@@ -120,7 +120,7 @@ func TestRemoteStreamNodesWithOptionsCancellation(t *testing.T) {
 		calls := 0
 		engine := &RemoteEngine{transport: &fakeRemoteTransport{queryFn: func(queryCtx context.Context, statement string, _ map[string]interface{}) ([][]interface{}, error) {
 			calls++
-			if statement != "MATCH (n) RETURN n" {
+			if statement != "MATCH (n) RETURN reveal(n)" {
 				t.Fatalf("query = %q", statement)
 			}
 			cancel()
@@ -133,11 +133,47 @@ func TestRemoteStreamNodesWithOptionsCancellation(t *testing.T) {
 	})
 }
 
+func TestRemoteStreamNodesWithOptionsDecayFilterMode(t *testing.T) {
+	tests := []struct {
+		name             string
+		applyDecayFilter bool
+		wantStatement    string
+	}{
+		{name: "filter enabled", applyDecayFilter: true, wantStatement: "MATCH (n) RETURN n"},
+		{name: "filter disabled", wantStatement: "MATCH (n) RETURN reveal(n)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			engine := &RemoteEngine{transport: &fakeRemoteTransport{queryFn: func(_ context.Context, statement string, _ map[string]interface{}) ([][]interface{}, error) {
+				calls++
+				if statement != tt.wantStatement {
+					t.Fatalf("query = %q, want %q", statement, tt.wantStatement)
+				}
+				return [][]interface{}{{map[string]interface{}{
+					"id": "db:1", "properties": map[string]interface{}{"keep": "visible"},
+				}}}, nil
+			}}}
+			visited := 0
+			err := engine.StreamNodesWithOptions(context.Background(), StreamNodesOptions{ApplyDecayFilter: tt.applyDecayFilter}, func(node *Node) error {
+				visited++
+				if node.ID != "db:1" || node.Properties["keep"] != "visible" {
+					t.Fatalf("node = %+v", node)
+				}
+				return nil
+			})
+			if err != nil || calls != 1 || visited != 1 {
+				t.Fatalf("stream: err=%v, queries=%d, visits=%d; want nil, one, one", err, calls, visited)
+			}
+		})
+	}
+}
+
 func TestRemoteStreamNodesWithOptionsProjectionAndStop(t *testing.T) {
 	remoteCalls := 0
 	engine := &RemoteEngine{transport: &fakeRemoteTransport{queryFn: func(_ context.Context, statement string, _ map[string]interface{}) ([][]interface{}, error) {
 		remoteCalls++
-		if statement != "MATCH (n) RETURN n" {
+		if statement != "MATCH (n) RETURN reveal(n)" {
 			t.Fatalf("query = %q", statement)
 		}
 		return [][]interface{}{

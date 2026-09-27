@@ -83,6 +83,7 @@ var cypherFunctionCatalog = []cypherFunctionSpec{
 	{name: "max", category: "Aggregating", signature: "max(expression :: ANY) :: ANY", description: "Returns maximum", aggregating: true, listed: true},
 	{name: "collect", category: "Aggregating", signature: "collect(expression :: ANY) :: LIST<ANY>", description: "Collects values into list", aggregating: true, listed: true},
 	{name: "exists", category: "Predicate", signature: "exists(expression :: ANY) :: BOOLEAN", description: "Returns true if expression is not null", aggregating: false, listed: true},
+	{name: "reveal", category: "Scalar", signature: "reveal(expression :: ANY) :: ANY", description: "Returns an expression while bypassing decay suppression for this query (NornicDB extension)", aggregating: false, listed: true},
 	{name: "isEmpty", category: "Predicate", signature: "isEmpty(list :: LIST<ANY> | MAP | STRING) :: BOOLEAN", description: "Returns true if empty", aggregating: false, listed: true},
 	{name: "all", category: "Predicate", signature: "all(variable IN list WHERE predicate) :: BOOLEAN", description: "Returns true if all match", aggregating: false, listed: true},
 	{name: "any", category: "Predicate", signature: "any(variable IN list WHERE predicate) :: BOOLEAN", description: "Returns true if any match", aggregating: false, listed: true},
