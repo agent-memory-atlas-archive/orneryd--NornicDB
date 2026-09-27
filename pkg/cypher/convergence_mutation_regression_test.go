@@ -758,11 +758,11 @@ func BenchmarkSetExecutionPaths(b *testing.B) {
 
 	b.Run("converged_pipeline", func(b *testing.B) {
 		benchmark(b, func(exec *StorageExecutor, ctx context.Context) error {
-			_, handled, err := exec.executePipeline(ctx, query)
-			if !handled && err == nil {
+			outcome := exec.executePipeline(ctx, query)
+			if !outcome.terminal() {
 				return fmt.Errorf("converged SET pipeline did not handle benchmark query")
 			}
-			return err
+			return outcome.err
 		})
 	})
 	b.Run("residual_handler", func(b *testing.B) {

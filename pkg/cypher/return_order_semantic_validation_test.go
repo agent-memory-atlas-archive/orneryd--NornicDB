@@ -53,10 +53,11 @@ func TestPipelinePreservesParameterSpellingInImplicitColumnName(t *testing.T) {
 	if clauses, ok := canExecuteAsPipeline(query); !ok {
 		t.Fatalf("query was not accepted by pipeline decomposition: %#v", clauses)
 	}
-	result, handled, err := executor.executePipeline(ctx, query)
-	if err != nil || !handled {
-		t.Fatalf("pipeline execution failed: handled=%v err=%v", handled, err)
+	outcome := executor.executePipeline(ctx, query)
+	if !outcome.handled() || outcome.err != nil {
+		t.Fatalf("pipeline execution failed: outcome=%+v", outcome)
 	}
+	result := outcome.result
 	if len(result.Columns) != 1 || result.Columns[0] != "$age + avg(person.age) - 1000" {
 		t.Fatalf("unexpected result columns: %#v", result.Columns)
 	}

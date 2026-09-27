@@ -252,8 +252,8 @@ func (e *StorageExecutor) executeWithoutTransaction(ctx context.Context, cypher 
 				// The pipeline runs a read-only registered procedure as a clause
 				// over every row, so the YIELD's WHERE sees the row's variables
 				// and later clauses see all rows; it declines other calls.
-				if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-					return result, err
+				if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+					return outcome.result, outcome.err
 				}
 				if findKeywordIndex(cypher[:callIdx], "WITH") > 0 {
 					return e.executeMatchWithClause(ctx, cypher)
@@ -268,8 +268,8 @@ skipMatchCallRoute:
 		// REMOVE is a row clause: statements with one run on the pipeline,
 		// which applies MERGE actions, SET and REMOVE row by row.
 		if !containsKeywordOutsideStrings(cypher, "SET") || containsKeywordOutsideStrings(cypher, "REMOVE") {
-			if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-				return result, err
+			if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+				return outcome.result, outcome.err
 			}
 		}
 		if findKeywordIndexInContext(cypher, "OPTIONAL MATCH") > 0 ||
@@ -327,14 +327,14 @@ skipMatchCallRoute:
 		// and the RETURN over all rows. The compound MATCH … MERGE route
 		// runs the shapes it declines (a MERGE with ON CREATE / ON MATCH and
 		// a SET).
-		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		return e.executeCompoundMatchMerge(ctx, cypher)
 	}
 	if startsWithMatch && createIdx > 0 {
-		if result, ok, err := e.executePipeline(ctx, cypher); ok {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		return e.executeCompoundMatchCreate(ctx, cypher)
 	}
@@ -342,8 +342,8 @@ skipMatchCallRoute:
 		return e.executeCompoundCreateWithDelete(ctx, cypher)
 	}
 	if startsWithCreate && withIdx > 0 {
-		if result, ok, err := e.executePipeline(ctx, cypher); ok || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		return e.executeMultipleCreates(ctx, cypher)
 	}
@@ -358,8 +358,8 @@ skipMatchCallRoute:
 	hasDelete := findKeywordIndex(cypher, "DELETE") >= 0
 	hasDetachDelete := containsKeywordOutsideStrings(cypher, "DETACH DELETE")
 	if hasDelete || hasDetachDelete {
-		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		return e.executeDelete(ctx, cypher)
 	}
@@ -368,14 +368,14 @@ skipMatchCallRoute:
 	hasOnCreateSet := containsKeywordOutsideStrings(cypher, "ON CREATE SET")
 	hasOnMatchSet := containsKeywordOutsideStrings(cypher, "ON MATCH SET")
 	if startsWithMatch && hasSet && containsKeywordOutsideStrings(cypher, "REMOVE") {
-		if result, ok, err := e.executePipeline(ctx, cypher); ok || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 	}
 
 	if startsWithCreate && hasSet && containsKeywordOutsideStrings(cypher, "REMOVE") {
-		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 	}
 	if startsWithCreate && !isCreateProcedureCommand(cypher) && hasSet && !hasOnCreateSet && !hasOnMatchSet &&
@@ -398,8 +398,8 @@ skipMatchCallRoute:
 		findMultiWordKeywordIndex(cypher, "ALTER", "PROMOTION POLICY") != 0 {
 		if startsWithMatch || findKeywordIndex(cypher, "SET") == 0 {
 			if startsWithMatch {
-				if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-					return result, err
+				if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+					return outcome.result, outcome.err
 				}
 			}
 			return e.executeSet(ctx, cypher)
@@ -407,15 +407,15 @@ skipMatchCallRoute:
 	}
 
 	if containsKeywordOutsideStrings(cypher, "REMOVE") {
-		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		return e.executeRemove(ctx, cypher)
 	}
 
 	if startsWithMatch && optionalMatchIdx > 0 {
-		if result, ok, err := e.executePipeline(ctx, cypher); ok || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		withBeforeOptional := findKeywordIndex(cypher[:optionalMatchIdx], "WITH")
 		if withBeforeOptional > 0 {
@@ -432,8 +432,8 @@ skipMatchCallRoute:
 		findMultiWordKeywordIndex(cypher, "CREATE", "PROMOTION POLICY") == 0:
 		return e.executeKnowledgePolicyDDL(ctx, cypher)
 	case findMultiWordKeywordIndex(cypher, "OPTIONAL", "MATCH") == 0:
-		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		return e.executeOptionalMatch(ctx, cypher)
 	case startsWithMatch && isShortestPathQuery(cypher):
@@ -447,14 +447,14 @@ skipMatchCallRoute:
 		}
 		return e.executeShortestPathQuery(ctx, query)
 	case startsWithMatch:
-		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		matchCount := countKeywordOccurrences(upperQuery, "MATCH")
 		optionalMatchCount := countKeywordOccurrences(upperQuery, "OPTIONAL MATCH")
 		if matchCount-optionalMatchCount > 1 && findKeywordIndexInContext(cypher, "WITH") > 0 {
-			if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-				return result, err
+			if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+				return outcome.result, outcome.err
 			}
 		}
 		isMultiMatch := matchCount-optionalMatchCount > 1
@@ -481,8 +481,8 @@ skipMatchCallRoute:
 	case findMultiWordKeywordIndex(cypher, "CREATE", "ALIAS") == 0:
 		return e.executeCreateAlias(ctx, cypher)
 	case startsWithCreate:
-		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		return e.executeCreate(ctx, cypher)
 	case hasDelete || hasDetachDelete:
@@ -516,15 +516,15 @@ skipMatchCallRoute:
 	case findKeywordIndex(cypher, "DROP") == 0:
 		return nil, newSemanticError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax", "invalid DROP clause: "+truncateQuery(cypher, 80))
 	case findKeywordIndex(cypher, "WITH") == 0:
-		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		return e.executeWith(ctx, cypher)
 	case findKeywordIndex(cypher, "UNWIND") == 0:
 		return e.executeUnwind(ctx, cypher)
 	case findKeywordIndex(cypher, "FOREACH") == 0:
-		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		return e.executeForeach(ctx, cypher)
 	case findKeywordIndex(cypher, "LOAD CSV") == 0:
@@ -612,8 +612,8 @@ skipMatchCallRoute:
 // sync through the converged clause pipeline. Shapes outside the pipeline's
 // grammar continue through the residual handler.
 func (e *StorageExecutor) executeTopLevelUnwind(ctx context.Context, cypher string) (*ExecuteResult, error) {
-	if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-		return result, err
+	if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+		return outcome.result, outcome.err
 	}
 	return e.executeUnwind(ctx, cypher)
 }

@@ -266,8 +266,8 @@ func (e *StorageExecutor) executeMatch(ctx context.Context, cypher string) (*Exe
 		matchCount := countKeywordOccurrences(upper, "MATCH")
 		optionalMatchCount := countKeywordOccurrences(upper, "OPTIONAL MATCH")
 		if matchCount-optionalMatchCount > 1 {
-			if pipelineResult, ok, err := e.executePipeline(ctx, cypher); ok || err != nil {
-				return pipelineResult, err
+			if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+				return outcome.result, outcome.err
 			}
 			if chainResult, ok, err := e.executeChainedMatchWithAggregations(ctx, cypher); ok || err != nil {
 				return chainResult, err
@@ -291,8 +291,8 @@ func (e *StorageExecutor) executeMatch(ctx context.Context, cypher string) (*Exe
 	}
 
 	if isStandaloneWith {
-		if pipelineResult, ok, err := e.executePipeline(ctx, cypher); ok || err != nil {
-			return pipelineResult, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 		// Unsupported shapes retain their existing atomic physical operator.
 		return e.executeMatchWithClause(ctx, cypher)

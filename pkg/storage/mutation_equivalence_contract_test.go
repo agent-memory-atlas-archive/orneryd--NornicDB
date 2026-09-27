@@ -1,6 +1,6 @@
 package storage
 
-// Individual/batch mutation equivalence across the production stack
+// Individual/batch mutation equivalence across Memory and the production stack
 // (plan §3.5): a write performed through the single-record entry points and
 // the same write performed through the bulk entry points must produce
 // equivalent stored state — same labels, typed property graphs (including
@@ -24,6 +24,11 @@ import (
 func mutationEquivalenceStacks(t *testing.T) map[string]func(*testing.T) Engine {
 	t.Helper()
 	return map[string]func(*testing.T) Engine{
+		"memory": func(t *testing.T) Engine {
+			engine := NewMemoryEngine()
+			t.Cleanup(func() { _ = engine.Close() })
+			return engine
+		},
 		"badger": func(t *testing.T) Engine {
 			engine, err := NewBadgerEngineInMemory()
 			require.NoError(t, err)

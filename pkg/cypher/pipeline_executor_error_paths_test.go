@@ -60,44 +60,48 @@ func TestExecutePipeline_ErrorAndFallbackBranches(t *testing.T) {
 	_, err := exec.Execute(ctx, "CREATE (:Person {id:'p1'})", nil)
 	require.NoError(t, err)
 
-	var res *ExecuteResult
-	var handled bool
-
 	// MATCH application hard error path via storage failure.
 	matchErr := errors.New("match lookup failed")
 	errExec := NewStorageExecutor(&matchErrEngine{Engine: store, err: matchErr})
-	res, handled, err = errExec.executePipeline(ctx, "MATCH (n:Person) WITH n RETURN n")
-	require.Error(t, err)
-	require.ErrorIs(t, err, matchErr)
-	require.True(t, handled)
-	require.Nil(t, res)
+	outcome := errExec.executePipeline(ctx, "MATCH (n:Person) WITH n RETURN n")
+	require.Equal(t, pipelineDispatchFailed, outcome.state)
+	require.ErrorIs(t, outcome.err, matchErr)
+	require.Nil(t, outcome.result)
 
 	// WITH projection fallback path.
-	res, handled, err = exec.executePipeline(ctx, "MATCH (n:Person) WITH unknownExpr AS x RETURN x")
-	require.NoError(t, err)
-	require.False(t, handled)
-	require.Nil(t, res)
+	outcome = exec.executePipeline(ctx, "MATCH (n:Person) WITH unknownExpr AS x RETURN x")
+	require.Equal(t, pipelineDispatchNotApplicable, outcome.state)
+	require.NoError(t, outcome.err)
+	require.Nil(t, outcome.result)
 
 	// CREATE application hard error path.
 	createErr := errors.New("create failed")
 	createExec := NewStorageExecutor(&createErrEngine{Engine: store, err: createErr})
-	res, handled, err = createExec.executePipeline(ctx, "MATCH (n:Person) WITH n CREATE (:Tmp {id:'t1'}) RETURN n")
-	require.Error(t, err)
-	require.ErrorIs(t, err, createErr)
-	require.True(t, handled)
-	require.Nil(t, res)
+	outcome = createExec.executePipeline(ctx, "MATCH (n:Person) WITH n CREATE (:Tmp {id:'t1'}) RETURN n")
+	require.Equal(t, pipelineDispatchFailed, outcome.state)
+	require.ErrorIs(t, outcome.err, createErr)
+	require.Nil(t, outcome.result)
 
 	// UNWIND parse fallback path.
-	res, handled, err = exec.executePipeline(ctx, "MATCH (n:Person) WITH n UNWIND [1] RETURN n")
-	require.NoError(t, err)
-	require.False(t, handled)
-	require.Nil(t, res)
+	outcome = exec.executePipeline(ctx, "MATCH (n:Person) WITH n UNWIND [1] RETURN n")
+	require.Equal(t, pipelineDispatchNotApplicable, outcome.state)
+	require.NoError(t, outcome.err)
+	require.Nil(t, outcome.result)
 
 	// RETURN projection fallback path.
-	res, handled, err = exec.executePipeline(ctx, "MATCH (n:Person) WITH n RETURN missing")
-	require.NoError(t, err)
-	require.False(t, handled)
-	require.Nil(t, res)
+	outcome = exec.executePipeline(ctx, "MATCH (n:Person) WITH n RETURN missing")
+	require.Equal(t, pipelineDispatchNotApplicable, outcome.state)
+	require.NoError(t, outcome.err)
+	require.Nil(t, outcome.result)
+
+	parseCtx := context.WithValue(ctx, expressionFailureKey{}, &expressionFailure{})
+	pipelineItemUnevaluable(parseCtx, "n.name 'x'")
+	parseResult, parseHandled, parseErr := pipelineDecline(parseCtx, false, "RETURN")
+	parseOutcome := newPipelineDispatchOutcome(parseResult, parseHandled, parseErr)
+	require.Equal(t, pipelineDispatchParseRejected, parseOutcome.state)
+	require.Error(t, parseOutcome.err)
+	require.Contains(t, statusText(parseOutcome.err), "Neo.ClientError.Statement.SyntaxError")
+	require.Nil(t, parseOutcome.result)
 }
 
 func TestExecuteCreateWithMalformedTailSurfacesError(t *testing.T) {

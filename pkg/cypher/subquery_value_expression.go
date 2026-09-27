@@ -355,12 +355,9 @@ func (e *StorageExecutor) rowSubqueryValue(ctx context.Context, kind, body strin
 // procedure call in it, …). EXISTS, COUNT and COLLECT all run their bodies
 // here, so a body gives the same rows whichever of them wraps it.
 func (e *StorageExecutor) runCorrelatedSubquery(ctx context.Context, query string, values map[string]interface{}) (*ExecuteResult, error) {
-	result, handled, err := e.correlatedSubqueryExecutor(ctx, values).executePipeline(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	if handled && result != nil {
-		return result, nil
+	outcome := e.correlatedSubqueryExecutor(ctx, values).executePipeline(ctx, query)
+	if outcome.terminal() {
+		return outcome.result, outcome.err
 	}
 	return e.executeCorrelatedSubqueryBody(ctx, query, values)
 }

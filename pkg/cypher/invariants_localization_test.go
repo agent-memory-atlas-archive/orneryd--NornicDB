@@ -34,13 +34,13 @@ func TestCypherInvariantErrorsHaveTypedIdentityAndExactEnglish(t *testing.T) {
 
 		cause := errors.New("create failed")
 		exec := NewStorageExecutor(&invariantCreateErrEngine{Engine: store, err: cause})
-		_, handled, err := exec.executePipeline(context.Background(), "MATCH (n:Person) WITH n CREATE (:Tmp {id:'t1'}) RETURN n")
-		require.True(t, handled)
-		require.EqualError(t, err, "pipeline CREATE failed: failed to create node: create failed")
-		require.ErrorIs(t, err, cause)
+		outcome := exec.executePipeline(context.Background(), "MATCH (n:Person) WITH n CREATE (:Tmp {id:'t1'}) RETURN n")
+		require.Equal(t, pipelineDispatchFailed, outcome.state)
+		require.EqualError(t, outcome.err, "pipeline CREATE failed: failed to create node: create failed")
+		require.ErrorIs(t, outcome.err, cause)
 
 		var localizedErr *localization.LocalizedError
-		require.ErrorAs(t, err, &localizedErr)
+		require.ErrorAs(t, outcome.err, &localizedErr)
 		require.Equal(t, localization.MessageCypherInvariantsPipelineCreateFailed, localizedErr.Message.ID)
 		require.Equal(t, "failed to create node: create failed", localizedErr.Message.Data["Cause"])
 	})

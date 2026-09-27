@@ -53,9 +53,9 @@ func TestPipelineQuantifierAcrossRepeatedHorizons(t *testing.T) {
 		}
 	}
 
-	result, handled, err := exec.executePipeline(ctx, query)
-	require.NoError(t, err)
-	require.True(t, handled)
-	require.Equal(t, []string{"result"}, result.Columns)
-	require.Equal(t, [][]interface{}{{true}}, result.Rows)
+	outcome := exec.executePipeline(ctx, query)
+	require.NoError(t, outcome.err)
+	require.True(t, outcome.handled())
+	require.Equal(t, []string{"result"}, outcome.result.Columns)
+	require.Equal(t, [][]interface{}{{true}}, outcome.result.Rows)
 }

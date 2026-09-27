@@ -35,12 +35,12 @@ func TestWithListSubscriptPreservesNodeProjection(t *testing.T) {
 		RETURN w2.name AS name
 	`
 
-	pipelineResult, handled, err := exec.executePipeline(ctx, query)
-	require.NoError(t, err)
-	require.True(t, handled)
-	require.Equal(t, []string{"name"}, pipelineResult.Columns)
-	require.Len(t, pipelineResult.Rows, 1)
-	require.Equal(t, "checkout", pipelineResult.Rows[0][0])
+	outcome := exec.executePipeline(ctx, query)
+	require.NoError(t, outcome.err)
+	require.True(t, outcome.handled())
+	require.Equal(t, []string{"name"}, outcome.result.Columns)
+	require.Len(t, outcome.result.Rows, 1)
+	require.Equal(t, "checkout", outcome.result.Rows[0][0])
 
 	result, err := exec.Execute(ctx, query, nil)
 	require.NoError(t, err)

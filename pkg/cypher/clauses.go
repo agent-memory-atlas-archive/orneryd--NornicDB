@@ -626,8 +626,8 @@ func (e *StorageExecutor) executeUnwind(ctx context.Context, cypher string) (*Ex
 	// UNWIND ... CALL <procedure>: every unwound value calls the procedure,
 	// in the pipeline (pipelineApplyProcedureCall).
 	if startsWithKeywordFold(strings.TrimSpace(restQuery), "CALL") {
-		if result, handled, err := e.executePipeline(ctx, cypher); handled || err != nil {
-			return result, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 	}
 

@@ -449,19 +449,18 @@ func sortBoundariesByPos(bs []pipelineBoundary) {
 }
 
 // executePipeline walks the clauses, threading the binding rows through each
-// step. Returns (*ExecuteResult, true, nil) on success, (nil, false, nil) if
-// the shape proves unsupported mid-execution (caller should fall back), or
-// (nil, true, err) on a hard error.
-func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*ExecuteResult, bool, error) {
+// step. Its outcome distinguishes a safe decline from a parse rejection or a
+// runtime failure, so callers only retry the NotApplicable state.
+func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) pipelineDispatchOutcome {
 	clauses, ok := canExecuteAsPipeline(cypher)
 	if !ok {
-		return nil, false, nil
+		return newPipelineDispatchOutcome(nil, false, nil)
 	}
 	if pipelineHasClauseKind(clauses, pipelineClauseSet) {
 		cypher = normalizePipelineWhitespace(cypher)
 		clauses, ok = canExecuteAsPipeline(cypher)
 		if !ok {
-			return nil, false, nil
+			return newPipelineDispatchOutcome(nil, false, nil)
 		}
 	}
 	// A batch operator is a fused physical implementation of this same logical
@@ -470,10 +469,10 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 	if clauses[0].kind == pipelineClauseUnwind {
 		plan, err := e.prepareTopLevelUnwind(ctx, cypher)
 		if err != nil {
-			return nil, true, err
+			return newPipelineDispatchOutcome(nil, true, err)
 		}
 		if result, handled, err := e.executeUnwindBatchOperator(ctx, plan); handled || err != nil {
-			return result, true, err
+			return newPipelineDispatchOutcome(result, handled, err)
 		}
 	}
 	originalClauses := clauses
@@ -484,20 +483,20 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 	// pipeline-bound names (from WITH/UNWIND/MATCH), not caller parameters.
 	params := getParamsFromContext(ctx)
 	if result, handled, err := e.tryExecutePipelineSimpleNodeReadPlan(ctx, clauses, params); handled || err != nil {
-		return result, true, err
+		return newPipelineDispatchOutcome(result, handled, err)
 	}
 	if result, handled, err := e.tryExecutePipelineSimpleRelationshipCountPlan(ctx, clauses, params); handled || err != nil {
-		return result, true, err
+		return newPipelineDispatchOutcome(result, handled, err)
 	}
 	if params != nil {
 		cypher = e.substituteParams(cypher, params)
 		clauses, ok = canExecuteAsPipeline(cypher)
 		if !ok {
-			return nil, false, nil
+			return newPipelineDispatchOutcome(nil, false, nil)
 		}
 	}
 	if result, handled, err := e.tryExecutePipelineOptionalMatchPlan(ctx, cypher, clauses); handled || err != nil {
-		return result, true, err
+		return newPipelineDispatchOutcome(result, handled, err)
 	}
 
 	// Start with one binding row. Parameters retain their typed values under
@@ -516,7 +515,8 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 		scope[name] = struct{}{}
 	}
 
-	return e.runPipelineClauses(ctx, rows, scope, clauses, originalClauses)
+	result, handled, err := e.runPipelineClauses(ctx, rows, scope, clauses, originalClauses)
+	return newPipelineDispatchOutcome(result, handled, err)
 }
 
 // runPipelineClauses threads the binding rows through the clauses, starting

@@ -34,10 +34,10 @@ func TestExecutePipeline_DirectInvocation(t *testing.T) {
 		MATCH (p:Product {productID: prodRef.productID})
 		CREATE (o)-[:ORDERS {quantity: prodRef.quantity}]->(p)`
 
-	result, ok, err := exec.executePipeline(ctx, q)
-	require.True(t, ok, "executePipeline must accept this shape")
-	require.NoError(t, err, "executePipeline must not error")
-	require.NotNil(t, result)
+	outcome := exec.executePipeline(ctx, q)
+	require.True(t, outcome.handled(), "executePipeline must accept this shape")
+	require.NoError(t, outcome.err, "executePipeline must not error")
+	require.NotNil(t, outcome.result)
 
 	// Also run via the full Execute path (which goes through the router) to
 	// confirm the router delegates to the pipeline executor.

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Gate the V2-to-V3 storage upgrade behind `--upgrade-storage` and restore
+  missing versioned adjacency for edges written by older bulk-create paths.
+  Current relationship traversal and retained pre-update/pre-delete snapshots
+  are repaired on upgrade; pruned history cannot be reconstructed. Edge body
+  encoding remains V2.
 - Make `BadgerEngine.Close` wait for in-flight durable writes before releasing
   engine state. An explicit transaction whose Badger commit had already
   returned could have its post-commit tail (label counts, MVCC sequence, ID

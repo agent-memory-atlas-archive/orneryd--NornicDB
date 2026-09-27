@@ -54,10 +54,10 @@ RETURN collect(DISTINCT f.num) AS first, collect(DISTINCT n.num) AS missing, col
 			require.True(t, ok)
 			require.Len(t, clauses, tc.clauseCount)
 
-			pipelineResult, handled, err := exec.executePipeline(ctx, tc.query)
-			require.NoError(t, err)
-			require.True(t, handled)
-			require.Equal(t, tc.rows, pipelineResult.Rows)
+			outcome := exec.executePipeline(ctx, tc.query)
+			require.NoError(t, outcome.err)
+			require.True(t, outcome.handled())
+			require.Equal(t, tc.rows, outcome.result.Rows)
 
 			result, err := exec.Execute(ctx, tc.query, nil)
 			require.NoError(t, err)

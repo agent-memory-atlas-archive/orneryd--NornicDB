@@ -138,8 +138,9 @@ the one-way upgrade
 | --------- | ------------------- | ----------------------------------------------------------------------------------------------- |
 | V0 → V1   | on-disk version 0   | Existing — extracts legacy access state into AccessMeta records. Idempotent, body bytes intact. |
 | V1 → V2   | on-disk version 1   | Eager rewrite of every node + edge body to the tokenized codec. Bumps version on clean pass.    |
+| V2 → V3   | on-disk version 2   | Restore missing versioned edge adjacency from live bodies and retained edge versions; body encoding remains V2. |
 
-A V0 store with `--upgrade-storage` runs both arms in sequence: V0→V1, then V1→V2 against the resulting V1-shaped store.
+A V0 store with `--upgrade-storage` runs all applicable arms in sequence through V3. The V2→V3 repair uses bounded scans and only advances the version after both passes succeed; an interrupted upgrade retries safely. It preserves existing adjacency entries and tombstones. Historical adjacency can only be restored where the corresponding edge version body is still retained; pruned history cannot be recreated.
 
 ### V1→V2 rewrite
 

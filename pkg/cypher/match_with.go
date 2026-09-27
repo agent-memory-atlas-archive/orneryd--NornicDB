@@ -40,8 +40,8 @@ func (e *StorageExecutor) executeMatchWithClause(ctx context.Context, cypher str
 	// before parsing the WITH section as if everything until RETURN were still
 	// part of the first WITH clause.
 	if innerMatchIdx := topLevelKeywordIndex(cypher[withIdx+4:returnIdx], "MATCH"); innerMatchIdx > 0 {
-		if pipelineResult, ok, err := e.executePipeline(ctx, cypher); ok || err != nil {
-			return pipelineResult, err
+		if outcome := e.executePipeline(ctx, cypher); outcome.terminal() {
+			return outcome.result, outcome.err
 		}
 	}
 

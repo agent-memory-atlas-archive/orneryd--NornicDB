@@ -12,16 +12,15 @@ import (
 	"github.com/vmihailenco/msgpack/v5/msgpcode"
 )
 
-// Storage version constants. The current binary writes only V2 bodies
-// once the data directory is upgraded; the upgrade is gated behind
-// --upgrade-storage and runs the eager rewrite migration. Old V1 stores
-// are refused at engine-open time unless the upgrade flag is passed.
+// Storage version constants. V3 retains V2 body encoding and repairs
+// versioned adjacency for edges written by older bulk writers.
 const (
-	storageVersionV0            = 0
-	storageVersionV1            = 1
-	storageVersionPropKeyDictV2 = 2
+	storageVersionV0              = 0
+	storageVersionV1              = 1
+	storageVersionPropKeyDictV2   = 2
+	storageVersionEdgeAdjacencyV3 = 3
 
-	storageVersionCurrent = storageVersionPropKeyDictV2
+	storageVersionCurrent = storageVersionEdgeAdjacencyV3
 )
 
 // Format-byte tokens for tokenized bodies. Both are reserved so they

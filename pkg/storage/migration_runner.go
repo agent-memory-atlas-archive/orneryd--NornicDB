@@ -64,6 +64,7 @@ func (e *ErrStorageUpgradeRequired) Error() string {
 //	V0 → V1: extracts legacy access state into AccessMeta records.
 //	V1 → V2: eager rewrite of every node and edge body to the tokenized
 //	         property-key codec; bumps the version after a clean pass.
+//	V2 → V3: restore current versioned adjacency omitted by older bulk writes.
 //
 // Sets engine.storageVersion to the post-migration version so the
 // encode path can deterministically pick codecs from it.
@@ -148,6 +149,16 @@ func (b *BadgerEngine) RunOnStartMigrations(allowUpgrade bool) error {
 			b.log.Info("migration arm v1→v2 complete",
 				"duration_ms", time.Since(armStart).Milliseconds(),
 			)
+		}
+	}
+	if currentVersion < storageVersionEdgeAdjacencyV3 {
+		armStart := time.Now()
+		if err := b.migrateV2ToV3(); err != nil {
+			return fmt.Errorf("migration v2→v3 failed: %w", err)
+		}
+		currentVersion = storageVersionEdgeAdjacencyV3
+		if b.log != nil {
+			b.log.Info("migration arm v2→v3 complete", "duration_ms", time.Since(armStart).Milliseconds())
 		}
 	}
 
