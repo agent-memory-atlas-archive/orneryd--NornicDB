@@ -448,7 +448,7 @@ func (ae *AsyncEngine) flushLocked() error {
 		return nil
 	}
 
-	result := ae.FlushWithResult()
+	result := ae.flushWithResultLocked()
 	if result.HasErrors() {
 		details := ""
 		if result.FirstNodeError != "" {
@@ -494,6 +494,18 @@ func (ae *AsyncEngine) drainSpanLinks() []trace.Link {
 // FlushWithResult writes pending changes and returns detailed results.
 // Use this for programmatic access to flush statistics.
 func (ae *AsyncEngine) FlushWithResult() FlushResult {
+	if ae.pendingWriteCount() == 0 {
+		return FlushResult{
+			FailedNodeIDs: make([]NodeID, 0),
+			FailedEdgeIDs: make([]EdgeID, 0),
+		}
+	}
+	ae.flushMu.Lock()
+	defer ae.flushMu.Unlock()
+	return ae.flushWithResultLocked()
+}
+
+func (ae *AsyncEngine) flushWithResultLocked() FlushResult {
 	result := FlushResult{
 		FailedNodeIDs: make([]NodeID, 0),
 		FailedEdgeIDs: make([]EdgeID, 0),
@@ -2773,9 +2785,18 @@ func (ae *AsyncEngine) MarkNodeEmbedded(nodeID NodeID) {
 // AddToPendingEmbeddings delegates to the underlying engine, if supported.
 // Call this to re-queue a node for embedding after a failed attempt (e.g. so another worker can retry).
 func (ae *AsyncEngine) AddToPendingEmbeddings(nodeID NodeID) {
-	// Don't allow re-queue while delete is pending in AsyncEngine.
-	if ae.isNodeMarkedDeleted(nodeID) {
+	ae.mu.RLock()
+	deleted := ae.deleteNodes[nodeID]
+	node, staged := ae.nodeCache[nodeID]
+	staged = staged && !ae.updateNodes[nodeID]
+	ae.mu.RUnlock()
+	if deleted {
 		return
+	}
+	if staged {
+		if badger, ok := UnwrapEngine(ae.engine).(*BadgerEngine); ok && ae.shouldIndexPendingEmbed(badger, node) {
+			return
+		}
 	}
 	if mgr, ok := ae.engine.(interface{ AddToPendingEmbeddings(NodeID) }); ok {
 		mgr.AddToPendingEmbeddings(nodeID)
@@ -2790,12 +2811,43 @@ func (ae *AsyncEngine) RecordMaterializedAccess(entityID string) {
 	}
 }
 
-// PendingEmbeddingsCount delegates to the underlying engine, if supported.
-func (ae *AsyncEngine) PendingEmbeddingsCount() int {
-	if mgr, ok := ae.engine.(interface{ PendingEmbeddingsCount() int }); ok {
-		return mgr.PendingEmbeddingsCount()
+func (ae *AsyncEngine) shouldIndexPendingEmbed(badger *BadgerEngine, node *Node) bool {
+	if namespaced, ok := ae.engine.(*NamespacedEngine); ok {
+		prefixed := *node
+		prefixed.ID = namespaced.prefixNodeID(node.ID)
+		return badger.shouldIndexPendingEmbed(&prefixed)
 	}
-	return 0
+	return badger.shouldIndexPendingEmbed(node)
+}
+
+// PendingEmbeddingsCount includes eligible unflushed creates and durable work.
+func (ae *AsyncEngine) PendingEmbeddingsCount() int {
+	ae.flushMu.RLock()
+	defer ae.flushMu.RUnlock()
+
+	var badger *BadgerEngine
+	if engine, ok := UnwrapEngine(ae.engine).(*BadgerEngine); ok {
+		badger = engine
+	}
+	ae.mu.RLock()
+	staged := 0
+	for id, node := range ae.nodeCache {
+		if ae.updateNodes[id] || ae.deleteNodes[id] {
+			continue
+		}
+		if badger != nil {
+			if ae.shouldIndexPendingEmbed(badger, node) {
+				staged++
+			}
+		} else if NodeNeedsEmbedding(node) {
+			staged++
+		}
+	}
+	ae.mu.RUnlock()
+	if mgr, ok := ae.engine.(interface{ PendingEmbeddingsCount() int }); ok {
+		return mgr.PendingEmbeddingsCount() + staged
+	}
+	return staged
 }
 
 func (ae *AsyncEngine) isNodeMarkedDeleted(nodeID NodeID) bool {

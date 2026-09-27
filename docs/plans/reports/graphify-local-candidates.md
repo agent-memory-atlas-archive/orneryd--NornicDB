@@ -175,6 +175,29 @@ the CPU profile is dominated by runtime memory work (`runtime.madvise` 26.8%
 flat) rather than the wrapper. No speedup is claimed. Write-side performance
 and full qualification remain unmeasured.
 
+The adjacent Async pending-count contract exposed a user-visible gap:
+`WaitForEmbeddings` could observe zero while an eligible node was still staged.
+`PendingEmbeddingsCount` now adds eligible unflushed creates to the durable
+count, holding `flushMu` across both views; explicit requeue remains supported
+when automatic indexing is disabled. Direct `FlushWithResult` now shares the
+flush boundary so counts cannot observe half-published writes. Tests cover
+staged update/embedding/delete/flush transitions, dynamic Badger enable and
+label policy, persisted update deduplication and a blocked direct flush.
+Async-over-Namespaced now evaluates Badger policy against the ID that its
+inner namespace wrapper persists; excluded and allowed nodes are both pinned,
+including no phantom index key when requeueing an eligible staged create.
+Storage passes the full `-race` suite. M2 Max 16-staged-node count benchmark
+(`-benchtime=250ms -cpu=1 -count=5`): previous delegated Badger scan
+496.6–509.1 ns/op vs Async count 951.6–978.8 ns/op, both 408 B/op and
+9 allocs/op. The added ~0.45 us is a recorded correctness cost; CPU profiling
+shows runtime memory work and Badger iteration dominate. A profiled empty
+public flush measured 51.9–52.6 ns/op with unconditional locking vs
+39.0–40.1 ns/op for its internal body (zero allocations). Reusing the existing
+no-work guard measured 30.3–30.6 ns/op (zero allocations), below that body.
+The matched prefix-aware 16-node count was 1014–1023 ns/op, 408 B/op and
+9 allocs/op; the policy correction does not change allocation shape.
+Other report candidates, remaining queue semantics and final gates remain open.
+
 ## Reviewed current-only candidate
 
 The historical-only `pkg/storage|.GetNodeWithoutEmbeddings()` group includes

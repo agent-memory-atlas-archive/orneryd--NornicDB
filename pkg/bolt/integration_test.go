@@ -1374,10 +1374,12 @@ func TestBoltResponseMetadata(t *testing.T) {
 	server := New(config, executor)
 	defer server.Close()
 
-	go func() { server.ListenAndServe() }()
-	time.Sleep(100 * time.Millisecond)
-
-	port := server.listener.Addr().(*net.TCPAddr).Port
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	go func() { _ = server.Serve(listener) }()
 	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -1415,10 +1417,12 @@ func TestBoltLatencyBreakdown(t *testing.T) {
 	server := New(config, executor)
 	defer server.Close()
 
-	go func() { server.ListenAndServe() }()
-	time.Sleep(100 * time.Millisecond)
-
-	port := server.listener.Addr().(*net.TCPAddr).Port
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	go func() { _ = server.Serve(listener) }()
 	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
 	if err != nil {
 		t.Fatalf("Failed to connect: %v", err)

@@ -428,7 +428,10 @@ func TestListenAndServe(t *testing.T) {
 		}()
 
 		// Wait for server to start
-		time.Sleep(50 * time.Millisecond)
+		deadline := time.Now().Add(time.Second)
+		for server.listenerSnapshot() == nil && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
 
 		// Close server
 		if err := server.Close(); err != nil {
@@ -457,11 +460,18 @@ func TestListenAndServe(t *testing.T) {
 			done <- server.ListenAndServe()
 		}()
 
-		time.Sleep(50 * time.Millisecond)
+		deadline := time.Now().Add(time.Second)
+		for server.listenerSnapshot() == nil && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
 
-		tcpAddr, ok := server.listener.Addr().(*net.TCPAddr)
+		listener := server.listenerSnapshot()
+		if listener == nil {
+			t.Fatal("server did not bind")
+		}
+		tcpAddr, ok := listener.Addr().(*net.TCPAddr)
 		if !ok {
-			t.Fatalf("expected TCP listener address, got %T", server.listener.Addr())
+			t.Fatalf("expected TCP listener address, got %T", listener.Addr())
 		}
 		if !tcpAddr.IP.IsLoopback() {
 			t.Fatalf("expected loopback bind address, got %v", tcpAddr.IP)

@@ -212,6 +212,7 @@ const (
 type Server struct {
 	config                         *Config
 	listener                       net.Listener
+	lifecycleMu                    sync.Mutex
 	mu                             sync.RWMutex
 	sessions                       map[string]*Session
 	closed                         atomic.Bool
@@ -1007,10 +1008,14 @@ func (s *Server) Serve(listener net.Listener) error {
 	if listener == nil {
 		return fmt.Errorf("bolt listener is nil")
 	}
+	s.lifecycleMu.Lock()
 	if s.closed.Load() {
+		s.lifecycleMu.Unlock()
+		_ = listener.Close()
 		return fmt.Errorf("bolt server is closed")
 	}
 	s.listener = listener
+	s.lifecycleMu.Unlock()
 
 	announceHost := strings.TrimSpace(s.config.Host)
 	if announceHost == "0.0.0.0" || announceHost == "::" || announceHost == "" {
@@ -1025,21 +1030,28 @@ func (s *Server) Serve(listener net.Listener) error {
 	// Validate the discovery body once at startup and start the 1s Date
 	// refresh ticker. Startup fails if OAuthConfig has malformed URLs.
 	if err := s.startDiscoveryRefresher(); err != nil {
-		_ = s.listener.Close()
+		_ = listener.Close()
 		return fmt.Errorf("discovery response startup: %w", err)
 	}
 
 	return s.serve()
 }
 
+func (s *Server) listenerSnapshot() net.Listener {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.listener
+}
+
 // serve accepts connections in a loop.
 func (s *Server) serve() error {
+	listener := s.listenerSnapshot()
 	for {
 		if s.closed.Load() {
 			return nil
 		}
 
-		conn, err := s.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			if s.closed.Load() {
 				return nil // Clean shutdown
@@ -1053,10 +1065,13 @@ func (s *Server) serve() error {
 
 // Close stops the Bolt server.
 func (s *Server) Close() error {
+	s.lifecycleMu.Lock()
 	s.closed.Store(true)
+	listener := s.listener
+	s.lifecycleMu.Unlock()
 	s.stopDiscoveryRefresher()
-	if s.listener != nil {
-		return s.listener.Close()
+	if listener != nil {
+		return listener.Close()
 	}
 	return nil
 }

@@ -86,6 +86,52 @@ func TestAsyncEngine_NodeCount_BlocksDuringFlush(t *testing.T) {
 	}
 }
 
+func TestAsyncEngine_PendingEmbeddingsCount_BlocksDuringFlushWithResult(t *testing.T) {
+	base := NewMemoryEngine()
+	t.Cleanup(func() { _ = base.Close() })
+	inner := &blockingBulkCreateEngine{
+		Engine:            base,
+		updateNodeStarted: make(chan struct{}),
+		allowUpdateNode:   make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-inner.allowUpdateNode:
+		default:
+			close(inner.allowUpdateNode)
+		}
+	}()
+	ae := NewAsyncEngine(inner, &AsyncEngineConfig{FlushInterval: time.Hour})
+	t.Cleanup(func() { _ = ae.Close() })
+	_, err := ae.CreateNode(&Node{ID: "nornic:pending", Labels: []string{"Doc"}, Properties: map[string]any{"text": "embed"}})
+	require.NoError(t, err)
+	require.Equal(t, 1, ae.PendingEmbeddingsCount())
+
+	flushDone := make(chan FlushResult, 1)
+	go func() { flushDone <- ae.FlushWithResult() }()
+	select {
+	case <-inner.updateNodeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("flush did not reach UpdateNode")
+	}
+	countDone := make(chan int, 1)
+	go func() { countDone <- ae.PendingEmbeddingsCount() }()
+	select {
+	case <-countDone:
+		t.Fatal("pending count returned during a write still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(inner.allowUpdateNode)
+	result := <-flushDone
+	require.False(t, result.HasErrors())
+	select {
+	case got := <-countDone:
+		require.Zero(t, got)
+	case <-time.After(time.Second):
+		t.Fatal("pending count did not resume after flush")
+	}
+}
+
 func TestAsyncEngine_NodeCountByPrefix_BlocksDuringFlush(t *testing.T) {
 	base := NewMemoryEngine()
 	t.Cleanup(func() { _ = base.Close() })

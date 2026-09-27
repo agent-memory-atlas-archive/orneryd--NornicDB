@@ -94,6 +94,7 @@ type GraphBuilder struct {
 	storage storage.Engine
 
 	// Stats
+	statsMu         sync.RWMutex
 	lastBuildTime   time.Duration
 	lastBuildNodes  int
 	lastBuildEdges  int
@@ -157,9 +158,11 @@ func (b *GraphBuilder) Build(ctx context.Context) (Graph, error) {
 	}
 
 	// Update stats
+	b.statsMu.Lock()
 	b.lastBuildTime = time.Since(startTime)
 	b.lastBuildNodes = nodeCount
 	b.lastBuildEdges = edgeCount
+	b.statsMu.Unlock()
 	atomic.AddInt64(&b.buildsCompleted, 1)
 
 	// Save to cache
@@ -503,6 +506,8 @@ type BuildStats struct {
 
 // Stats returns build statistics.
 func (b *GraphBuilder) Stats() BuildStats {
+	b.statsMu.RLock()
+	defer b.statsMu.RUnlock()
 	return BuildStats{
 		LastBuildTime:   b.lastBuildTime,
 		LastBuildNodes:  b.lastBuildNodes,

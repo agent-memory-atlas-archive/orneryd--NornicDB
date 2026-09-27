@@ -2,6 +2,7 @@ package bolt
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -23,7 +24,13 @@ func (s *Server) startDiscoveryRefresher() error {
 	}
 	s.discoveryResponse.Store(&initial)
 	stop := make(chan struct{})
+	s.lifecycleMu.Lock()
+	if s.closed.Load() {
+		s.lifecycleMu.Unlock()
+		return fmt.Errorf("bolt server is closed")
+	}
 	s.discoveryStop = stop
+	s.lifecycleMu.Unlock()
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -50,6 +57,8 @@ func (s *Server) startDiscoveryRefresher() error {
 // stopDiscoveryRefresher signals the discovery refresh goroutine to exit.
 // Safe to call multiple times.
 func (s *Server) stopDiscoveryRefresher() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	if s.discoveryStop != nil {
 		select {
 		case <-s.discoveryStop:

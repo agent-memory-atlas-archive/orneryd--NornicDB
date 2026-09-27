@@ -43,17 +43,15 @@ func startPerfTestServer(t *testing.T) (*Server, int) {
 	}
 
 	server := New(config, executor)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil {
+		if err := server.Serve(listener); err != nil {
 			t.Logf("Server error: %v", err)
 		}
 	}()
-
-	// Wait for server to start
-	time.Sleep(50 * time.Millisecond)
-
-	port := server.listener.Addr().(*net.TCPAddr).Port
 	t.Logf("Bolt server listening on bolt://localhost:%d", port)
 
 	return server, port

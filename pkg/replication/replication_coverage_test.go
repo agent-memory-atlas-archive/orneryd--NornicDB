@@ -799,11 +799,9 @@ func TestHAStandbyReplicator_StartAndAckPaths(t *testing.T) {
 	require.NoError(t, primary.Start(context.Background()))
 	t.Cleanup(func() { _ = primary.Shutdown() })
 
-	primary.walStreamer = NewWALStreamer(primaryStore, 16)
 	primary.walStreamer.AcknowledgePosition(5)
 	require.NoError(t, primary.waitForReplicationAck(5, 20*time.Millisecond))
 
-	primary.walStreamer = NewWALStreamer(primaryStore, 16)
 	err = primary.waitForReplicationAck(10, 20*time.Millisecond)
 	require.ErrorContains(t, err, "replication ack timeout")
 
