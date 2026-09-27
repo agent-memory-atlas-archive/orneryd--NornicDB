@@ -703,6 +703,9 @@ else
 	elif [ ! -f lib/llama/VERSION ] || [ "$$(cat lib/llama/VERSION 2>/dev/null)" != "$(LLAMA_VERSION)" ]; then \
 		echo "⚠️  llama.cpp library version mismatch (have $$(cat lib/llama/VERSION 2>/dev/null || echo unknown), need $(LLAMA_VERSION)), rebuilding..."; \
 		./scripts/build-llama.sh $(LLAMA_VERSION); \
+	elif [ -n "$$(find lib/llama -maxdepth 1 -name '*.h' -newer lib/llama/libllama_$(HOST_OS)_$(HOST_ARCH).a -print -quit)" ]; then \
+		echo "⚠️  llama.cpp headers newer than static library, rebuilding..."; \
+		./scripts/build-llama.sh $(LLAMA_VERSION); \
 	elif ! nm lib/llama/libllama_$(HOST_OS)_$(HOST_ARCH).a 2>/dev/null | grep -q "llama_get_memory"; then \
 		echo "⚠️  llama.cpp library outdated (missing llama_get_memory), rebuilding..."; \
 		./scripts/build-llama.sh $(LLAMA_VERSION); \

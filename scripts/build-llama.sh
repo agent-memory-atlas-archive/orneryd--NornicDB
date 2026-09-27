@@ -136,6 +136,7 @@ fi
 
 # Create a version file
 echo "$VERSION" > "$OUTDIR/VERSION"
+touch "$OUTDIR/$LIB_NAME"
 
 echo ""
 echo "✅ Build complete!"
