@@ -460,10 +460,15 @@ EOF
         else
             DMG_NAME="NornicDB-${VERSION}-${ARCH}-lite.dmg"
         fi
+
+        # hdiutil's automatic estimate can leave too little room for the copied package.
+        DMG_PAYLOAD_KIB=$(du -sk "$DMG_DIR" | cut -f1)
+        DMG_SIZE_MIB=$(( (DMG_PAYLOAD_KIB * 3 / 2 + 64 * 1024 + 1023) / 1024 ))
         
         hdiutil create \
             -volname "NornicDB $VERSION ($VARIANT)" \
             -srcfolder "$DMG_DIR" \
+            -size "${DMG_SIZE_MIB}m" \
             -ov \
             -format UDZO \
             "$PROJECT_ROOT/dist/$DMG_NAME"
