@@ -14,7 +14,7 @@
 - [x] 1.7 Add required CI workflow, artifacts and runnable make targets; configure required-check enforcement during rollout.
 	- `cypher-conformance.yml` triggers on `pkg/**`, `testing/cypher/**`, runner scripts, plan docs and OpenSpec changes; runs `make cypher-conformance` and `make cypher-differential` and uploads diagnostics with `if: always()`; make targets exist. Owner decision: required-check branch-protection enforcement will not be configured; the workflow remains the gate.
 - [ ] 1.8 Record test/coverage/benchmark baseline and regenerate the divergence candidate ledger with reproducible inputs.
-	- Owner decision: the existing `docs/plans/reports/DIVERGENCE_REPORT.md` / `HARD_CONVERGENCE.md` are used as-is to guide convergence; graphify regeneration is not being set up. The convergence work is tracked per report section below (see 3.3/8.1 progress).
+	- Updated owner direction: a local Graphify code graph is now generated and imported into NornicDB over Bolt; setup and refresh commands are documented in `docs/user-guides/graphify-local.md`. The divergence report baseline still needs reproducible regeneration and comparison (see 3.3/8.1 progress).
 
 ## 2. Share execution context and lexical contracts
 
