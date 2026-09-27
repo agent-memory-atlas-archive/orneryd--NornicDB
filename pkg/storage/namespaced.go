@@ -1402,6 +1402,9 @@ func (n *NamespacedEngine) RefreshPendingEmbeddingsIndex() int {
 	}); ok {
 		underlyingAdded = underlyingMgr.RefreshPendingEmbeddingsIndex()
 		inner := n.inner
+		if async, wrapped := inner.(*AsyncEngine); wrapped {
+			inner = async.engine
+		}
 		if wal, wrapped := inner.(*WALEngine); wrapped {
 			inner = wal.engine
 		}

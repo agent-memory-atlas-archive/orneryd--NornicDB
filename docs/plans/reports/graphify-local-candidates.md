@@ -155,17 +155,25 @@ count without a duplicate namespace scan. A capability-only inner retains its
 namespace scan and returns the delegated count plus locally queued candidates,
 not removal attempts. Two Badger-backed tests cover no-op, repeat no-op and
 repair of a missing entry; the existing capability-helper test pins prefix
-translation. Async still needs a separate staged-node/count contract: its
-cache can hold unflushed nodes that the underlying Badger rebuild cannot see,
-so the native early-return cannot be applied through Async.
+translation. Async can hold unflushed nodes that the underlying Badger rebuild
+cannot see. The native complete-refresh count now also applies through Async
+and Async-over-WAL: staged nodes remain visible in Async's cache without
+counting phantom pending-index additions. A direct/Async-over-WAL regression
+pins repeated no-op refresh before flush and repair of a missing entry after
+flush, three times under `-race`. Other Async queue/count behavior remains open.
 M2 Max `BenchmarkNamespacedRefreshPendingEmbeddingsIndex` on an already
 complete 16-node index (`-benchtime=200ms -cpu=1 -count=3`): direct Badger
 66.306–66.883 us/op, 62,896 B/op, 906 allocs/op; Namespaced
 66.411–66.694 us/op, 62,896–62,897 B/op, 906 allocs/op. These overlapping
 bands show wrapper parity, not a speedup. The profiled run's largest flat CPU
 sample was `runtime.madvise` (24.8%); MsgPack decoding and allocation are
-also material. Async staged-node behavior and any write-side benchmark remain
-unmeasured.
+also material. A matched staged-node benchmark
+(`-benchtime=200ms -cpu=1 -count=3`) measured direct Async at
+66.573–67.094 us/op and Namespaced-over-Async
+at 66.842–67.097 us/op, both 62,896 B/op and 906 allocs/op. Bands overlap;
+the CPU profile is dominated by runtime memory work (`runtime.madvise` 26.8%
+flat) rather than the wrapper. No speedup is claimed. Write-side performance
+and full qualification remain unmeasured.
 
 ## Reviewed current-only candidate
 

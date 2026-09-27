@@ -874,6 +874,56 @@ func TestNamespacedEngine_RefreshPendingEmbeddingsIndexThroughWALReturnsZero(t *
 	require.Equal(t, 1, engine.PendingEmbeddingsCount())
 }
 
+func TestNamespacedEngine_RefreshPendingEmbeddingsIndexAsyncStagedNode(t *testing.T) {
+	for _, throughWAL := range []bool{false, true} {
+		name := "direct"
+		if throughWAL {
+			name = "through WAL"
+		}
+		t.Run(name, func(t *testing.T) {
+			engine, err := NewBadgerEngineInMemory()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = engine.Close() })
+			engine.SetEmbeddingsEnabled(true)
+			var inner Engine = engine
+			if throughWAL {
+				log, err := NewWAL(t.TempDir(), nil)
+				require.NoError(t, err)
+				wal := NewWALEngine(engine, log)
+				t.Cleanup(func() { _ = wal.Close() })
+				inner = wal
+			}
+			async := NewAsyncEngine(inner, &AsyncEngineConfig{FlushInterval: time.Hour})
+			t.Cleanup(func() { _ = async.Close() })
+			tenant := NewNamespacedEngine(async, "tenant")
+
+			_, err = tenant.CreateNode(&Node{
+				ID: "staged", Labels: []string{"Doc"},
+				Properties: map[string]any{"text": "embed this"},
+			})
+			require.NoError(t, err)
+			_, err = engine.GetNode("tenant:staged")
+			require.ErrorIs(t, err, ErrNotFound)
+			require.Zero(t, engine.PendingEmbeddingsCount())
+
+			require.Zero(t, tenant.RefreshPendingEmbeddingsIndex())
+			require.Zero(t, tenant.RefreshPendingEmbeddingsIndex())
+			require.Zero(t, engine.PendingEmbeddingsCount())
+			visible, err := tenant.GetNode("staged")
+			require.NoError(t, err)
+			require.Equal(t, NodeID("staged"), visible.ID)
+
+			require.NoError(t, async.Flush())
+			require.Equal(t, 1, engine.PendingEmbeddingsCount())
+			require.Zero(t, tenant.RefreshPendingEmbeddingsIndex())
+			engine.MarkNodeEmbedded("tenant:staged")
+			require.Zero(t, engine.PendingEmbeddingsCount())
+			require.Equal(t, 1, tenant.RefreshPendingEmbeddingsIndex())
+			require.Equal(t, 1, engine.PendingEmbeddingsCount())
+		})
+	}
+}
+
 func BenchmarkNamespacedRefreshPendingEmbeddingsIndex(b *testing.B) {
 	engine, err := NewBadgerEngineInMemory()
 	if err != nil {
@@ -903,6 +953,34 @@ func BenchmarkNamespacedRefreshPendingEmbeddingsIndex(b *testing.B) {
 			for range b.N {
 				if added := entry.refresh(); added != 0 {
 					b.Fatalf("refresh added %d entries to a complete index", added)
+				}
+			}
+		})
+	}
+
+	async := NewAsyncEngine(engine, &AsyncEngineConfig{FlushInterval: time.Hour})
+	b.Cleanup(func() { _ = async.Close() })
+	staged := NewNamespacedEngine(async, "staged")
+	for index := range 16 {
+		if _, err := staged.CreateNode(&Node{
+			ID: NodeID(fmt.Sprintf("node-%d", index)), Labels: []string{"Doc"},
+			Properties: map[string]any{"text": "embed this"},
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for _, entry := range []struct {
+		name    string
+		refresh func() int
+	}{
+		{name: "async-staged", refresh: async.RefreshPendingEmbeddingsIndex},
+		{name: "namespaced-async-staged", refresh: staged.RefreshPendingEmbeddingsIndex},
+	} {
+		b.Run(entry.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if added := entry.refresh(); added != 0 {
+					b.Fatalf("refresh added %d entries before flush", added)
 				}
 			}
 		})
