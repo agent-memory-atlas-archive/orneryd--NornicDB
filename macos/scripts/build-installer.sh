@@ -67,33 +67,13 @@ cleanup_build_dir() {
         return 0
     fi
 
-    # Newer macOS versions can leave ACLs / flags on copied app bundle contents
-    # that cause plain rm -rf to fail with "Permission denied".
-    chmod -RN "$target" 2>/dev/null || true
-    chflags -R nouchg "$target" 2>/dev/null || true
-    xattr -rc "$target" 2>/dev/null || true
-    chmod -R u+rwX "$target" 2>/dev/null || true
-
     if rm -rf "$target" 2>/dev/null; then
         return 0
     fi
 
-    # Fallback for stale root-owned artifacts from prior packaging runs.
-    if command -v sudo >/dev/null 2>&1; then
-        sudo -n chmod -RN "$target" 2>/dev/null || true
-        sudo -n chflags -R nouchg "$target" 2>/dev/null || true
-        sudo -n xattr -rc "$target" 2>/dev/null || true
-        sudo -n chmod -R u+rwX "$target" 2>/dev/null || true
-        sudo -n rm -rf "$target" 2>/dev/null || true
-    fi
-
-    if [ -e "$target" ]; then
-        echo "❌ Failed to remove $target"
-        echo "   Try: chmod -RN \"$target\" && chflags -R nouchg \"$target\" && rm -rf \"$target\""
-        return 1
-    fi
-
-    return 0
+    echo "❌ Failed to remove $target; an earlier relocatable package may have installed root-owned files there."
+    echo "   Remove the old staging directory as an administrator before rebuilding."
+    return 1
 }
 
 # Function to build a package variant
@@ -172,6 +152,7 @@ if [ "$ACTUAL_USER" = "root" ]; then
 fi
 
 USER_HOME=$(eval echo ~$ACTUAL_USER)
+USER_UID=$(id -u "$ACTUAL_USER")
 LOG_FILE="/tmp/nornicdb-install.log"
 
 log() {
@@ -180,6 +161,11 @@ log() {
 }
 
 log "Starting NornicDB post-installation (Full Edition) for user: $ACTUAL_USER..."
+
+if [ ! -x /Applications/NornicDB.app/Contents/MacOS/NornicDB ]; then
+    log "ERROR: menu bar app missing from /Applications; installation did not place the app at its intended location"
+    exit 1
+fi
 
 # Create config directory - use ~/.nornicdb to match server and menu bar app
 CONFIG_DIR="$USER_HOME/.nornicdb"
@@ -199,7 +185,7 @@ log "Created directories"
 
 # Copy default config if none exists
 if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
-    sudo -u $ACTUAL_USER cat > "$CONFIG_DIR/config.yaml" << 'CONFIGEOF'
+    sudo -u "$ACTUAL_USER" tee "$CONFIG_DIR/config.yaml" > /dev/null << 'CONFIGEOF'
 # NornicDB Configuration (Full Edition)
 # Edit via Settings app (⌘,) or manually
 
@@ -241,7 +227,7 @@ CONFIGEOF
 fi
 
 # Create environment file with plugin paths
-sudo -u $ACTUAL_USER cat > "$CONFIG_DIR/environment" << 'EOF'
+sudo -u "$ACTUAL_USER" tee "$CONFIG_DIR/environment" > /dev/null << 'EOF'
 # NornicDB Environment Configuration (Full Edition)
 # This file is sourced by the NornicDB service
 
@@ -274,7 +260,7 @@ pkill -9 -f "nornicdb serve" 2>/dev/null || true
 log "Server will start after first-run wizard completes"
 
 # Install menu bar app LaunchAgent for auto-start
-sudo -u $ACTUAL_USER cat > "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist" << EOF
+sudo -u "$ACTUAL_USER" tee "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist" > /dev/null << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -304,8 +290,11 @@ sudo -u $ACTUAL_USER touch "$CONFIG_DIR/.first_run"
 log "Created first-run marker"
 
 # Launch menu bar app immediately
-sudo -u $ACTUAL_USER open -a "/Applications/NornicDB.app" 2>/dev/null || true
-log "Launched menu bar app"
+if sudo -u "$ACTUAL_USER" open -a "/Applications/NornicDB.app"; then
+    log "Launched menu bar app"
+else
+    log "Could not launch menu bar app now; it will start at login"
+fi
 
 echo ""
 echo "✅ NornicDB installation complete! (Full Edition with APOC + Heimdall plugins)"
@@ -398,8 +387,11 @@ EOF
     echo "📝 Building package: $PKG_NAME"
     
     # Build component package
+    pkgbuild --analyze --root "$BUILD_DIR/root" "$BUILD_DIR/components.plist"
+    plutil -replace '0.BundleIsRelocatable' -bool NO "$BUILD_DIR/components.plist"
     pkgbuild \
         --root "$BUILD_DIR/root" \
+        --component-plist "$BUILD_DIR/components.plist" \
         --scripts "$BUILD_DIR/scripts" \
         --identifier "$PKG_ID" \
         --version "$VERSION" \

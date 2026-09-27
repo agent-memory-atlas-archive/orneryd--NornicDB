@@ -14,14 +14,16 @@ fi
 USER_HOME=$(eval echo ~$ACTUAL_USER)
 USER_UID=$(id -u $ACTUAL_USER)
 
+if [ ! -x /Applications/NornicDB.app/Contents/MacOS/NornicDB ]; then
+  echo "ERROR: menu bar app missing from /Applications; installation did not place the app at its intended location" >&2
+  exit 1
+fi
+
 echo "Setting up NornicDB for user: $ACTUAL_USER"
 
-# Create user directories
 # Create config directories - use ~/.nornicdb to match server's FindConfigFile priority
-mkdir -p "$USER_HOME/.nornicdb"
-mkdir -p "$USER_HOME/Library/LaunchAgents"
-chown $ACTUAL_USER:staff "$USER_HOME/.nornicdb"
-chown $ACTUAL_USER:staff "$USER_HOME/Library/LaunchAgents"
+sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/.nornicdb"
+sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/Library/LaunchAgents"
 
 # Create data, models, and log directories (as root, will set ownership later)
 mkdir -p /usr/local/var/nornicdb/data
@@ -50,8 +52,7 @@ if [ ! -f "$USER_HOME/.nornicdb/config.yaml" ]; then
             "$USER_HOME/.nornicdb/config.yaml"
         echo "✓ Installed default configuration (fallback)"
     else
-        # Create minimal config (write as root, fix ownership after)
-        cat > "$USER_HOME/.nornicdb/config.yaml" << 'EOF'
+        sudo -u "$ACTUAL_USER" tee "$USER_HOME/.nornicdb/config.yaml" > /dev/null << 'EOF'
 # NornicDB Configuration
 # Edit via Settings app (⌘,) or manually
 
@@ -76,7 +77,6 @@ auto_tlp:
 heimdall:
   enabled: false
 EOF
-        chown $ACTUAL_USER:staff "$USER_HOME/.nornicdb/config.yaml"
         echo "✓ Created minimal configuration"
     fi
 fi
@@ -98,8 +98,7 @@ rm -f "$USER_HOME/Library/LaunchAgents/com.nornicdb.server.plist" 2>/dev/null ||
 echo "✓ Server will start after first-run wizard completes"
 
 # Install menu bar app LaunchAgent for auto-start
-# Write as root first, then fix ownership
-cat > "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist" << EOF
+sudo -u "$ACTUAL_USER" tee "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist" > /dev/null << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -122,19 +121,18 @@ cat > "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist" << EOF
 </plist>
 EOF
 
-# Fix ownership so user can load it
-chown $ACTUAL_USER:staff "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist"
-
 # Load the menu bar app LaunchAgent as the user
 sudo -u $ACTUAL_USER launchctl load "$USER_HOME/Library/LaunchAgents/com.nornicdb.menubar.plist" 2>/dev/null || true
 
 # Launch menu bar app immediately
-sudo -u $ACTUAL_USER open -a "/Applications/NornicDB.app" 2>/dev/null || true
-echo "✓ Launched menu bar app (will auto-start on login)"
+if sudo -u "$ACTUAL_USER" open -a "/Applications/NornicDB.app"; then
+  echo "✓ Launched menu bar app (will auto-start on login)"
+else
+  echo "Menu bar app could not launch now; it will start at login" >&2
+fi
 
 # Create welcome file to trigger first-run wizard
-touch "$USER_HOME/.nornicdb/.first_run"
-chown $ACTUAL_USER:staff "$USER_HOME/.nornicdb/.first_run"
+sudo -u "$ACTUAL_USER" touch "$USER_HOME/.nornicdb/.first_run"
 
 echo ""
 echo "✅ NornicDB installation complete!"
