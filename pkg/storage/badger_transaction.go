@@ -2966,7 +2966,7 @@ func (tx *BadgerTransaction) checkUniqueConstraint(node *Node, c Constraint) err
 		if id == node.ID {
 			continue
 		}
-		if hasLabel(n.Labels, c.Label) && n.Properties[prop] == value {
+		if hasLabel(n.Labels, c.Label) && compareValues(n.Properties[prop], value) {
 			message := localization.StorageValidationNodeUniqueInTransaction(prop, value)
 			return newLocalizedConstraintViolation(ConstraintUnique, c.Label, []string{prop}, message, nil)
 		}

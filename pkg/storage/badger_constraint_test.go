@@ -238,6 +238,93 @@ func TestBadgerTransactionUniqueConstraintIndexMatchesNumericCompareSemantics(t 
 	tx2.Rollback()
 }
 
+func TestBadgerTransactionUniqueConstraintPendingMatchesNumericValueSemantics(t *testing.T) {
+	engine, cleanup := setupTestBadgerEngine(t)
+	defer cleanup()
+
+	schema := engine.GetSchemaForNamespace("test")
+	if err := schema.AddUniqueConstraint("unique_age", "User", "age"); err != nil {
+		t.Fatalf("AddUniqueConstraint failed: %v", err)
+	}
+
+	tx, err := engine.BeginTransaction()
+	if err != nil {
+		t.Fatalf("BeginTransaction failed: %v", err)
+	}
+	defer tx.Rollback()
+
+	firstID := NodeID(prefixTestID("user-unique-age-pending-1"))
+	if _, err := tx.CreateNode(&Node{
+		ID:     firstID,
+		Labels: []string{"User"},
+		Properties: map[string]interface{}{
+			"age": int(1),
+		},
+	}); err != nil {
+		t.Fatalf("CreateNode(first) failed: %v", err)
+	}
+
+	duplicate := &Node{
+		ID:     NodeID(prefixTestID("user-unique-age-pending-2")),
+		Labels: []string{"User"},
+		Properties: map[string]interface{}{
+			"age": float64(1),
+		},
+	}
+	_, err = tx.CreateNode(duplicate)
+	if err == nil {
+		t.Fatal("expected pending numeric-equivalent value to violate the unique constraint")
+	}
+	violation, ok := err.(*ConstraintViolationError)
+	if !ok {
+		t.Fatalf("CreateNode(duplicate) error = %T (%v), want *ConstraintViolationError", err, err)
+	}
+	if violation.Type != ConstraintUnique || violation.Label != "User" {
+		t.Fatalf("constraint violation = (%s, %s), want (%s, User)", violation.Type, violation.Label, ConstraintUnique)
+	}
+	if len(tx.pendingNodes) != 1 {
+		t.Fatalf("pending nodes after rejected duplicate = %d, want 1", len(tx.pendingNodes))
+	}
+}
+
+func TestBadgerTransactionUniqueConstraintPendingNonComparableValueDoesNotPanic(t *testing.T) {
+	engine, cleanup := setupTestBadgerEngine(t)
+	defer cleanup()
+
+	schema := engine.GetSchemaForNamespace("test")
+	if err := schema.AddUniqueConstraint("unique_tags", "User", "tags"); err != nil {
+		t.Fatalf("AddUniqueConstraint failed: %v", err)
+	}
+
+	tx, err := engine.BeginTransaction()
+	if err != nil {
+		t.Fatalf("BeginTransaction failed: %v", err)
+	}
+	defer tx.Rollback()
+
+	for _, entry := range []struct {
+		id   string
+		tags []string
+	}{
+		{id: "user-unique-tags-1", tags: []string{"one"}},
+		{id: "user-unique-tags-2", tags: []string{"two"}},
+	} {
+		_, err := tx.CreateNode(&Node{
+			ID:     NodeID(prefixTestID(entry.id)),
+			Labels: []string{"User"},
+			Properties: map[string]interface{}{
+				"tags": entry.tags,
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateNode(%s) failed: %v", entry.id, err)
+		}
+	}
+	if len(tx.pendingNodes) != 2 {
+		t.Fatalf("pending nodes = %d, want 2", len(tx.pendingNodes))
+	}
+}
+
 // TestBadgerTransaction_FullScanNodeKeyConstraint tests NODE KEY constraint across transactions.
 func TestBadgerTransaction_FullScanNodeKeyConstraint(t *testing.T) {
 	engine, cleanup := setupTestBadgerEngine(t)

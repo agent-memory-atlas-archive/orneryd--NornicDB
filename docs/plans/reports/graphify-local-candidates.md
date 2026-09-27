@@ -121,6 +121,52 @@ The old report's router, wrapper and source-similarity claims still require a
 separate current-source comparison and disposition; this graph-only filter
 cannot establish semantic equivalence or measure runtime performance.
 
+## Reviewed historical-only candidate
+
+`pkg/storage|.checkUniqueConstraint()` is a historical-only group. PR #747
+removed Async's partial checker; constrained writes now pass through the
+storage engine before acknowledgement. SchemaManager owns registered values,
+while BadgerTransaction checks transaction-local writes. Its pending scan used
+raw interface equality, so a pending `age: int(1)` followed by `age: float64(1)`
+was incorrectly accepted. It now uses `compareValues`, matching the indexed
+and persisted validation paths and avoiding a panic for non-comparable values.
+`TestBadgerTransactionUniqueConstraintPendingMatchesNumericValueSemantics`
+reproduces and pins rejection before the duplicate is staged;
+`TestBadgerTransactionUniqueConstraintPendingNonComparableValueDoesNotPanic`
+pins safe handling of distinct pending list values. These tests and the
+committed-index numeric parity test pass three times under `-race`.
+
+After PR #747, M2 Max `BenchmarkBadgerUniqueConstraintCommit_DisjointFunctionBatches`
+(`-benchtime=300ms -cpu=1 -count=3`) measured clean `63349321` at
+12.583–13.187 ms/op, 6,676,183–6,676,333 B/op, 135,138 allocs/op;
+the fixed worktree measured 12.651–13.356 ms/op,
+6,676,131–6,676,182 B/op, 135,137–135,139 allocs/op. Timing bands overlap;
+allocation shape is unchanged. A separate profiled run attributes 11.8%
+cumulative CPU to `checkUniqueConstraint`, including its pending comparison;
+this is not a speedup claim.
+
+`pkg/storage|.RefreshPendingEmbeddingsIndex()` has a distinct native-index
+rebuild (Badger), forwarding adapters (WAL/Async), and namespace overlay.
+Badger returns newly added entries, not the number removed. Namespaced used
+to return removal attempts even for embedded nodes that were never pending,
+then re-added and recounted already-indexed nodes after Badger refreshed them.
+Direct Badger and WAL-over-Badger now return the underlying complete-refresh
+count without a duplicate namespace scan. A capability-only inner retains its
+namespace scan and returns the delegated count plus locally queued candidates,
+not removal attempts. Two Badger-backed tests cover no-op, repeat no-op and
+repair of a missing entry; the existing capability-helper test pins prefix
+translation. Async still needs a separate staged-node/count contract: its
+cache can hold unflushed nodes that the underlying Badger rebuild cannot see,
+so the native early-return cannot be applied through Async.
+M2 Max `BenchmarkNamespacedRefreshPendingEmbeddingsIndex` on an already
+complete 16-node index (`-benchtime=200ms -cpu=1 -count=3`): direct Badger
+66.306–66.883 us/op, 62,896 B/op, 906 allocs/op; Namespaced
+66.411–66.694 us/op, 62,896–62,897 B/op, 906 allocs/op. These overlapping
+bands show wrapper parity, not a speedup. The profiled run's largest flat CPU
+sample was `runtime.madvise` (24.8%); MsgPack decoding and allocation are
+also material. Async staged-node behavior and any write-side benchmark remain
+unmeasured.
+
 ## Reviewed current-only candidate
 
 The historical-only `pkg/storage|.GetNodeWithoutEmbeddings()` group includes

@@ -807,6 +807,108 @@ func TestNamespacedEngine_EmbeddingWrappersAndLastWriteTime(t *testing.T) {
 	assert.Equal(t, time.Time{}, tenantA.LastWriteTime())
 }
 
+func TestNamespacedEngine_RefreshPendingEmbeddingsIndexNoOpReturnsZero(t *testing.T) {
+	engine, err := NewBadgerEngineInMemory()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = engine.Close() })
+	engine.SetEmbeddingsEnabled(true)
+
+	tenant := NewNamespacedEngine(engine, "tenant")
+	_, err = tenant.CreateNode(&Node{
+		ID: "already-embedded", Labels: []string{"Doc"},
+		Properties:      map[string]any{"text": "complete"},
+		ChunkEmbeddings: [][]float32{{1, 2}},
+	})
+	require.NoError(t, err)
+	require.Zero(t, engine.PendingEmbeddingsCount())
+
+	require.Zero(t, tenant.RefreshPendingEmbeddingsIndex())
+	require.Zero(t, engine.PendingEmbeddingsCount())
+}
+
+func TestNamespacedEngine_RefreshPendingEmbeddingsIndexAlreadyPendingReturnsZero(t *testing.T) {
+	engine, err := NewBadgerEngineInMemory()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = engine.Close() })
+	engine.SetEmbeddingsEnabled(true)
+
+	tenant := NewNamespacedEngine(engine, "tenant")
+	_, err = tenant.CreateNode(&Node{
+		ID: "needs-embedding", Labels: []string{"Doc"},
+		Properties: map[string]any{"text": "embed this"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, engine.PendingEmbeddingsCount())
+
+	require.Zero(t, tenant.RefreshPendingEmbeddingsIndex())
+	require.Zero(t, tenant.RefreshPendingEmbeddingsIndex())
+	require.Equal(t, 1, engine.PendingEmbeddingsCount())
+	engine.MarkNodeEmbedded("tenant:needs-embedding")
+	require.Zero(t, engine.PendingEmbeddingsCount())
+	require.Equal(t, 1, tenant.RefreshPendingEmbeddingsIndex())
+	require.Equal(t, 1, engine.PendingEmbeddingsCount())
+}
+
+func TestNamespacedEngine_RefreshPendingEmbeddingsIndexThroughWALReturnsZero(t *testing.T) {
+	engine, err := NewBadgerEngineInMemory()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = engine.Close() })
+	engine.SetEmbeddingsEnabled(true)
+	log, err := NewWAL(t.TempDir(), nil)
+	require.NoError(t, err)
+	wal := NewWALEngine(engine, log)
+	t.Cleanup(func() { _ = wal.Close() })
+
+	tenant := NewNamespacedEngine(wal, "tenant")
+	_, err = tenant.CreateNode(&Node{
+		ID: "needs-embedding", Labels: []string{"Doc"},
+		Properties: map[string]any{"text": "embed this"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, engine.PendingEmbeddingsCount())
+	require.Zero(t, tenant.RefreshPendingEmbeddingsIndex())
+	require.Equal(t, 1, engine.PendingEmbeddingsCount())
+	engine.MarkNodeEmbedded("tenant:needs-embedding")
+	require.Zero(t, engine.PendingEmbeddingsCount())
+	require.Equal(t, 1, tenant.RefreshPendingEmbeddingsIndex())
+	require.Equal(t, 1, engine.PendingEmbeddingsCount())
+}
+
+func BenchmarkNamespacedRefreshPendingEmbeddingsIndex(b *testing.B) {
+	engine, err := NewBadgerEngineInMemory()
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = engine.Close() })
+	engine.SetEmbeddingsEnabled(true)
+	tenant := NewNamespacedEngine(engine, "tenant")
+	for index := range 16 {
+		if _, err := tenant.CreateNode(&Node{
+			ID: NodeID(fmt.Sprintf("node-%d", index)), Labels: []string{"Doc"},
+			Properties: map[string]any{"text": "embed this"},
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	for _, entry := range []struct {
+		name    string
+		refresh func() int
+	}{
+		{name: "badger", refresh: engine.RefreshPendingEmbeddingsIndex},
+		{name: "namespaced", refresh: tenant.RefreshPendingEmbeddingsIndex},
+	} {
+		b.Run(entry.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if added := entry.refresh(); added != 0 {
+					b.Fatalf("refresh added %d entries to a complete index", added)
+				}
+			}
+		})
+	}
+}
+
 func TestNamespacedEngine_QueryDelegateMethods(t *testing.T) {
 	inner := NewMemoryEngine()
 	defer inner.Close()

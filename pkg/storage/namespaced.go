@@ -1393,25 +1393,27 @@ func (n *NamespacedEngine) FindNodeNeedingEmbedding() *Node {
 	return nil
 }
 
-// RefreshPendingEmbeddingsIndex refreshes the pending embeddings index,
-// but only for nodes in this namespace.
-// Also cleans up stale entries from other namespaces in the underlying index.
+// RefreshPendingEmbeddingsIndex refreshes the pending embeddings index across
+// the underlying engine and includes staged nodes in this namespace.
 func (n *NamespacedEngine) RefreshPendingEmbeddingsIndex() int {
-	// First, call the underlying engine's RefreshPendingEmbeddingsIndex to clean up
-	// stale entries from ALL namespaces (including deleted nodes, nodes with embeddings, etc.)
-	// This is important because the underlying index contains entries from all namespaces
-	underlyingRemoved := 0
+	underlyingAdded := 0
 	if underlyingMgr, ok := n.inner.(interface {
 		RefreshPendingEmbeddingsIndex() int
 	}); ok {
-		// This will clean up stale entries from all namespaces
-		underlyingRemoved = underlyingMgr.RefreshPendingEmbeddingsIndex()
+		underlyingAdded = underlyingMgr.RefreshPendingEmbeddingsIndex()
+		inner := n.inner
+		if wal, wrapped := inner.(*WALEngine); wrapped {
+			inner = wal.engine
+		}
+		if _, complete := inner.(*BadgerEngine); complete {
+			return underlyingAdded
+		}
 	}
 
 	// Get all nodes in this namespace
 	nodes, err := n.AllNodes()
 	if err != nil {
-		return underlyingRemoved
+		return underlyingAdded
 	}
 
 	added := 0
@@ -1424,7 +1426,7 @@ func (n *NamespacedEngine) RefreshPendingEmbeddingsIndex() int {
 		GetNode(NodeID) (*Node, error)
 	})
 	if !ok {
-		return underlyingRemoved
+		return underlyingAdded
 	}
 
 	// Check each node in our namespace
@@ -1455,14 +1457,13 @@ func (n *NamespacedEngine) RefreshPendingEmbeddingsIndex() int {
 		}
 	}
 
-	totalRemoved := underlyingRemoved + removed
 	nsLog := n.namespaceLog()
-	if added > 0 || totalRemoved > 0 {
+	if added > 0 || removed > 0 || underlyingAdded > 0 {
 		nsLog.Info("pending embeddings index refreshed",
 			"subsystem", "embeddings_index",
 			"added", added,
-			"removed_stale", totalRemoved,
-			"underlying_removed", underlyingRemoved,
+			"marked_embedded", removed,
+			"underlying_added", underlyingAdded,
 		)
 	} else {
 		// Log even if no changes, to help debug why nodes aren't being found.
@@ -1472,7 +1473,7 @@ func (n *NamespacedEngine) RefreshPendingEmbeddingsIndex() int {
 		)
 	}
 
-	return totalRemoved
+	return underlyingAdded + added
 }
 
 // MarkNodeEmbedded marks a node as embedded (removes from pending index).
