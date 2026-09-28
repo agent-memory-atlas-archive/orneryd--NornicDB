@@ -48,5 +48,6 @@ files, per instruction. PR per branch with fix description + benchmark evidence.
 
 - [x] Shared-executor transaction follow-up (lane-3 finding 1) — PR #755 (`fix/shared-executor-transaction-control`).
 - [x] Cluster A (property-map expression values, #514 core + #656) — PR #757 (`fix/cypher-property-expression-values`).
-- [x] Cluster C (statement framing, #743 FINISH + #744 CYPHER preamble / EXPLAIN PROFILE) — `fix/cypher-statement-framing`: preamble stripping, FINISH terminator (incl. UNION branches and CALL bodies), EXPLAIN/PROFILE exclusivity. PR pending.
-- [ ] Cluster E (#744 §2 plan delivery to clients) and clusters B, D, F–L pending.
+- [x] Cluster C (statement framing, #743 FINISH + #744 CYPHER preamble / EXPLAIN PROFILE) — PR #758 (`fix/cypher-statement-framing`).
+- [x] Cluster B (validator leniency, #514 family: `NOT IN`, list trailing/leading comma, doubled-quote string adjacency, dangling `UNWIND`) — `fix/cypher-validator-strictness`. PR pending.
+- [ ] Cluster E (#744 §2 plan delivery to clients) and clusters D, F–L pending.
