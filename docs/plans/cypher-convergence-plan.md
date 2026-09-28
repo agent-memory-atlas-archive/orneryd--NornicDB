@@ -366,7 +366,7 @@ requires every Cypher-relevant entry to be resolved and every deferral explained
 ## OpenSpec adoption
 
 The proposed change is checked in under
-[`openspec/changes/converge-cypher-execution/`](https://github.com/orneryd/NornicDB/blob/main/openspec/changes/converge-cypher-execution/proposal.md),
+[`openspec/changes/archive/2026-09-27-converge-cypher-execution/`](https://github.com/orneryd/NornicDB/blob/main/openspec/changes/archive/2026-09-27-converge-cypher-execution/proposal.md),
 with proposal, design, tasks and five capability delta specs. Project context
 and review rules live in [`openspec/config.yaml`](https://github.com/orneryd/NornicDB/blob/main/openspec/config.yaml).
 These are proposed contracts, not a claim that they are implemented. Canonical

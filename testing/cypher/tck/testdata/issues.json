@@ -24,7 +24,7 @@
       "local_reproductions": ["TestGH447_UnwindOptionalMatchCorrelationMatrix"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 448,
@@ -36,7 +36,7 @@
       "local_reproductions": ["TestGH448_StagedEmbeddingWritebackKeepsLabelScanComplete"],
       "failing_baseline_commit": "1025caa3",
       "fixing_commits": ["3ca7b4ce", "fd05ef8a"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 449,
@@ -48,7 +48,7 @@
       "local_reproductions": ["TestGH449_MultipleOrderKeysKeepHiddenFirstKey"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 450,
@@ -60,7 +60,7 @@
       "local_reproductions": ["TestGH450_ReturnPropertyAliasedToVariableAfterWith"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 451,
@@ -72,7 +72,7 @@
       "local_reproductions": ["TestGH451_WithOrderByBeforeGroupedCollect"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 452,
@@ -84,7 +84,7 @@
       "local_reproductions": ["TestGH452Comment_OrderedWithWhereCollect"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 453,
@@ -96,7 +96,7 @@
       "local_reproductions": ["TestGH453_ListComprehensionWhereAndProjectionCases"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 454,
@@ -108,7 +108,7 @@
       "local_reproductions": ["TestGH454_IntegerDivisionAndPowerSemantics"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 455,
@@ -120,7 +120,7 @@
       "local_reproductions": ["TestGH455_RelationshipMergeOnCreatePersistsAndMatches"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 456,
@@ -132,7 +132,7 @@
       "local_reproductions": ["TestGH456_RemovePropertyThenSetLabelPreservesMatchedScope"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 457,
@@ -144,7 +144,7 @@
       "local_reproductions": ["TestGH457_CorrelatedCallPreservesOuterCompany"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 458,
@@ -156,7 +156,7 @@
       "local_reproductions": ["TestGH458_TemporalComponentsRemainTypedThroughWith"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 459,
@@ -168,7 +168,7 @@
       "local_reproductions": ["TestGH459_HiddenFunctionOrderKeyWithLimit"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 460,
@@ -180,7 +180,7 @@
       "local_reproductions": ["TestGH460_ReduceAfterWithUsesLocalAndInheritedValues"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 461,
@@ -192,7 +192,7 @@
       "local_reproductions": ["TestGH461_AutocommitCreatedRelationshipVisibleAcrossTransactionsAndReopen"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["03f2d765"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 462,
@@ -204,7 +204,7 @@
       "local_reproductions": ["TestGH462_RelationshipSetEvaluatesBoundPropertyExpressions"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["81542d88"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 463,
@@ -216,7 +216,7 @@
       "local_reproductions": ["TestGH463_AggregateWrappedInArithmeticUsesAllRows"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 464,
@@ -228,7 +228,7 @@
       "local_reproductions": ["TestGH464_WithOrderByPreservesAggregateAlias"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 465,
@@ -240,7 +240,7 @@
       "local_reproductions": ["TestGH465_PropertyAccessOnEndpointFunctionResult"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 466,
@@ -252,7 +252,7 @@
       "local_reproductions": ["TestGH466_MapProjectionSelectorsAndComputedFields"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 467,
@@ -264,7 +264,7 @@
       "local_reproductions": ["TestGH467_NestedMapAccessAndKeysAfterWith"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 468,
@@ -276,7 +276,7 @@
       "local_reproductions": ["TestGH468_CollectedListSubscriptAndSlice"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 469,
@@ -288,7 +288,7 @@
       "local_reproductions": ["TestGH469_OptionalCollectSizeMatchesCollectedValues"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 470,
@@ -300,7 +300,7 @@
       "local_reproductions": ["TestSetRoutesConverge"],
       "failing_baseline_commit": null,
       "fixing_commits": ["9f3aee59"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 471,
@@ -312,7 +312,7 @@
       "local_reproductions": ["TestGH471_RoundPrecisionAndFloatResultTypes"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 474,
@@ -324,7 +324,7 @@
       "local_reproductions": ["TestGH474_SetMapEvaluatesScopedExpressionValues"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 475,
@@ -336,7 +336,7 @@
       "local_reproductions": ["TestGH475_StoredListSubscriptAndHeadInMatch"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["f0c927df"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 476,
@@ -348,7 +348,7 @@
       "local_reproductions": ["TestGH476_StoredDatetimeComparesAsTemporalValue"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 477,
@@ -360,7 +360,7 @@
       "local_reproductions": ["TestGH477_MinMaxAggregateStrings"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 478,
@@ -372,7 +372,7 @@
       "local_reproductions": ["TestGH478_ListSubscriptInMatchPropertyMap"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 479,
@@ -384,7 +384,7 @@
       "local_reproductions": ["TestGH479_SetThenReturnAggregatesAllMatchedRows"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 480,
@@ -396,7 +396,7 @@
       "local_reproductions": ["TestGH480_ChainedLabelSetMatchesCommaForm"],
       "failing_baseline_commit": "2da13483",
       "fixing_commits": ["9f3aee59"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 481,
@@ -408,7 +408,7 @@
       "local_reproductions": ["TestGH481_OptionalMatchCountGroupsPerOuterRow"],
       "failing_baseline_commit": "1025caa3",
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 482,
@@ -420,7 +420,7 @@
       "local_reproductions": ["TestSetRoutesConverge", "TestMutationFamiliesRollBackOnRejection"],
       "failing_baseline_commit": null,
       "fixing_commits": ["program:#521-series"],
-      "status": "verified"
+      "status": "closed"
     },
     {
       "number": 487,
@@ -432,7 +432,7 @@
       "local_reproductions": ["TestCollectNodesWithStreaming_LabelLimitPrefersLabelLookup", "TestTraversalLimitStopsStreamingStartNodes", "BenchmarkStatementRouting"],
       "failing_baseline_commit": null,
       "fixing_commits": ["7748cec1"],
-      "status": "verified"
+      "status": "closed"
     }
   ]
 ,
@@ -440,13 +440,14 @@
   "issue": 521,
   "url": "https://github.com/orneryd/NornicDB/issues/521",
   "title": "Converge Cypher execution",
-  "openspec": "openspec/changes/converge-cypher-execution",
+  "openspec": "openspec/changes/archive/2026-09-27-converge-cypher-execution",
   "fixing_commit_series_note": "Entries whose fixing_commits contains the marker 'program:#521-series' were fixed by the #521 convergence commit series between the failing baseline commit and qualification; their local_reproductions are the passing artifacts.",
   "qualification": {
     "tck_ratchet": "7794/7794 scenario/mode outcomes at upstream revision 370fe27f417730dca2ef712dd1c0c5dadcb99ef8; zero expected gaps, setup blocks and harness errors; 192 fully-vetted features (make cypher-tck-ratchet, make cypher-tck-vetted).",
     "full_suite": "go test ./... -p 2 -count=1 -timeout=15m passes.",
     "build": "go build ./... passes.",
     "race": "Scoped race suites pass: pkg/cypher (excluding four timing-threshold tests invalid under instrumentation), pkg/storage, pkg/server, pkg/bolt, pkg/linkpredict.",
-    "benchmark": "M2 Max BenchmarkStatementRouting/(autocommit|explicit_tx)/simple_match_limit stays within the recorded band with unchanged allocations."
+    "benchmark": "M2 Max BenchmarkStatementRouting/(autocommit|explicit_tx)/simple_match_limit stays within the recorded band with unchanged allocations.",
+    "github_closure": "2026-09-27: all 35 scoped entries and the umbrella issue #521 are closed on GitHub; #521 carries the program completion comment (commit 0a3da5e4). #472/#473 were closed separately by their own backup/restore commits (387ef440, 949de1bc) and remain outside this program."
   }
 }}

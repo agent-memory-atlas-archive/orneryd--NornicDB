@@ -134,7 +134,7 @@ def main() -> int:
         "issue": 521,
         "url": "https://github.com/orneryd/NornicDB/issues/521",
         "title": "Converge Cypher execution",
-        "openspec": "openspec/changes/converge-cypher-execution",
+        "openspec": "openspec/changes/archive/2026-09-27-converge-cypher-execution",
         "fixing_commit_series_note": (
             f"Entries whose fixing_commits contains the marker "
             f"{PROGRAM_SERIES!r} were fixed by the #521 convergence commit "
