@@ -210,10 +210,10 @@ func (e *StorageExecutor) executeShellCommand(ctx context.Context, command strin
 func (e *StorageExecutor) executeParamCommand(ctx context.Context, args string, explicitParams map[string]interface{}) (*ExecuteResult, error) {
 	trimmed := strings.TrimSpace(strings.TrimSuffix(args, ";"))
 	if trimmed == "" || strings.EqualFold(trimmed, "list") {
-		return e.listShellParams(), nil
+		return e.listShellParams(ctx), nil
 	}
 	if strings.EqualFold(trimmed, "clear") {
-		e.clearShellParams()
+		e.clearShellParams(ctx)
 		return &ExecuteResult{
 			Columns: []string{"status"},
 			Rows:    [][]interface{}{{"Parameters cleared"}},
@@ -225,7 +225,7 @@ func (e *StorageExecutor) executeParamCommand(ctx context.Context, args string, 
 		return nil, err
 	}
 
-	effectiveParams := e.mergeShellParams(explicitParams)
+	effectiveParams := e.mergeShellParams(ctx, explicitParams)
 	paramMap, err := e.evaluateParamMapExpression(ctx, mapExpr, effectiveParams)
 	if err != nil {
 		return nil, err
@@ -234,7 +234,7 @@ func (e *StorageExecutor) executeParamCommand(ctx context.Context, args string, 
 		return nil, localizedError(localization.CypherCommandRoutingParameterMapRequired(), nil)
 	}
 
-	e.setShellParams(paramMap)
+	e.setShellParams(ctx, paramMap)
 	return &ExecuteResult{
 		Columns: []string{"status"},
 		Rows:    [][]interface{}{{fmt.Sprintf("Parameters set: %d", len(paramMap))}},
@@ -428,9 +428,10 @@ func topLevelColonIndex(input string) int {
 	return -1
 }
 
-func (e *StorageExecutor) mergeShellParams(explicitParams map[string]interface{}) map[string]interface{} {
+func (e *StorageExecutor) mergeShellParams(ctx context.Context, explicitParams map[string]interface{}) map[string]interface{} {
+	shell := e.shellParamsFor(ctx)
 	e.shellParamsMu.RLock()
-	shellLen := len(e.shellParams)
+	shellLen := len(shell)
 	if shellLen == 0 {
 		e.shellParamsMu.RUnlock()
 		if len(explicitParams) == 0 {
@@ -441,7 +442,7 @@ func (e *StorageExecutor) mergeShellParams(explicitParams map[string]interface{}
 	}
 
 	merged := make(map[string]interface{}, util.SafePreallocSum(shellLen, len(explicitParams)))
-	for key, value := range e.shellParams {
+	for key, value := range shell {
 		merged[key] = value
 	}
 	e.shellParamsMu.RUnlock()
@@ -452,38 +453,94 @@ func (e *StorageExecutor) mergeShellParams(explicitParams map[string]interface{}
 	return merged
 }
 
-func (e *StorageExecutor) getShellParamsSnapshot() map[string]interface{} {
+// shellParamsFor returns the caller-scoped shell-param bucket for ctx: the
+// authenticated principal's own bucket, else the auth token's, else the
+// shared legacy bucket for contexts without a caller identity. One client's
+// :param values are never visible to another client's statements.
+func (e *StorageExecutor) shellParamsFor(ctx context.Context) map[string]interface{} {
+	bucket := shellParamsBucket(ctx)
+	if bucket == "" {
+		return e.shellParams
+	}
+	return e.shellParamsByToken[bucket]
+}
+
+func shellParamsBucket(ctx context.Context) string {
+	if principal := GetAuthenticatedPrincipalFromContext(ctx); principal != "" {
+		return "principal:" + principal
+	}
+	if token := GetAuthTokenFromContext(ctx); token != "" {
+		return "token:" + token
+	}
+	return ""
+}
+
+// cloneShellParamsByToken copies every per-caller shell-param bucket for a
+// derived executor (a request-scoped clone; each clone serves one caller).
+func cloneShellParamsByToken(e *StorageExecutor) map[string]map[string]interface{} {
 	e.shellParamsMu.RLock()
 	defer e.shellParamsMu.RUnlock()
-	if len(e.shellParams) == 0 {
+	if len(e.shellParamsByToken) == 0 {
 		return nil
 	}
-	out := make(map[string]interface{}, len(e.shellParams))
-	for key, value := range e.shellParams {
+	out := make(map[string]map[string]interface{}, len(e.shellParamsByToken))
+	for bucket, params := range e.shellParamsByToken {
+		copyParams := make(map[string]interface{}, len(params))
+		for key, value := range params {
+			copyParams[key] = value
+		}
+		out[bucket] = copyParams
+	}
+	return out
+}
+
+func (e *StorageExecutor) getShellParamsSnapshot(ctx context.Context) map[string]interface{} {
+	shell := e.shellParamsFor(ctx)
+	e.shellParamsMu.RLock()
+	defer e.shellParamsMu.RUnlock()
+	if len(shell) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(shell))
+	for key, value := range shell {
 		out[key] = value
 	}
 	return out
 }
 
-func (e *StorageExecutor) setShellParams(params map[string]interface{}) {
+func (e *StorageExecutor) setShellParams(ctx context.Context, params map[string]interface{}) {
 	e.shellParamsMu.Lock()
 	defer e.shellParamsMu.Unlock()
-	if e.shellParams == nil {
+	shell := e.shellParamsFor(ctx)
+	if bucket := shellParamsBucket(ctx); bucket != "" {
+		if shell == nil {
+			shell = make(map[string]interface{}, len(params))
+			if e.shellParamsByToken == nil {
+				e.shellParamsByToken = make(map[string]map[string]interface{})
+			}
+			e.shellParamsByToken[bucket] = shell
+		}
+	} else if e.shellParams == nil {
 		e.shellParams = make(map[string]interface{}, len(params))
+		shell = e.shellParams
 	}
 	for key, value := range params {
-		e.shellParams[key] = value
+		shell[key] = value
 	}
 }
 
-func (e *StorageExecutor) clearShellParams() {
+func (e *StorageExecutor) clearShellParams(ctx context.Context) {
 	e.shellParamsMu.Lock()
 	defer e.shellParamsMu.Unlock()
-	clear(e.shellParams)
+	shell := e.shellParamsFor(ctx)
+	if shell == nil {
+		return
+	}
+	clear(shell)
 }
 
-func (e *StorageExecutor) listShellParams() *ExecuteResult {
-	params := e.getShellParamsSnapshot()
+func (e *StorageExecutor) listShellParams(ctx context.Context) *ExecuteResult {
+	params := e.getShellParamsSnapshot(ctx)
 	keys := make([]string, 0, len(params))
 	for key := range params {
 		keys = append(keys, key)

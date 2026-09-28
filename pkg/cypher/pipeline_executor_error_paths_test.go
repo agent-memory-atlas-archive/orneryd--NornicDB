@@ -127,6 +127,28 @@ RETURN n
 	require.Equal(t, int64(0), res.Rows[0][0])
 }
 
+// TestMutationFamiliesRollBackOnRejection pins the effect boundary of the
+// remaining write families: a statement that wrote before its rejection
+// leaves zero persisted effects in SET, DELETE and FOREACH shapes.
+func TestMutationFamiliesRollBackOnRejection(t *testing.T) {
+	for name, query := range map[string]string{
+		"set":     "CREATE (:R {v: 1}) SET n.v = 2",
+		"delete":  "CREATE (:R {v: 1}) DELETE n",
+		"foreach": "FOREACH (x IN [1] | CREATE (:R)) CREAT (:R)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			exec, _ := newTestExecutor(t)
+			ctx := context.Background()
+			_, err := exec.Execute(ctx, query, nil)
+			require.Error(t, err, query)
+			require.Contains(t, statusText(err), "Neo.ClientError.Statement.SyntaxError", query)
+			count, err := exec.Execute(ctx, "MATCH (n:R) RETURN count(n) AS c", nil)
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{int64(0)}}, count.Rows, query)
+		})
+	}
+}
+
 func TestUnresolvedWithExpressionRejectsWithoutEffects(t *testing.T) {
 	store := storage.NewNamespacedEngine(newTestMemoryEngine(t), "pipeline_unresolved_with")
 	exec := NewStorageExecutor(store)

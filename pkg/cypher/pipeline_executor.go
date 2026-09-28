@@ -1219,6 +1219,9 @@ func (e *StorageExecutor) pipelineApplyDelete(ctx context.Context, rows []pipeli
 	}
 	projected := &ExecuteResult{Columns: targets, Rows: make([][]interface{}, 0, len(rows))}
 	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, true, err
+		}
 		values := make([]interface{}, 0, len(targets))
 		for _, expression := range targets {
 			value, ok, err := e.evaluateRowValue(strings.TrimSpace(expression), row)
@@ -1283,6 +1286,9 @@ func (e *StorageExecutor) pipelineApplyRemove(ctx context.Context, rows []pipeli
 	body := strings.TrimSpace(clause[len("REMOVE"):])
 	store := e.getStorage(ctx)
 	for _, bindings := range rows {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		columns := make([]string, 0, len(bindings))
 		row := make([]interface{}, 0, len(bindings))
 		for name, value := range bindings {
@@ -1320,6 +1326,9 @@ func (e *StorageExecutor) pipelineApplySet(ctx context.Context, rows []pipelineR
 		return nil, false, nil
 	}
 	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, true, err
+		}
 		nodes := make(map[string]*storage.Node)
 		evalNodes := nodes
 		rels := make(map[string]*storage.Edge)
@@ -2612,6 +2621,9 @@ func (e *StorageExecutor) pipelineApplyCreate(ctx context.Context, rows []pipeli
 	var out []pipelineRow
 
 	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, false, err
+		}
 		// Substitute scalar bindings (e.g. prodRef.productID → literal) up
 		// front so the CREATE pattern parser sees a concrete value.
 		substituted := e.materializePipelinePropertyExpressions(ctx, clause, row)
@@ -2721,6 +2733,9 @@ func (e *StorageExecutor) pipelineApplyMerge(ctx context.Context, rows []pipelin
 	}
 	template := e.pipelineMergeTemplateFor(clause)
 	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		// The clause parsed once: a row whose relationship already exists
 		// is its matches, without rendering and parsing the row's text.
 		if pattern, startNode, endNode, templated := template.pattern(ctx, e, row); templated {
@@ -3578,6 +3593,11 @@ func (e *StorageExecutor) pipelineApplyForeach(ctx context.Context, rows []pipel
 			return nil, invalid()
 		}
 		for _, item := range items {
+			// The loop is a mutation boundary: a cancellation between items
+			// stops the remaining writes (the MERGE branch probes too).
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			child := make(pipelineRow, len(row)+1)
 			for name, value := range row {
 				child[name] = value

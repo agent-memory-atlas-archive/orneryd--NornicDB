@@ -365,3 +365,17 @@ ns/op after (608 B, 7 allocs); the live-overlay benchmark measured 306.0–357.4
 ns/op before vs 297.3–302.6 ns/op after (104 B, 5 allocs). These bands do not
 justify a speedup claim. The separate index/overlay implementations remain;
 the cancellation contract at their composition is now tested.
+
+## Final disposition
+
+Every same-label candidate group is dispositioned: merged into a shared kernel
+where the responsibilities coincided, kept separate where the views
+(Badger/WAL/Async/Namespaced/Composite overlays, remote transport, plugin vs
+public API, index backends) genuinely differ, or documented as an
+adapter-boundary deferral. One item remains intentionally open: remote
+`WithEmbeddings` parity requires a vector-capable remote API contract (Bolt
+normalization and the HTTP transaction API do not carry NornicDB's separately
+stored chunk/named embedding vectors), which is an API-design decision, not a
+Cypher executor fork. The retained legacy interface wrappers (the five
+StreamNodes* methods, the computed-row evaluator facade) are public API
+adapters over the converged kernels and are documented at their definitions.

@@ -1058,6 +1058,55 @@ func (e *StorageExecutor) executeCreateDatabase(ctx context.Context, cypher stri
 	}, nil
 }
 
+// executeCreateOrReplaceDatabase handles CREATE OR REPLACE DATABASE name: the
+// existing database of that name (if any) is dropped and a fresh one created.
+// It is an admin command, classified by isAdminPermissionQuery, so a caller
+// without the admin permission never reaches it.
+func (e *StorageExecutor) executeCreateOrReplaceDatabase(ctx context.Context, cypher string) (*ExecuteResult, error) {
+	if e.dbManager == nil {
+		return nil, localizedError(localization.CypherAdminDatabaseManagerUnavailable("CREATE DATABASE"), nil)
+	}
+	orReplace := findMultiWordKeywordIndex(cypher, "OR", "REPLACE")
+	if orReplace < 0 {
+		return nil, localizedError(localization.CypherAdminInvalidSyntax("CREATE DATABASE"), nil)
+	}
+	startPos := orReplace + len("OR REPLACE")
+	for startPos < len(cypher) && isWhitespace(cypher[startPos]) {
+		startPos++
+	}
+	if startPos+len("DATABASE") <= len(cypher) && strings.EqualFold(cypher[startPos:startPos+len("DATABASE")], "DATABASE") {
+		startPos += len("DATABASE")
+		for startPos < len(cypher) && isWhitespace(cypher[startPos]) {
+			startPos++
+		}
+	} else {
+		return nil, localizedError(localization.CypherAdminInvalidSyntax("CREATE DATABASE"), nil)
+	}
+	rawDBName := strings.TrimSpace(cypher[startPos:])
+	dbName, err := unquoteBacktickIdentifier(rawDBName)
+	if err != nil {
+		return nil, localizedError(localization.CypherAdminInvalidIdentifier(rawDBName), err)
+	}
+	if dbName == "" || strings.ContainsAny(dbName, " \t\n\r") {
+		return nil, localizedError(localization.CypherAdminDatabaseNameEmpty("CREATE DATABASE"), nil)
+	}
+
+	if e.dbManager.Exists(dbName) {
+		if err := e.dbManager.DropDatabase(dbName); err != nil {
+			return nil, localizedError(localization.CypherAdminDropDatabaseFailed(dbName, err), err)
+		}
+	}
+	if err := e.dbManager.CreateDatabase(dbName); err != nil {
+		e.logEvent(slog.LevelError, localization.CypherCreateDatabaseFailedEvent())
+		return nil, localizedError(localization.CypherAdminCreateDatabaseFailed(dbName, err), err)
+	}
+	e.logEvent(slog.LevelInfo, localization.CypherCreateDatabaseSucceededEvent())
+	return &ExecuteResult{
+		Columns: []string{"name"},
+		Rows:    [][]interface{}{{dbName}},
+	}, nil
+}
+
 // executeDropDatabase handles DROP DATABASE command.
 //
 // Deletes a database and all its data. Supports optional IF EXISTS clause to

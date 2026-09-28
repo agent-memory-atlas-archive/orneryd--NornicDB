@@ -29,10 +29,7 @@ func prevWordEqualsIgnoreCase(s string, pos int, word string) bool {
 	if pos <= 0 {
 		return false
 	}
-	i := pos - 1
-	for i >= 0 && isASCIISpace(s[i]) {
-		i--
-	}
+	i := lastLiveByte(s, pos)
 	if i < 0 {
 		return false
 	}

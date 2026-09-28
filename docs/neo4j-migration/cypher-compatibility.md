@@ -465,22 +465,29 @@ PROFILE MATCH (n:Person)-[:KNOWS]->(m) RETURN n, m
 
 ---
 
-## ⏺️ Optional Features (Not Critical)
+## ⏺️ Optional Features
 
-### 1. **Multi-database Support** 🟢 LOW PRIORITY
+### 1. **Multi-database Support** ✅
 
-**Status**: NOT IMPLEMENTED  
-**Impact**: Single database only
+**Status**: IMPLEMENTED
 
 ```cypher
--- Not supported
+-- Supported
 USE database2
 CREATE DATABASE mydb
+CREATE OR REPLACE DATABASE mydb
 SHOW DATABASES
+CREATE COMPOSITE DATABASE cmp CONSTITUENTS database1, database2
+CREATE ALIAS aliasName FOR DATABASE dbName
 ```
 
-**Estimated Effort**: 1-2 weeks  
-**Priority**: LOW (most deployments use single database)
+Multi-database management follows Neo4j 4.x semantics through the system
+database surface: `USE` targets a database for the session, database DDL is
+admin-only (non-admin callers receive `Neo.ClientError.Security.Forbidden`),
+composite databases require an explicit constituent target before any
+graph-accessing statement (pattern reads, `COUNT {}`/`EXISTS {}` subqueries and
+pattern comprehensions), and composite constituents are authorized per
+selected database. See [multi-database](../user-guides/multi-database.md).
 
 ---
 

@@ -34,6 +34,15 @@ func TestForeach_MergeStopsAfterCancellation(t *testing.T) {
 	require.Equal(t, 1, store.creates)
 }
 
+func TestForeach_CreateStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &cancelOnFirstCreateEngine{Engine: storage.NewNamespacedEngine(newTestMemoryEngine(t), "cancel_foreach_create"), cancel: cancel}
+	exec := NewStorageExecutor(store)
+	_, err := exec.Execute(ctx, "FOREACH (row IN [1, 2, 3] | CREATE (n:CancelForeach {value: row}))", nil)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, store.creates)
+}
+
 // TestForeach_BoundExecutionPinsNoSubstitution pins the FOREACH flip (§6.2):
 // the loop variable travels as a value binding, so values that are hostile to
 // query-text substitution (quotes, identifier-like content) and structured

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/orneryd/nornicdb/pkg/localization"
 	"github.com/orneryd/nornicdb/pkg/observability"
@@ -118,4 +119,13 @@ func TestSlowQueryReportOmitsCommentSecrets(t *testing.T) {
 		require.NotContains(t, shape, "comment-secret")
 	}
 	require.Equal(t, 1, reports)
+}
+
+func TestTruncateRuneSafeNeverSplitsUTF8(t *testing.T) {
+	require.Equal(t, "abc", truncateRuneSafe("abc", 500))
+	require.Equal(t, "héllo wörld", truncateRuneSafe("héllo wörld", 500))
+	require.True(t, utf8.ValidString(truncateRuneSafe("héllo wörld", 6)))
+	require.Equal(t, "", truncateRuneSafe("", 500))
+	// Truncation inside a multi-byte rune lands on the rune boundary.
+	require.Equal(t, "hé", truncateRuneSafe("héllo", 3))
 }

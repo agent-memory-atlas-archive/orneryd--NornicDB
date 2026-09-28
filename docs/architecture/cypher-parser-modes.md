@@ -75,10 +75,27 @@ flowchart TB
 |---------|---------------------|----------|
 | **Throughput** | 3,000-4,200 ops/sec | 0.8-2,100 ops/sec |
 | **Worst Case** | - | **4,753x slower** |
-| **Error Messages** | Basic | Detailed (line/column) |
-| **Syntax Validation** | Lenient | Strict OpenCypher |
-| **Memory Usage** | Lowest | Higher |
+| **Error Messages** | Classified with restored line/column positions | Detailed (line/column) |
+| **Syntax Validation** | Strict, TCK-vetted (see below) | Strict OpenCypher |
+| **Memory Usage** | Lowest (recursive key scanner, no parse tree) | Higher |
 | **Best For** | **Production** | Development/Debugging |
+
+> **Note:** both modes share a single converged execution pipeline. There are no
+> legacy alternate executors or text re-dispatch fallbacks: every statement runs
+> through the same typed router (`Handled` / `NotApplicable` / `ParseRejected` /
+> `Failed`), and unhandled statements fail with Neo4j's `Neo.ClientError.Statement.SyntaxError`
+> classification rather than being re-routed.
+
+### Nornic validation is TCK-vetted
+
+The Nornic scanner uses a recursive key scanner with lightweight lexing only where
+needed (`pkg/cypher/keyword_scan.go`), with quote/comment/bracket-aware fragment
+consumption shared by all callers. The official OpenCypher TCK is pinned at
+revision `370fe27f` and the ratchet records **7794/7794 scenario/mode outcomes
+passing** with zero expected gaps, setup blocks or harness errors
+(`make cypher-tck-ratchet`, `make cypher-tck-vetted`). Rejections are classified
+with Neo4j Bolt status codes and error positions are restored from the original
+query text, including CR/CRLF/LF line counting.
 
 ## Configuration
 
@@ -123,13 +140,12 @@ config.SetParserType(config.ParserTypeNornic)
 **Pros:**
 - **Fastest execution** — 3,000-4,200 ops/sec
 - 💾 **Lowest memory** — No parse tree allocation
-- 🔧 **Battle-tested** — Original implementation
-- ⚡ **Zero parsing overhead**
+- 🔧 **Battle-tested** — Original implementation, converged single pipeline
+- ⚡ **Zero parsing overhead** — recursive key scanner, lightweight lexing only as needed
 
 **Cons:**
-- 🔍 **Basic error messages** — No line/column info
-- 📝 **Lenient validation** — May accept some invalid syntax
-- 🐛 **Harder to debug** — No structured parse tree
+- 🐛 **No structured parse tree** — debugging uses restored positions, not AST inspection
+- 📝 **Semantic scope checks** are clause-targeted rather than grammar-derived; the TCK ratchet gates the supported surface
 
 ---
 
@@ -158,7 +174,7 @@ config.SetParserType(config.ParserTypeNornic)
 
 | Parser | Error Message |
 |--------|---------------|
-| Nornic | `syntax error: unbalanced parentheses` |
+| Nornic | `syntax error: unbalanced parentheses` classified as `Neo.ClientError.Statement.SyntaxError` (offset-tracked errors additionally restore line/column positions from the original query text) |
 | ANTLR | `syntax error: line 1:9 no viable alternative at input 'MATCH (n RETURN'` |
 
 ## Make Targets

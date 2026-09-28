@@ -111,6 +111,7 @@ func (e *StorageExecutor) cloneForStorage(store storage.Engine) *StorageExecutor
 		}
 	}
 	e.shellParamsMu.RUnlock()
+	cloned.shellParamsByToken = cloneShellParamsByToken(e)
 
 	return cloned
 }

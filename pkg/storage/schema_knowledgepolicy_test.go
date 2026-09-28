@@ -313,6 +313,30 @@ func TestDropDecayProfile_Bundle(t *testing.T) {
 	})
 }
 
+func TestDropPromotionProfile_ReferencedGuard(t *testing.T) {
+	sm := NewSchemaManager()
+	profile := validPromoProfile("promo_profile")
+	require.NoError(t, sm.CreatePromotionProfile(profile))
+	policy := knowledgepolicy.PromotionPolicyDef{
+		Name:         "promo_policy",
+		TargetLabels: []string{"Comment"},
+		WhenClauses: []knowledgepolicy.PromotionPolicyWhenClause{
+			{ProfileRef: "promo_profile"},
+		},
+	}
+	require.NoError(t, sm.CreatePromotionPolicy(policy))
+
+	// A referenced profile cannot be dropped while the policy references it.
+	err := sm.DropPromotionProfile("promo_profile")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "promotion profile")
+
+	// After the policy goes, the profile drop succeeds.
+	require.NoError(t, sm.DropPromotionPolicy("promo_policy"))
+	require.NoError(t, sm.DropPromotionProfile("promo_profile"))
+	require.Empty(t, sm.ShowPromotionProfiles())
+}
+
 // TestDropDecayProfile_Binding tests that dropping a binding works.
 func TestDropDecayProfile_Binding(t *testing.T) {
 	sm := NewSchemaManager()

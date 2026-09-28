@@ -392,9 +392,12 @@ type StorageExecutor struct {
 	dbManager DatabaseManagerInterface
 
 	// shellParams stores Neo4j shell-style parameters set via :param / :params.
-	// These are session-scoped to the executor instance and merged with per-call params.
-	shellParams   map[string]interface{}
-	shellParamsMu sync.RWMutex
+	// shellParams is the bucket for contexts without a caller identity;
+	// shellParamsByToken holds one bucket per authenticated caller so one
+	// client's parameters can never be read or overwritten by another.
+	shellParams        map[string]interface{}
+	shellParamsByToken map[string]map[string]interface{}
+	shellParamsMu      sync.RWMutex
 
 	// vectorRegistry maps Cypher vector index definitions to concrete vector spaces.
 	vectorRegistry    *vectorspace.IndexRegistry
@@ -552,6 +555,7 @@ func (e *StorageExecutor) cloneWithStorage(override storage.Engine) *StorageExec
 		defaultEmbeddingDimensions:     e.defaultEmbeddingDimensions,
 		dbManager:                      e.dbManager,
 		shellParams:                    e.shellParams,
+		shellParamsByToken:             cloneShellParamsByToken(e),
 		vectorRegistry:                 e.vectorRegistry,
 		vectorIndexSpaces:              e.vectorIndexSpaces,
 		fabricRecordBindings:           e.fabricRecordBindings,
@@ -1039,7 +1043,7 @@ func (e *StorageExecutor) emitSlowQueryLog(query string, plan *ExecutionPlan, du
 		hash = StatementShapeHash(redacted)
 	}
 	if len(redacted) > 500 {
-		redacted = redacted[:500]
+		redacted = truncateRuneSafe(redacted, 500)
 	}
 	e.logEvent(slog.LevelWarn, localization.CypherSlowQueryEvent(
 		hash,
@@ -1409,7 +1413,7 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 		if err := e.statementParametersError(ctx, cypher, params); err != nil {
 			return nil, err
 		}
-		mergedParams := e.mergeShellParams(params)
+		mergedParams := e.mergeShellParams(ctx, params)
 		ctx = context.WithValue(ctx, paramsKey, mergedParams)
 		info := e.analyzer.Analyze(cypher)
 		// Plan 04-03 Site 3 (fabric branch): isFabric=true → op_type="fabric"
@@ -1493,17 +1497,36 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 	// and so is a statement that reads or writes no graph (RETURN 1,
 	// UNWIND graph.names() AS g RETURN g), which runs on the composite
 	// itself, as in Neo4j.
-	if isCompositeRoot(e.storage) && !isCompositeAllowedCommand(cypher) && statementAccessesGraph(e.analyzer.Analyze(cypher)) {
+	if isCompositeRoot(e.storage) && !isCompositeAllowedCommand(cypher) && statementAccessesGraphText(cypher) {
 		return nil, localizedError(localization.CypherCoreCompositeTargetRequired(), nil)
 	}
 
 	// Merge session-scoped shell parameters with per-call parameters.
 	// Explicit params win over shell params to preserve HTTP/Bolt semantics.
-	params = e.mergeShellParams(params)
+	params = e.mergeShellParams(ctx, params)
 
 	// Check for transaction control statements and transaction scripts FIRST.
 	// These are Nornic extensions and must bypass strict ANTLR validation.
-	if result, err := e.executeTransactionScript(ctx, cypher); result != nil || err != nil {
+	// A one-statement script opens and closes its own transaction; it runs on
+	// a private executor so a client statement can never leave the shared
+	// per-database executor inside a transaction — concurrent auto-commit
+	// statements would otherwise observe and collide with the script's
+	// transaction state (acknowledged-write loss, mid-run panics). An
+	// embedded caller that already owns an active transaction keeps running
+	// the script on itself, where handleBegin fails as before.
+	if transactionScriptShape(cypher) {
+		if e.txContext != nil && e.txContext.active {
+			if result, err := e.executeTransactionScript(ctx, cypher); result != nil || err != nil {
+				return result, err
+			}
+		} else {
+			scriptExec := e.cloneForStorage(e.storage)
+			scriptExec.txContext = nil
+			if result, err := scriptExec.executeTransactionScript(ctx, cypher); result != nil || err != nil {
+				return result, err
+			}
+		}
+	} else if result, err := e.executeTransactionScript(ctx, cypher); result != nil || err != nil {
 		return result, err
 	}
 	if result, err := e.parseTransactionStatement(cypher); result != nil || err != nil {
@@ -2100,6 +2123,7 @@ func (e *StorageExecutor) tryAsyncCreateNodeBatch(ctx context.Context, cypher st
 	}
 	// System commands and schema commands must not be handled here — route to executeSchemaCommand instead
 	if startsWithKeywords(cypher, "CREATE", "DATABASE") ||
+		isCreateOrReplaceDatabaseQuery(cypher) ||
 		startsWithKeywords(cypher, "CREATE", "COMPOSITE DATABASE") ||
 		startsWithKeywords(cypher, "CREATE", "ALIAS") ||
 		startsWithKeywords(cypher, "CREATE", "CONSTRAINT") ||
@@ -2710,6 +2734,87 @@ func statementAccessesGraph(info *QueryInfo) bool {
 		info.HasShow || info.HasSchema
 }
 
+// statementAccessesGraphText conservatively reports whether a statement reads
+// or writes graph data, scanning the text itself with the shared keyword
+// scanner. The composite-root guard uses it instead of the caching analyzer:
+// the analyzer's clause flags missed pattern comprehensions
+// (`[(n)-->(m) | …]`) and pattern subqueries (`COUNT { }`, `EXISTS { }`,
+// `EXISTS((n)-->(m))`), which read constituent data on a composite root. The
+// direction is safe by construction: a false positive only forces the caller
+// to target a constituent (and pass its authorization), while a false
+// negative would read denied data.
+func statementAccessesGraphText(cypher string) bool {
+	opts := defaultKeywordScanOpts()
+	for _, keyword := range []string{
+		"MATCH", "OPTIONAL MATCH", "CREATE", "MERGE", "DELETE", "DETACH DELETE",
+		"SET", "REMOVE", "FOREACH", "LOAD CSV", "CALL", "SHOW", "CREATE INDEX",
+		"CREATE RANGE INDEX", "CREATE FULLTEXT INDEX", "CREATE VECTOR INDEX",
+		"CREATE CONSTRAINT", "DROP INDEX", "DROP CONSTRAINT",
+	} {
+		if keywordIndexFrom(cypher, keyword, 0, opts) >= 0 {
+			return true
+		}
+	}
+	upper := upperASCII(cypher)
+	if strings.Contains(upper, "SHORTESTPATH") || strings.Contains(upper, "ALLSHORTESTPATHS") {
+		return true
+	}
+	// COUNT { … } and EXISTS { … } are pattern subqueries over the graph.
+	for _, keyword := range []string{"COUNT", "EXISTS"} {
+		for from := 0; ; {
+			index := keywordIndexFrom(cypher, keyword, from, opts)
+			if index < 0 {
+				break
+			}
+			end := index + len(keyword)
+			open := queryGapEnd(cypher, end)
+			if open < len(cypher) && cypher[open] == '{' {
+				return true
+			}
+			// EXISTS((n)-->(m)): a pattern between the parentheses.
+			if keyword == "EXISTS" && open < len(cypher) && cypher[open] == '(' {
+				if close := findMatchingDelimiter(cypher, open, '(', ')'); close > open {
+					inner := strings.TrimSpace(cypher[open+1 : close])
+					if strings.ContainsAny(inner, "-><") || strings.HasPrefix(inner, "(") {
+						return true
+					}
+				}
+			}
+			from = end
+		}
+	}
+	// A pattern comprehension starts with '[' followed (after gaps) by a
+	// node or relationship pattern: '[(' … '|'. A subscript such as arr[(i)]
+	// has the '[' glued directly to the expression atom it indexes, so it
+	// does not qualify; whitespace before the '[' means the bracket starts a
+	// new construct, which in '[' + '(' position is a pattern comprehension.
+	for i := 0; i < len(cypher); i++ {
+		switch cypher[i] {
+		case '\'', '"', '`':
+			i = skipCypherQuotedText(cypher, i, cypher[i]) - 1
+			continue
+		case '/':
+			if end := queryCommentEnd(cypher, i); end >= 0 {
+				i = end - 1
+				continue
+			}
+		}
+		if cypher[i] != '[' {
+			continue
+		}
+		next := queryGapEnd(cypher, i+1)
+		if next >= len(cypher) || cypher[next] != '(' {
+			continue
+		}
+		if i > 0 && !isASCIISpace(cypher[i-1]) && (isIdentByte(cypher[i-1]) || cypher[i-1] == ']' || cypher[i-1] == ')' ||
+			cypher[i-1] == '\'' || cypher[i-1] == '"' || cypher[i-1] == '`' || cypher[i-1] == '$') {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // statementParametersError is Neo4j's ParameterMissing for a statement that
 // references a parameter it wasn't given ("Expected parameter(s): p"), or nil.
 // Neo4j reports it after the statement compiles, so a statement that is also
@@ -2722,7 +2827,7 @@ func (e *StorageExecutor) statementParametersError(ctx context.Context, cypher s
 	if strings.IndexByte(cypher, '$') < 0 || (isExplainOrProfile(cypher) && !startsWithKeywordFold(strings.TrimSpace(cypher), "PROFILE")) || isCreateProcedureCommand(cypher) {
 		return nil
 	}
-	shellParams := e.mergeShellParams(params)
+	shellParams := e.mergeShellParams(ctx, params)
 	inherited := getParamsFromContext(ctx)
 	missing := statementMissingParameters(cypher, func(name string) bool {
 		if _, ok := shellParams[name]; ok {

@@ -181,6 +181,7 @@ func (e *StorageExecutor) findNodeByLabelAndProperty(label, prop string, val any
 // implicit transactions. These are routed to executeWithoutTransaction directly.
 func isSystemCommandNoGraph(cypher string) bool {
 	return startsWithKeywords(cypher, "CREATE", "COMPOSITE DATABASE") ||
+		isCreateOrReplaceDatabaseQuery(cypher) ||
 		startsWithKeywords(cypher, "CREATE", "DATABASE") ||
 		startsWithKeywords(cypher, "CREATE", "ALIAS") ||
 		startsWithKeywords(cypher, "DROP", "COMPOSITE DATABASE") ||
@@ -476,6 +477,8 @@ skipMatchCallRoute:
 		return e.executeSchemaCommand(ctx, cypher)
 	case startsWithKeywords(cypher, "CREATE", "COMPOSITE DATABASE"):
 		return e.executeCreateCompositeDatabase(ctx, cypher)
+	case isCreateOrReplaceDatabaseQuery(cypher):
+		return e.executeCreateOrReplaceDatabase(ctx, cypher)
 	case startsWithKeywords(cypher, "CREATE", "DATABASE"):
 		return e.executeCreateDatabase(ctx, cypher)
 	case startsWithKeywords(cypher, "CREATE", "ALIAS"):

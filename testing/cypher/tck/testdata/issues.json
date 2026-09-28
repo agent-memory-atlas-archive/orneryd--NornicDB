@@ -22,6 +22,8 @@
       "candidate_tck_family": ["clauses/unwind", "clauses/match"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "clauses/match/Match7.feature is the OPTIONAL MATCH family; the UNWIND-correlation matrix is covered locally."},
       "local_reproductions": ["TestGH447_UnwindOptionalMatchCorrelationMatrix"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -32,6 +34,8 @@
       "candidate_tck_family": ["local storage concurrency suite"],
       "tck_mapping": {"status": "local-only", "scenarios": [], "note": "Background write-back visibility is a storage invariant, not a TCK scenario."},
       "local_reproductions": ["TestGH448_StagedEmbeddingWritebackKeepsLabelScanComplete"],
+      "failing_baseline_commit": "1025caa3",
+      "fixing_commits": ["3ca7b4ce", "fd05ef8a"],
       "status": "verified"
     },
     {
@@ -42,6 +46,8 @@
       "candidate_tck_family": ["clauses/return-orderby"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "clauses/return-orderby/ReturnOrderBy4.feature covers hidden sort keys; no exact multi-key LIMIT scenario attached yet."},
       "local_reproductions": ["TestGH449_MultipleOrderKeysKeepHiddenFirstKey"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -52,6 +58,8 @@
       "candidate_tck_family": ["clauses/return", "clauses/with"],
       "tck_mapping": {"status": "exact", "scenarios": ["clauses/with-orderBy/WithOrderBy4.feature :: [7] Sort by an alias of a projected expression where the alias shadows an existing variable"], "note": "WITH-flavor alias shadowing verified upstream; the RETURN c.name AS c flavor is local-only."},
       "local_reproductions": ["TestGH450_ReturnPropertyAliasedToVariableAfterWith"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -62,6 +70,8 @@
       "candidate_tck_family": ["clauses/with-orderBy", "expressions/aggregation"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "clauses/with-orderBy/WithOrderBy4.feature is the projection-sort family; grouped-collect composition is local-only."},
       "local_reproductions": ["TestGH451_WithOrderByBeforeGroupedCollect"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -72,6 +82,8 @@
       "candidate_tck_family": ["clauses/unwind", "clauses/return-orderby", "clauses/with-where", "expressions/aggregation"],
       "tck_mapping": {"status": "family", "scenarios": ["clauses/unwind/Unwind1.feature :: [6] Creating nodes from an unwound parameter list"], "note": "Upstream Unwind1 [6] shows ORDER BY after UNWIND; the bare-UNWIND shape is local-only."},
       "local_reproductions": ["TestGH452Comment_OrderedWithWhereCollect"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -82,6 +94,8 @@
       "candidate_tck_family": ["expressions/list", "expressions/quantifier"],
       "tck_mapping": {"status": "family", "scenarios": ["expressions/list/List12.feature :: [2] Collect and filter using a list comprehension"], "note": "List12 carries the comprehension family; WHERE-then-projection with math is local-only."},
       "local_reproductions": ["TestGH453_ListComprehensionWhereAndProjectionCases"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -92,6 +106,8 @@
       "candidate_tck_family": ["expressions/mathematical", "expressions/precedence"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "expressions/mathematical is the arithmetic family; no exact scenario attached yet."},
       "local_reproductions": ["TestGH454_IntegerDivisionAndPowerSemantics"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -102,6 +118,8 @@
       "candidate_tck_family": ["clauses/merge", "clauses/set"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "clauses/merge/Merge4/Merge6/Merge8 carry ON CREATE scenarios; no exact title attached yet."},
       "local_reproductions": ["TestGH455_RelationshipMergeOnCreatePersistsAndMatches"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -112,6 +130,8 @@
       "candidate_tck_family": ["clauses/remove", "clauses/set", "clauses/match"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "clauses/remove/Remove1-3 carry the REMOVE family; combined REMOVE+SET is local-only."},
       "local_reproductions": ["TestGH456_RemovePropertyThenSetLabelPreservesMatchedScope"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -122,6 +142,8 @@
       "candidate_tck_family": ["clauses/call", "clauses/with", "expressions/aggregation"],
       "tck_mapping": {"status": "local-only", "scenarios": [], "note": "The vendored call features cover procedure calls only; CALL {} subqueries are a Neo4j extension with no upstream scenario."},
       "local_reproductions": ["TestGH457_CorrelatedCallPreservesOuterCompany"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -132,6 +154,8 @@
       "candidate_tck_family": ["expressions/temporal", "expressions/graph"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "expressions/temporal is the date/duration family; WITH-composition is local-only."},
       "local_reproductions": ["TestGH458_TemporalComponentsRemainTypedThroughWith"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -142,6 +166,8 @@
       "candidate_tck_family": ["clauses/return-orderby", "expressions/string"],
       "tck_mapping": {"status": "local-only", "scenarios": [], "note": "No upstream scenario combines a string function in ORDER BY with LIMIT."},
       "local_reproductions": ["TestGH459_HiddenFunctionOrderKeyWithLimit"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -152,6 +178,8 @@
       "candidate_tck_family": ["expressions/list", "clauses/with"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "expressions/list carries reduce scenarios; WITH-composition is local-only."},
       "local_reproductions": ["TestGH460_ReduceAfterWithUsesLocalAndInheritedValues"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -162,6 +190,8 @@
       "candidate_tck_family": ["clauses/create", "local MVCC/reopen suite"],
       "tck_mapping": {"status": "local-only", "scenarios": [], "note": "Cross-statement visibility and reopen are storage invariants, not TCK scenarios."},
       "local_reproductions": ["TestGH461_AutocommitCreatedRelationshipVisibleAcrossTransactionsAndReopen"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["03f2d765"],
       "status": "verified"
     },
     {
@@ -172,6 +202,8 @@
       "candidate_tck_family": ["clauses/set", "expressions/mathematical"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "clauses/set is the relationship-property update family; arithmetic readback is local-only."},
       "local_reproductions": ["TestGH462_RelationshipSetEvaluatesBoundPropertyExpressions"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["81542d88"],
       "status": "verified"
     },
     {
@@ -182,6 +214,8 @@
       "candidate_tck_family": ["expressions/aggregation", "expressions/mathematical"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "expressions/aggregation/Aggregation1-8 is the aggregation family; post-aggregation arithmetic is local-only."},
       "local_reproductions": ["TestGH463_AggregateWrappedInArithmeticUsesAllRows"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -192,6 +226,8 @@
       "candidate_tck_family": ["clauses/with-orderBy", "expressions/aggregation"],
       "tck_mapping": {"status": "exact", "scenarios": ["clauses/return-orderby/ReturnOrderBy6.feature :: [2] Handle returned aliases inside an order by item which contains an aggregation expression"], "note": "RETURN-flavor alias handling verified upstream; the WITH ORDER BY flavor is local-only."},
       "local_reproductions": ["TestGH464_WithOrderByPreservesAggregateAlias"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -202,6 +238,8 @@
       "candidate_tck_family": ["clauses/merge", "expressions/graph", "expressions/path"],
       "tck_mapping": {"status": "exact", "scenarios": ["clauses/merge/Merge5.feature :: [11] Use outgoing direction when unspecified"], "note": "The TCK scenario reads startNode(r).id and endNode(r).id; the local regression adds the issue-specific WITH-bound case."},
       "local_reproductions": ["TestGH465_PropertyAccessOnEndpointFunctionResult"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -212,6 +250,8 @@
       "candidate_tck_family": ["expressions/map"],
       "tck_mapping": {"status": "local-only", "scenarios": [], "note": "No map-projection ({.name} / {.*}) scenario exists in the vendored corpus; projections are a Neo4j extension."},
       "local_reproductions": ["TestGH466_MapProjectionSelectorsAndComputedFields"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -222,6 +262,8 @@
       "candidate_tck_family": ["expressions/map"],
       "tck_mapping": {"status": "family", "scenarios": ["expressions/map/Map1.feature :: [1] Statically access a field of a non-null map", "expressions/map/Map3.feature :: [1] Using `keys()` on a literal map"], "note": "Map1 field access and Map3 keys() are upstream; recursive m.b.c through WITH is local-only."},
       "local_reproductions": ["TestGH467_NestedMapAccessAndKeysAfterWith"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -232,6 +274,8 @@
       "candidate_tck_family": ["expressions/list", "expressions/aggregation", "clauses/with"],
       "tck_mapping": {"status": "family", "scenarios": ["expressions/list/List1.feature :: [1] Indexing into literal list", "expressions/list/List1.feature :: [2] Indexing into nested literal lists"], "note": "Literal indexing is upstream; collected-list subscript through aggregation is local-only."},
       "local_reproductions": ["TestGH468_CollectedListSubscriptAndSlice"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -242,6 +286,8 @@
       "candidate_tck_family": ["expressions/aggregation", "expressions/list", "clauses/match"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "clauses/match/Match7.feature is the OPTIONAL MATCH family; size(collect()) agreement is local-only."},
       "local_reproductions": ["TestGH469_OptionalCollectSizeMatchesCollectedValues"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -252,6 +298,8 @@
       "candidate_tck_family": ["clauses/set", "expressions/null", "expressions/graph"],
       "tck_mapping": {"status": "exact", "scenarios": ["clauses/set/Set2.feature :: [1] Setting a node property to null removes the existing property", "clauses/set/Set2.feature :: [2] Setting a node property to null removes the existing property, but not before SET", "clauses/set/Set2.feature :: [3] Setting a relationship property to null removes the existing property"], "note": "Upstream Set2 family matches exactly; local coverage adds route parity and index lookup."},
       "local_reproductions": ["TestSetRoutesConverge"],
+      "failing_baseline_commit": null,
+      "fixing_commits": ["9f3aee59"],
       "status": "verified"
     },
     {
@@ -262,6 +310,8 @@
       "candidate_tck_family": ["expressions/mathematical", "expressions/typeConversion", "Neo4j extension suite"],
       "tck_mapping": {"status": "local-only", "scenarios": [], "note": "No `round(` scenario exists anywhere in the vendored corpus (verified); precision-argument round is a Neo4j extension."},
       "local_reproductions": ["TestGH471_RoundPrecisionAndFloatResultTypes"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -272,6 +322,8 @@
       "candidate_tck_family": ["clauses/set", "expressions/map"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "clauses/set is the update family; expression-valued map entries are local-only."},
       "local_reproductions": ["TestGH474_SetMapEvaluatesScopedExpressionValues"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -282,6 +334,8 @@
       "candidate_tck_family": ["expressions/list", "clauses/match-where"],
       "tck_mapping": {"status": "family", "scenarios": ["expressions/list/List1.feature :: [1] Indexing into literal list"], "note": "Literal indexing is upstream; stored-property list access through MATCH is local-only."},
       "local_reproductions": ["TestGH475_StoredListSubscriptAndHeadInMatch"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["f0c927df"],
       "status": "verified"
     },
     {
@@ -292,6 +346,8 @@
       "candidate_tck_family": ["expressions/temporal", "expressions/comparison"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "expressions/temporal is the datetime family; persisted-datetime comparison is local-only."},
       "local_reproductions": ["TestGH476_StoredDatetimeComparesAsTemporalValue"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -302,6 +358,8 @@
       "candidate_tck_family": ["expressions/aggregation", "expressions/comparison"],
       "tck_mapping": {"status": "exact", "scenarios": ["expressions/aggregation/Aggregation2.feature :: [7] `max()` over strings", "expressions/aggregation/Aggregation2.feature :: [8] `min()` over strings"], "note": "Upstream string min/max matches; local coverage adds null/empty/mixed-type controls."},
       "local_reproductions": ["TestGH477_MinMaxAggregateStrings"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -312,6 +370,8 @@
       "candidate_tck_family": ["clauses/unwind", "clauses/match", "clauses/merge", "expressions/list"],
       "tck_mapping": {"status": "local-only", "scenarios": [], "note": "Binding order of subscripts before MATCH evaluation is a routing concern with no upstream scenario."},
       "local_reproductions": ["TestGH478_ListSubscriptInMatchPropertyMap"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -322,6 +382,8 @@
       "candidate_tck_family": ["clauses/set", "expressions/aggregation"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "Mutation followed by aggregation is a composition with no exact upstream scenario."},
       "local_reproductions": ["TestGH479_SetThenReturnAggregatesAllMatchedRows"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -332,6 +394,8 @@
       "candidate_tck_family": ["clauses/set"],
       "tck_mapping": {"status": "family", "scenarios": [], "note": "clauses/set is the label-update family; chained-label equivalence is local-only."},
       "local_reproductions": ["TestGH480_ChainedLabelSetMatchesCommaForm"],
+      "failing_baseline_commit": "2da13483",
+      "fixing_commits": ["9f3aee59"],
       "status": "verified"
     },
     {
@@ -342,6 +406,8 @@
       "candidate_tck_family": ["clauses/match", "expressions/aggregation"],
       "tck_mapping": {"status": "exact", "scenarios": ["clauses/match/Match8.feature :: [2] Counting rows after MATCH, MERGE, OPTIONAL MATCH"], "note": "Upstream Match8 [2] aggregates over OPTIONAL MATCH results; the per-outer-row zero-count grouping is local-only."},
       "local_reproductions": ["TestGH481_OptionalMatchCountGroupsPerOuterRow"],
+      "failing_baseline_commit": "1025caa3",
+      "fixing_commits": ["program:#521-series"],
       "status": "verified"
     },
     {
@@ -351,8 +417,10 @@
       "fix_step": "1-9",
       "candidate_tck_family": ["all core TCK families and local suites"],
       "tck_mapping": {"status": "program", "scenarios": [], "note": "Tracked by tasks 1.6/1.7 (known-failure baseline, CI workflow, required checks)."},
-      "local_reproductions": [],
-      "status": "in-progress"
+      "local_reproductions": ["TestSetRoutesConverge", "TestMutationFamiliesRollBackOnRejection"],
+      "failing_baseline_commit": null,
+      "fixing_commits": ["program:#521-series"],
+      "status": "verified"
     },
     {
       "number": 487,
@@ -361,8 +429,24 @@
       "fix_step": 7,
       "candidate_tck_family": ["local performance and SI suites"],
       "tck_mapping": {"status": "local-only", "scenarios": [], "note": "Performance evidence lives in task 7.2 (five-shape BenchmarkStatementRouting matrix with visit counters and profiles) and 7.3 (snapshot isolation, cancellation, buffer lifetime)."},
-      "local_reproductions": [],
-      "status": "benchmarked"
+      "local_reproductions": ["TestCollectNodesWithStreaming_LabelLimitPrefersLabelLookup", "TestTraversalLimitStopsStreamingStartNodes", "BenchmarkStatementRouting"],
+      "failing_baseline_commit": null,
+      "fixing_commits": ["7748cec1"],
+      "status": "verified"
     }
   ]
-}
+,
+  "program": {
+  "issue": 521,
+  "url": "https://github.com/orneryd/NornicDB/issues/521",
+  "title": "Converge Cypher execution",
+  "openspec": "openspec/changes/converge-cypher-execution",
+  "fixing_commit_series_note": "Entries whose fixing_commits contains the marker 'program:#521-series' were fixed by the #521 convergence commit series between the failing baseline commit and qualification; their local_reproductions are the passing artifacts.",
+  "qualification": {
+    "tck_ratchet": "7794/7794 scenario/mode outcomes at upstream revision 370fe27f417730dca2ef712dd1c0c5dadcb99ef8; zero expected gaps, setup blocks and harness errors; 192 fully-vetted features (make cypher-tck-ratchet, make cypher-tck-vetted).",
+    "full_suite": "go test ./... -p 2 -count=1 -timeout=15m passes.",
+    "build": "go build ./... passes.",
+    "race": "Scoped race suites pass: pkg/cypher (excluding four timing-threshold tests invalid under instrumentation), pkg/storage, pkg/server, pkg/bolt, pkg/linkpredict.",
+    "benchmark": "M2 Max BenchmarkStatementRouting/(autocommit|explicit_tx)/simple_match_limit stays within the recorded band with unchanged allocations."
+  }
+}}

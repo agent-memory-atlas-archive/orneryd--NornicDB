@@ -16,6 +16,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Isolate one-statement transaction scripts (`BEGIN … COMMIT/ROLLBACK`) on a
+  private executor instead of the shared per-database executor. A client
+  statement could previously open the script's transaction on the executor
+  other clients' auto-commit statements run on, letting a low-privilege
+  caller crash the process mid-run and cause unrelated clients' acknowledged
+  writes to fail or be silently lost.
+- Treat pattern comprehensions (`[(n)-->(m) | …]`) and `COUNT { }`/`EXISTS { }`
+  pattern subqueries as graph access for the composite-root guard. They
+  previously slipped past the per-database authorization and read, counted,
+  and existence-tested data in composite constituents the caller was
+  explicitly denied.
+- Scope `:param`/`:params` shell parameters per authenticated caller instead
+  of storing them on the shared per-database executor, so one client's
+  parameter values can no longer be read, cleared, or overwritten by another
+  client of the same database.
+- Classify and route `CREATE OR REPLACE DATABASE` as an admin command: it
+  previously skipped the admin check and silently did nothing; it now
+  requires admin permission and creates or replaces the database.
+- Truncate logged query shapes at a rune boundary so redaction/log seams can
+  never emit invalid UTF-8.
 - Unify scheduled and explicit MVCC pruning on per-key transactions, preserving
   active snapshots and avoiding conflicts with normal writes. Scheduled pruning
   now keeps exactly `MaxVersionsPerKey` closed versions; its next cycle may

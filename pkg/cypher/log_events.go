@@ -3,6 +3,7 @@ package cypher
 import (
 	"context"
 	"log/slog"
+	"unicode/utf8"
 
 	nornicerrors "github.com/orneryd/nornicdb/pkg/errors"
 	"github.com/orneryd/nornicdb/pkg/localization"
@@ -50,7 +51,20 @@ func (e *StorageExecutor) emitRejectionReport(query string, err error) {
 		}
 	}
 	if len(redacted) > 500 {
-		redacted = redacted[:500]
+		redacted = truncateRuneSafe(redacted, 500)
 	}
 	e.log.Info("query rejected", "event_id", "cypher.query_rejected", "event", "query_rejected", "reason", "syntax_error", "statement_class", statementClass, "shape_hash", hash, "query", redacted)
+}
+
+// truncateRuneSafe returns s truncated to at most max bytes without splitting
+// a UTF-8 rune. The log truncation seams must never emit invalid UTF-8.
+func truncateRuneSafe(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	end := max
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end]
 }

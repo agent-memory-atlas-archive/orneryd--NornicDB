@@ -87,6 +87,41 @@ func TestUnwind_ProjectedMergeStopsAfterCancellation(t *testing.T) {
 	require.Equal(t, 1, store.creates)
 }
 
+type cancelOnFirstUpdateEngine struct {
+	storage.Engine
+	cancel  context.CancelFunc
+	updates int
+}
+
+func (engine *cancelOnFirstUpdateEngine) UpdateNode(node *storage.Node) error {
+	err := engine.Engine.UpdateNode(node)
+	if err == nil {
+		engine.updates++
+		if engine.updates == 1 {
+			engine.cancel()
+		}
+	}
+	return err
+}
+
+func TestPipeline_SetStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &cancelOnFirstUpdateEngine{Engine: storage.NewNamespacedEngine(newTestMemoryEngine(t), "cancel_pipeline_set"), cancel: cancel}
+	exec := NewStorageExecutor(store)
+	_, err := exec.Execute(ctx, "UNWIND [1, 2, 3] AS x CREATE (n:CancelSet {v: x}) WITH x MATCH (n:CancelSet {v: x}) SET n.v = x * 10", nil)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, store.updates)
+}
+
+func TestPipeline_CreateStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &cancelOnFirstCreateEngine{Engine: storage.NewNamespacedEngine(newTestMemoryEngine(t), "cancel_pipeline_create"), cancel: cancel}
+	exec := NewStorageExecutor(store)
+	_, err := exec.Execute(ctx, "UNWIND [1, 2, 3] AS x CREATE (n:CancelCreate {v: x})", nil)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, store.creates)
+}
+
 // TestUnwind_MutationBoundExecutionHostileValues pins the UNWIND mutation
 // migration (§6.2): MERGE/SET over unwound rows run against bound child
 // contexts, so hostile values survive without query-text substitution and

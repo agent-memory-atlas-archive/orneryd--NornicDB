@@ -11,6 +11,30 @@ import (
 
 var txCaseRollbackPattern = regexp.MustCompile(`(?is)^CASE\s+WHEN\s+(.+?)\s+THEN\s+ROLLBACK\s+ELSE\s+RETURN\s+(.+?)\s+COMMIT\s*$`)
 
+// transactionScriptShape reports whether query is one of the one-statement
+// transaction script forms — BEGIN … COMMIT / ROLLBACK, including the
+// CALL … CASE WHEN … THEN ROLLBACK ELSE RETURN … COMMIT form. A bare BEGIN
+// or BEGIN TRANSACTION is not a script (parseTransactionStatement owns it).
+func transactionScriptShape(cypher string) bool {
+	trimmed := strings.TrimSpace(cypher)
+	upper := upperASCII(trimmed)
+	if !strings.HasPrefix(upper, "BEGIN") {
+		return false
+	}
+	if upper == "BEGIN" || upper == "BEGIN TRANSACTION" {
+		return false
+	}
+	bodyAfterBegin, ok := stripBeginTransactionPrefix(trimmed)
+	if !ok {
+		return false
+	}
+	if strings.HasPrefix(upperASCII(strings.TrimSpace(bodyAfterBegin)), "CALL") && strings.Contains(upperASCII(bodyAfterBegin), "CASE") {
+		return true
+	}
+	_, _, ok = splitTransactionScriptTailAction(bodyAfterBegin)
+	return ok
+}
+
 // executeTransactionScript handles Nornic transaction script syntax:
 // - BEGIN TRANSACTION ... COMMIT
 // - BEGIN ... COMMIT (shorthand)

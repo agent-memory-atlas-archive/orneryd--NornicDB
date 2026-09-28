@@ -135,10 +135,7 @@ func isOperatorWith(s string, pos int) bool {
 	default:
 		return false
 	}
-	i := wordStart - 1
-	for i >= 0 && isASCIISpace(s[i]) {
-		i--
-	}
+	i := lastLiveByte(s, wordStart)
 	if i < 0 {
 		return false
 	}
@@ -180,18 +177,12 @@ func clauseKeywordUsedAsName(s string, pos, end int, keyword string) bool {
 	if !isNameableClauseKeyword(keyword) {
 		return false
 	}
-	i := pos - 1
-	for i >= 0 && isASCIISpace(s[i]) {
-		i--
-	}
+	i := lastLiveByte(s, pos)
 	if i >= 0 {
 		switch s[i] {
 		case '.', ':', '$':
 			return true
 		case '/':
-			if i > 0 && s[i-1] == '*' {
-				break // the end of a /* comment */
-			}
 			return true
 		case '+', '-', '%', '^', '=', '<', '>', ',', '(', '[':
 			return true
@@ -252,10 +243,7 @@ func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
 // wordIsName reports whether the word starting at wordStart is in a name
 // position: after AS, or after '.', ':' or '$'.
 func wordIsName(s string, wordStart int) bool {
-	i := wordStart - 1
-	for i >= 0 && isASCIISpace(s[i]) {
-		i--
-	}
+	i := lastLiveByte(s, wordStart)
 	if i < 0 {
 		return false
 	}
@@ -315,14 +303,86 @@ var (
 // prevWordStart returns the start of the word that precedes pos (after
 // skipping whitespace), for a pos where prevWordEqualsIgnoreCase matched.
 func prevWordStart(s string, pos int) int {
-	i := pos - 1
-	for i >= 0 && isASCIISpace(s[i]) {
-		i--
-	}
+	i := lastLiveByte(s, pos)
 	for i >= 0 && isIdentByte(s[i]) {
 		i--
 	}
 	return i + 1
+}
+
+// lastLiveByte returns the index of the last byte before pos that is live
+// statement text — not whitespace and not inside a line comment or a block
+// comment — or -1 when none is. Quoted spans are tracked so a comment-like
+// sequence inside a string is not a comment; their quote bytes are live
+// (they end expressions, so a clause keyword after a string literal follows
+// a quote, not the operator the string belongs to). Backward word lookups
+// (prevWordStart, prevWordEqualsIgnoreCase, clauseKeywordUsedAsName,
+// wordIsName, isOperatorWith) must start from it: a plain whitespace skip
+// would land inside a preceding comment and read the comment's last word as
+// code (RETURN 1 // WITH\nWITH … read the comment's WITH as the previous
+// word).
+func lastLiveByte(s string, pos int) int {
+	if pos <= 0 {
+		return -1
+	}
+	last := -1
+	inLineComment, inBlockComment := false, false
+	quote := byte(0)
+	for i := 0; i < pos && i < len(s); i++ {
+		c := s[i]
+		if inLineComment {
+			if c == '\n' || c == '\r' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			if c == '*' && i+1 < len(s) && s[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			if c == '\\' && quote != '`' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == quote {
+				if i+1 < len(s) && s[i+1] == quote {
+					i++
+					continue
+				}
+				quote = 0
+				last = i // the closing quote ends the expression
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+			last = i
+			continue
+		case '/':
+			if i+1 < len(s) {
+				switch s[i+1] {
+				case '/':
+					inLineComment = true
+					i++
+					continue
+				case '*':
+					inBlockComment = true
+					i++
+					continue
+				}
+			}
+		}
+		if isASCIISpace(c) {
+			continue
+		}
+		last = i
+	}
+	return last
 }
 
 // isExpressionBoundaryWord reports whether word is a keyword after which an

@@ -63,6 +63,11 @@ func isSchemaPermissionQuery(query string) bool {
 
 func isAdminPermissionQuery(query string) bool {
 	commandOffset := firstExecutableCypherOffset(query)
+	// CREATE OR REPLACE DATABASE: the pair scan below misses the OR REPLACE
+	// between CREATE and DATABASE.
+	if isCreateOrReplaceDatabaseQuery(query) {
+		return true
+	}
 	for _, command := range [][2]string{
 		{"SHOW", "USERS"},
 		{"SHOW", "TRANSACTIONS"},
@@ -98,6 +103,23 @@ func isAdminPermissionQuery(query string) bool {
 		}
 	}
 	return isCreateProcedureCommand(query) || isDropProcedureCommand(query)
+}
+
+// isCreateOrReplaceDatabaseQuery reports whether query is
+// CREATE OR REPLACE DATABASE <name>.
+func isCreateOrReplaceDatabaseQuery(query string) bool {
+	commandOffset := firstExecutableCypherOffset(query)
+	opts := defaultKeywordScanOpts()
+	create := keywordIndexFrom(query, "CREATE", commandOffset, opts)
+	if create != commandOffset {
+		return false
+	}
+	orReplace := keywordIndexFrom(query, "OR REPLACE", create+len("CREATE"), opts)
+	if orReplace < 0 {
+		return false
+	}
+	database := keywordIndexFrom(query, "DATABASE", orReplace+len("OR REPLACE"), opts)
+	return database >= 0
 }
 
 func firstExecutableCypherOffset(query string) int {
