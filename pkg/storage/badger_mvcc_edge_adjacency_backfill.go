@@ -64,7 +64,10 @@ func (b *BadgerEngine) repairArchivedEdgeAdjacency() error {
 			defer iterator.Close()
 			for iterator.Seek(start); iterator.ValidForPrefix(options.Prefix); iterator.Next() {
 				key := iterator.Item().Key()
-				_, version, err := extractEdgeNumIDAndMVCCVersionFromVersionKey(key)
+				// Legacy variable-length keys (string edgeID + 0x00 + version)
+				// and fixed-width V3 keys coexist in stores that predate the
+				// rewrite; the repair only needs the commit version.
+				version, err := extractEdgeVersionFromVersionKey(key)
 				if err != nil {
 					return err
 				}

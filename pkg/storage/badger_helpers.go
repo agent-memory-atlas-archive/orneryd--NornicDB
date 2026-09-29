@@ -146,6 +146,75 @@ func extractEdgeNumIDAndMVCCVersionFromVersionKey(key []byte) (uint64, MVCCVersi
 	return numID, version, nil
 }
 
+// extractEdgeVersionFromVersionKey reads the commit version from an MVCC edge
+// version key in either on-disk layout: the fixed-width V3 form
+// [prefix][numID 8B][version 16B] or the legacy variable-length form
+// [prefix][edgeID...][0x00][version 16B] written before the fixed-width key
+// rewrite. Legacy keys survive into V3 stores (the V2→V3 migration repairs
+// adjacency but does not rewrite them), so every scan over this prefix must
+// accept both.
+func extractEdgeVersionFromVersionKey(key []byte) (MVCCVersion, error) {
+	if len(key) == 1+8+16 && key[0] == prefixMVCCEdge {
+		return decodeMVCCSortVersion(key[9:])
+	}
+	if len(key) >= 18 && key[0] == prefixMVCCEdge && key[len(key)-17] == 0x00 {
+		return decodeMVCCSortVersion(key[len(key)-16:])
+	}
+	return MVCCVersion{}, fmt.Errorf("invalid mvcc edge version key: len=%d", len(key))
+}
+
+// nodeVersionKeyIdentity resolves a node ID and commit version from an MVCC
+// node version key in either layout: legacy keys carry the string ID
+// directly, fixed-width keys the numeric ID through the id dictionary.
+// ok=false means the numeric ID is not in the dictionary and the caller
+// should skip the entry, matching the previous unknown-num skip.
+func (b *BadgerEngine) nodeVersionKeyIdentity(key []byte) (NodeID, MVCCVersion, bool, error) {
+	if len(key) == 1+8+16 && key[0] == prefixMVCCNode {
+		numID := binary.BigEndian.Uint64(key[1:9])
+		id, ok := b.idDict.lookupNodeIDByNum(numID)
+		if !ok {
+			return "", MVCCVersion{}, false, nil
+		}
+		version, err := decodeMVCCSortVersion(key[9:])
+		if err != nil {
+			return "", MVCCVersion{}, false, err
+		}
+		return id, version, true, nil
+	}
+	if len(key) >= 18 && key[0] == prefixMVCCNode && key[len(key)-17] == 0x00 {
+		version, err := decodeMVCCSortVersion(key[len(key)-16:])
+		if err != nil {
+			return "", MVCCVersion{}, false, err
+		}
+		return NodeID(key[1 : len(key)-17]), version, true, nil
+	}
+	return "", MVCCVersion{}, false, fmt.Errorf("invalid mvcc node version key: len=%d", len(key))
+}
+
+// edgeVersionKeyIdentity is nodeVersionKeyIdentity's edge counterpart.
+func (b *BadgerEngine) edgeVersionKeyIdentity(key []byte) (EdgeID, MVCCVersion, bool, error) {
+	if len(key) == 1+8+16 && key[0] == prefixMVCCEdge {
+		numID := binary.BigEndian.Uint64(key[1:9])
+		id, ok := b.idDict.lookupEdgeIDByNum(numID)
+		if !ok {
+			return "", MVCCVersion{}, false, nil
+		}
+		version, err := decodeMVCCSortVersion(key[9:])
+		if err != nil {
+			return "", MVCCVersion{}, false, err
+		}
+		return id, version, true, nil
+	}
+	if len(key) >= 18 && key[0] == prefixMVCCEdge && key[len(key)-17] == 0x00 {
+		version, err := decodeMVCCSortVersion(key[len(key)-16:])
+		if err != nil {
+			return "", MVCCVersion{}, false, err
+		}
+		return EdgeID(key[1 : len(key)-17]), version, true, nil
+	}
+	return "", MVCCVersion{}, false, fmt.Errorf("invalid mvcc edge version key: len=%d", len(key))
+}
+
 func extractMVCCLogicalKeyAndVersion(key []byte) ([]byte, MVCCVersion, error) {
 	switch {
 	case len(key) == 1+8+16:

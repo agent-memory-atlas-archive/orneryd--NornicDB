@@ -1832,11 +1832,10 @@ func (b *BadgerEngine) withViewNodeMVCCVersionsFromKey(start []byte, limit int, 
 		count := 0
 		for it.Seek(start); it.ValidForPrefix(opts.Prefix); it.Next() {
 			key := append([]byte(nil), it.Item().Key()...)
-			nodeNum, version, err := extractNodeNumIDAndMVCCVersionFromVersionKey(key)
+			nodeID, version, ok, err := b.nodeVersionKeyIdentity(key)
 			if err != nil {
 				return err
 			}
-			nodeID, ok := b.idDict.lookupNodeIDByNum(nodeNum)
 			if !ok {
 				lastScanned = key
 				count++
@@ -1884,11 +1883,10 @@ func (b *BadgerEngine) withViewEdgeMVCCVersionsFromKey(start []byte, limit int, 
 		count := 0
 		for it.Seek(start); it.ValidForPrefix(opts.Prefix); it.Next() {
 			key := append([]byte(nil), it.Item().Key()...)
-			edgeNum, version, err := extractEdgeNumIDAndMVCCVersionFromVersionKey(key)
+			edgeID, version, ok, err := b.edgeVersionKeyIdentity(key)
 			if err != nil {
 				return err
 			}
-			edgeID, ok := b.idDict.lookupEdgeIDByNum(edgeNum)
 			if !ok {
 				lastScanned = key
 				count++
