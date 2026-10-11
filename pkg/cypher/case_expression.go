@@ -310,10 +310,10 @@ func caseBlockSpans(expr string) []caseBlockSpan {
 	return spans
 }
 
-// caseVariableScopeOpensAt reports whether the delimiter at expr[open] opens a
-// scope that binds names: [x IN …] or [(a)-->(b) | …], the arguments of
-// reduce / all / any / none / single / filter, or the { … } of an EXISTS,
-// COUNT, COLLECT or CALL subquery.
+// caseVariableScopeOpensAt reports whether the delimiter at expr[open] (one
+// of ( [ {) opens a scope that binds names: [x IN …] or [(a)-->(b) | …], the
+// arguments of reduce / all / any / none / single / filter, or the { … } of an
+// EXISTS, COUNT, COLLECT or CALL subquery.
 func caseVariableScopeOpensAt(expr string, open int) bool {
 	switch expr[open] {
 	case '[':
@@ -323,7 +323,7 @@ func caseVariableScopeOpensAt(expr string, open int) bool {
 		}
 		_, end, ok := scanIdentifierToken(expr, next)
 		return ok && matchKeywordAt(expr, skipSpaces(expr, end), "IN")
-	case '(', '{':
+	default: // ( or {
 		end := open
 		for end > 0 && isASCIISpace(expr[end-1]) {
 			end--
@@ -341,7 +341,6 @@ func caseVariableScopeOpensAt(expr string, open int) bool {
 		}
 		return name == "reduce" || name == "filter" || isQuantifierFunction(name)
 	}
-	return false
 }
 
 // evaluateCaseExpression evaluates a CASE expression and returns the result.
