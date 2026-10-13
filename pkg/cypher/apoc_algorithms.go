@@ -54,7 +54,7 @@ func (e *StorageExecutor) getNodeEdges(nodeID storage.NodeID) []*storage.Edge {
 // callApocAlgoDijkstra implements Dijkstra's shortest path.
 func (e *StorageExecutor) callApocAlgoDijkstra(ctx context.Context, args []interface{}) (*ExecuteResult, error) {
 	const procedure = "apoc.algo.dijkstra"
-	startID, endID, relType, err := pathAlgorithmArguments(procedure, args)
+	startID, endID, steps, err := pathAlgorithmArguments(procedure, args)
 	if err != nil {
 		return nil, err
 	}
@@ -62,14 +62,14 @@ func (e *StorageExecutor) callApocAlgoDijkstra(ctx context.Context, args []inter
 	if err != nil {
 		return nil, err
 	}
-	path, weight := e.dijkstra(startID, endID, relType, weightProp)
+	path, weight := e.dijkstra(startID, endID, steps, weightProp)
 	if path == nil {
 		return &ExecuteResult{Columns: []string{"path", "weight"}, Rows: [][]interface{}{}}, nil
 	}
 	return &ExecuteResult{Columns: []string{"path", "weight"}, Rows: [][]interface{}{{path, weight}}}, nil
 }
 
-func (e *StorageExecutor) dijkstra(startID, endID storage.NodeID, relType, weightProp string) ([]storage.NodeID, float64) {
+func (e *StorageExecutor) dijkstra(startID, endID storage.NodeID, steps []apocRelationshipStep, weightProp string) ([]storage.NodeID, float64) {
 	dist := make(map[storage.NodeID]float64)
 	dist[startID] = 0
 	pq := &priorityQueue{}
@@ -86,12 +86,8 @@ func (e *StorageExecutor) dijkstra(startID, endID storage.NodeID, relType, weigh
 		if current.nodeID == endID {
 			return current.path, current.cost
 		}
-		edges, _ := e.storage.GetOutgoingEdges(current.nodeID)
-		for _, edge := range edges {
-			if relType != "" && edge.Type != relType {
-				continue
-			}
-			neighbor := edge.EndNode
+		for _, edge := range e.apocSteps(current.nodeID, steps) {
+			neighbor := otherEnd(edge, current.nodeID)
 			if visited[neighbor] {
 				continue
 			}
@@ -118,7 +114,7 @@ func (e *StorageExecutor) dijkstra(startID, endID storage.NodeID, relType, weigh
 // callApocAlgoAStar implements A* pathfinding.
 func (e *StorageExecutor) callApocAlgoAStar(ctx context.Context, args []interface{}) (*ExecuteResult, error) {
 	const procedure = "apoc.algo.aStar"
-	startID, endID, relType, err := pathAlgorithmArguments(procedure, args)
+	startID, endID, steps, err := pathAlgorithmArguments(procedure, args)
 	if err != nil {
 		return nil, err
 	}
@@ -134,14 +130,14 @@ func (e *StorageExecutor) callApocAlgoAStar(ctx context.Context, args []interfac
 	if err != nil {
 		return nil, err
 	}
-	path, weight := e.astar(startID, endID, relType, weightProp, latProp, lonProp)
+	path, weight := e.astar(startID, endID, steps, weightProp, latProp, lonProp)
 	if path == nil {
 		return &ExecuteResult{Columns: []string{"path", "weight"}, Rows: [][]interface{}{}}, nil
 	}
 	return &ExecuteResult{Columns: []string{"path", "weight"}, Rows: [][]interface{}{{path, weight}}}, nil
 }
 
-func (e *StorageExecutor) astar(startID, endID storage.NodeID, relType, weightProp, latProp, lonProp string) ([]storage.NodeID, float64) {
+func (e *StorageExecutor) astar(startID, endID storage.NodeID, steps []apocRelationshipStep, weightProp, latProp, lonProp string) ([]storage.NodeID, float64) {
 	endNode, err := e.storage.GetNode(endID)
 	if err != nil {
 		return nil, 0
@@ -191,12 +187,8 @@ func (e *StorageExecutor) astar(startID, endID storage.NodeID, relType, weightPr
 			continue
 		}
 		visited[current.nodeID] = true
-		edges, _ := e.storage.GetOutgoingEdges(current.nodeID)
-		for _, edge := range edges {
-			if relType != "" && edge.Type != relType {
-				continue
-			}
-			neighbor := edge.EndNode
+		for _, edge := range e.apocSteps(current.nodeID, steps) {
+			neighbor := otherEnd(edge, current.nodeID)
 			if visited[neighbor] {
 				continue
 			}
@@ -220,13 +212,22 @@ func (e *StorageExecutor) astar(startID, endID storage.NodeID, relType, weightPr
 	return nil, 0
 }
 
-// callApocAlgoAllSimplePaths finds all simple paths.
+// callApocAlgoAllSimplePaths finds all simple paths of at most maxNodes
+// relationships, as in APOC (#1185): below 1, none.
 func (e *StorageExecutor) callApocAlgoAllSimplePaths(ctx context.Context, args []interface{}) (*ExecuteResult, error) {
-	startID, endID, relType, err := pathAlgorithmArguments("apoc.algo.allSimplePaths", args)
+	const procedure = "apoc.algo.allSimplePaths"
+	startID, endID, steps, err := pathAlgorithmArguments(procedure, args)
 	if err != nil {
 		return nil, err
 	}
-	paths := e.findAllSimplePaths(startID, endID, relType, 10)
+	maxNodes, err := requiredProcedureInteger(procedure, args, 3, "maxNodes")
+	if err != nil {
+		return nil, err
+	}
+	var paths [][]storage.NodeID
+	if maxNodes > 0 {
+		paths = e.findAllSimplePaths(startID, endID, steps, int(maxNodes))
+	}
 	rows := make([][]interface{}, len(paths))
 	for i, path := range paths {
 		rows[i] = []interface{}{path}
@@ -234,7 +235,7 @@ func (e *StorageExecutor) callApocAlgoAllSimplePaths(ctx context.Context, args [
 	return &ExecuteResult{Columns: []string{"path"}, Rows: rows}, nil
 }
 
-func (e *StorageExecutor) findAllSimplePaths(startID, endID storage.NodeID, relType string, maxDepth int) [][]storage.NodeID {
+func (e *StorageExecutor) findAllSimplePaths(startID, endID storage.NodeID, steps []apocRelationshipStep, maxDepth int) [][]storage.NodeID {
 	var result [][]storage.NodeID
 	visited := make(map[storage.NodeID]bool)
 	var dfs func(current storage.NodeID, path []storage.NodeID, depth int)
@@ -250,12 +251,8 @@ func (e *StorageExecutor) findAllSimplePaths(startID, endID storage.NodeID, relT
 		}
 		visited[current] = true
 		defer func() { visited[current] = false }()
-		edges, _ := e.storage.GetOutgoingEdges(current)
-		for _, edge := range edges {
-			if relType != "" && edge.Type != relType {
-				continue
-			}
-			neighbor := edge.EndNode
+		for _, edge := range e.apocSteps(current, steps) {
+			neighbor := otherEnd(edge, current)
 			if visited[neighbor] {
 				continue
 			}
@@ -600,19 +597,22 @@ func parseNeighborArguments(args []interface{}) (storage.NodeID, string, int, er
 }
 
 // pathAlgorithmArguments reads the arguments every path algorithm starts
-// with: (startNode, endNode[, relationship type]). A node may also be given
-// by its id, NornicDB's kept form.
-func pathAlgorithmArguments(procedure string, args []interface{}) (start, end storage.NodeID, relType string, err error) {
+// with: (startNode, endNode[, relTypesAndDirections]). A node may also be
+// given by its id, NornicDB's kept form. relTypesAndDirections is APOC's
+// "TYPE>|<TYPE|TYPE" (#1185), read as apoc.path's relationshipFilter: a type
+// without a direction, and an empty filter, follow both directions.
+func pathAlgorithmArguments(procedure string, args []interface{}) (start, end storage.NodeID, steps []apocRelationshipStep, err error) {
 	if start, err = requiredProcedureNodeID(procedure, args, 0, "startNode"); err != nil {
-		return "", "", "", err
+		return "", "", nil, err
 	}
 	if end, err = requiredProcedureNodeID(procedure, args, 1, "endNode"); err != nil {
-		return "", "", "", err
+		return "", "", nil, err
 	}
-	if relType, err = optionalProcedureString(procedure, args, 2, "relTypesAndDirections", ""); err != nil {
-		return "", "", "", err
+	filter, err := optionalProcedureString(procedure, args, 2, "relTypesAndDirections", "")
+	if err != nil {
+		return "", "", nil, err
 	}
-	return start, end, relType, nil
+	return start, end, parseApocRelationshipFilter(filter), nil
 }
 
 // algorithmRows are a whole-graph algorithm's rows, {node, value}, one per
