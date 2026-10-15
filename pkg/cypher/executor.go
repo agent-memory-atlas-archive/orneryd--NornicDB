@@ -2114,10 +2114,8 @@ const (
 // pattern comprehension ([(a)-->(b) | …], or the single-node form [(n) | …])
 // graphReadingPatternComprehension; EXISTS((a)-->()) and shortestPath /
 // allShortestPaths graphReadingPattern; and a bare relationship pattern
-// ((a)-->() in a WHERE, or in a CREATE or MATCH clause, which this text
-// reader can't tell apart) graphReadingPatternPredicate, reported only when
-// there is nothing else. String literals and comments don't count (shortest
-// path names anywhere do: a false positive only refuses or authorizes more).
+// ((a)-->() in an expression) graphReadingPatternPredicate, reported only
+// when there is nothing else. Clause patterns, literals and comments don't count.
 func graphReadingExpression(cypher string) string {
 	opts := defaultKeywordScanOpts()
 	opts.SkipParens = false
@@ -2146,8 +2144,18 @@ func graphReadingExpression(cypher string) string {
 			from = end
 		}
 	}
-	if indexASCIIFold(cypher, "shortestpath") >= 0 {
-		return graphReadingPattern
+	for _, keyword := range []string{"shortestPath", "allShortestPaths"} {
+		for from := 0; from < len(cypher); {
+			at := keywordIndexFrom(cypher, keyword, from, opts)
+			if at < 0 {
+				break
+			}
+			open := queryGapEnd(cypher, at+len(keyword))
+			if open < len(cypher) && cypher[open] == '(' {
+				return graphReadingPattern
+			}
+			from = at + len(keyword)
+		}
 	}
 	pattern := ""
 	for i := 0; i < len(cypher); i++ {
@@ -2164,7 +2172,7 @@ func graphReadingExpression(cypher string) string {
 			// A relationship pattern after a node pattern: (a)-->, (a)--,
 			// (a)-[, (a)->, (a)<--, (a)<-[ (a subtraction such as (x) - 1
 			// or a comparison such as (x) <-1 is none).
-			if pattern == "" && relationshipPatternFollows(cypher, i+1) {
+			if pattern == "" && relationshipPatternFollows(cypher, i+1) && !inPatternClause(cypher, i+1) {
 				pattern = graphReadingPatternPredicate
 			}
 			continue
@@ -2180,8 +2188,8 @@ func graphReadingExpression(cypher string) string {
 // starts at cypher[i]: a '[' followed (after gaps) by a node pattern, '[('
 // … '|'. A subscript such as arr[(i)] has the '[' glued directly to the
 // expression atom it indexes, so it does not qualify; whitespace before the
-// '[' means the bracket starts a new construct, which in '[' + '('
-// position is a pattern comprehension.
+// '[' starts a new construct. A relationship or comprehension separator must
+// follow the first node pattern; [(1)] is an ordinary list.
 func patternComprehensionStartsAt(cypher string, i int) bool {
 	if cypher[i] != '[' {
 		return false
@@ -2190,8 +2198,17 @@ func patternComprehensionStartsAt(cypher string, i int) bool {
 	if next >= len(cypher) || cypher[next] != '(' {
 		return false
 	}
-	return i == 0 || isASCIISpace(cypher[i-1]) || !(isIdentByte(cypher[i-1]) || cypher[i-1] == ']' || cypher[i-1] == ')' ||
-		cypher[i-1] == '\'' || cypher[i-1] == '"' || cypher[i-1] == '`' || cypher[i-1] == '$')
+	if i > 0 && !isASCIISpace(cypher[i-1]) && (isIdentByte(cypher[i-1]) || cypher[i-1] == ']' || cypher[i-1] == ')' ||
+		cypher[i-1] == '\'' || cypher[i-1] == '"' || cypher[i-1] == '`' || cypher[i-1] == '$') {
+		return false
+	}
+	close := findMatchingDelimiter(cypher, next, '(', ')')
+	if close < 0 {
+		return false
+	}
+	after := queryGapEnd(cypher, close+1)
+	return relationshipPatternFollows(cypher, after) || after < len(cypher) &&
+		(cypher[after] == '|' || startsWithKeywordFold(cypher[after:], "WHERE"))
 }
 
 // singleNodePatternComprehension reports whether cypher holds a pattern
@@ -2252,11 +2269,10 @@ func relationshipPatternFollows(cypher string, at int) bool {
 }
 
 // statementReadsGraphText reports whether cypher reads the graph: a MATCH,
-// a MERGE (which matches before it creates), a CALL (a procedure, or a
-// subquery whose body is read here too), a SHOW, a WHERE (where a pattern
-// predicate stands), or a graph-reading expression (graphReadingExpression)
-// other than a bare relationship pattern, which in a statement without a
-// WHERE is a CREATE pattern, at any depth. A statement that only
+// a MERGE (which matches before it creates), a procedure call, a SHOW or a
+// graph-reading expression (graphReadingExpression), at any depth. CALL
+// subquery bodies and WHERE expressions are examined for those operations.
+// A statement that only
 // creates, and sets, removes or deletes what it created, reads nothing:
 // QueryPermissionRequirements then needs write but not read, as Neo4j lets
 // a principal with WRITE but no READ privilege run CREATE.
@@ -2265,13 +2281,22 @@ func statementReadsGraphText(cypher string) bool {
 	opts.SkipParens = false
 	opts.SkipBrackets = false
 	opts.SkipBraces = false
-	for _, keyword := range []string{"MATCH", "MERGE", "CALL", "SHOW", "WHERE"} {
+	for _, keyword := range []string{"MATCH", "MERGE", "SHOW"} {
 		if keywordIndexFrom(cypher, keyword, 0, opts) >= 0 {
 			return true
 		}
 	}
-	kind := graphReadingExpression(cypher)
-	return kind != "" && kind != graphReadingPatternPredicate
+	for from := 0; from < len(cypher); {
+		at := keywordIndexFrom(cypher, "CALL", from, opts)
+		if at < 0 {
+			break
+		}
+		from = at + len("CALL")
+		if _, procedure := procedureNameAt(cypher, queryGapEnd(cypher, from)); procedure {
+			return true
+		}
+	}
+	return expressionReadsGraphText(cypher)
 }
 
 // statementParametersError is Neo4j's ParameterMissing for a statement that
