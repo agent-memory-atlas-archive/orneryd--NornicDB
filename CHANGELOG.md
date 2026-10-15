@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `SHOW FUNCTIONS` declares vector similarity arguments as `LIST<INTEGER | FLOAT>`, matching Neo4j 5.26 rather than advertising its newer `VECTOR` type.
+- Preserve native GDS projected numeric values and list defaults, validate unsafe Long-to-Double imports, honor cross-database graph-drop permissions, and align existing FastRP propagation and feature validation with GDS.
 
 - Harden existing boosted procedure grants, transactional role changes, principal refresh, and system database
   authorization; bring the follow-up security fixes onto the v1.4.3 release baseline.
